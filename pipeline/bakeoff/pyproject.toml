@@ -1,0 +1,13 @@
+[project]
+name = "perception-bakeoff"
+version = "0.1.0"
+description = "Compare models for HyperStudy's offline video perception track"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "anthropic>=1.0",
+  "openai>=2.0",
+  "scenedetect[opencv]>=0.6.6",
+  "whisperx>=3.8.6",
+  "pillow",
+  "parakeet-mlx>=0.5.3",
+]

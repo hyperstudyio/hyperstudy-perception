@@ -1,0 +1,41 @@
+{
+ "video": "ooo-genz-clip1",
+ "provenance": "PROVISIONAL. Visual judgements by Claude (Opus 5.5) from wide-context contact sheets of every SAM 3 track (one mid-track frame each), made 2026-10-23 BEFORE running the revised linker, for the cross-name / wearer / verification linking changes. Not owner labels; not checked by a person. Track ids are those of runs/ooo-genz-clip1/objects_sam3_tracks.npz. Wearers are named by the panel members' on-screen captions. One revision after seeing the crop check's views: the seven movie posters were moved from 'objects' to 'excluded' as edited-in graphics (each appears with a floating year caption and hovers over the stage in wide shots), not physical posters.",
+ "rules": "Each entry of 'objects' is one physical object. Pairs of tracks in the same object are 'same'; tracks in different objects are 'different'. An 'unsure_groups' entry lists tracks that are certainly this person's items of this kind but cannot be told apart from the footage (two necklaces, several rings): pairs inside it are 'unsure'. Tracks in 'excluded' (ambiguous boxes, boxes on printed or on-screen images, a track spanning two people) are 'unsure' with every track. Pairs on screen together are decided by the cannot-link rule, so scores use linkable pairs only.",
+ "objects": {
+  "Rayvan pearl necklace": [1, 3, 18, 33, 50, 53, 58, 62, 66, 67, 77, 96, 98, 100, 113, 120, 128, 129, 132, 153, 158],
+  "Aala fur hat": [0, 4, 20, 28, 49, 56, 76, 95, 119, 130, 157, 166],
+  "Aala sunglasses (on the hat)": [2, 29, 51, 59, 79, 97, 122],
+  "Aala wrist scrunchie": [31, 78, 121],
+  "Alyssa floral cardigan": [8, 64, 89, 105, 110, 115, 136, 146],
+  "Madeline white knit cardigan": [24, 25, 35, 37, 65, 71, 103, 111],
+  "camo t-shirt": [36, 52, 99, 117, 123, 156],
+  "Jason yellow jacket": [34, 38, 39, 55, 94, 154, 155, 167],
+  "Rayvan white tank top": [72, 162],
+  "Rayvan maroon shirt": [104],
+  "Trace mint t-shirt": [70],
+  "Alyssa jeans": [15, 85, 139],
+  "Rayvan jeans": [126, 159],
+  "white trousers (camo t-shirt wearer)": [124, 160],
+  "glass table": [5, 48, 91, 107, 150, 164],
+  "metal case on the glass table": [6, 47, 93, 108, 152, 165],
+  "small item left on the glass table": [92, 151]
+ },
+ "unsure_groups": {
+  "Alyssa necklaces (a short charm necklace and a long pendant)": [9, 10, 54, 68, 69, 86, 106, 112, 114, 137, 138, 147, 148],
+  "Aala necklaces": [22, 23, 30, 57, 131],
+  "Alyssa rings": [11, 12, 13, 14, 140, 141, 142, 143, 144, 145],
+  "Rayvan rings": [101, 102],
+  "Aala ring": [32],
+  "Jason ring": [133],
+  "camo t-shirt wearer ring": [134],
+  "interview chair (possibly one chair for every interview)": [7, 16, 17, 19, 21, 26, 90, 135]
+ },
+ "excluded": {
+  "edited-in movie posters (graphics with year captions)": [60, 61, 63, 73, 80, 81, 82],
+  "boxes on people printed in a poster": [74, 75],
+  "on-screen graphics (dollar signs, animated platform, wireframe cube)": [40, 41, 42, 43, 44, 45, 46, 27],
+  "ambiguous thin or edge boxes": [83, 84, 87, 88, 109, 116, 125, 127, 149, 161, 163, 168],
+  "fur hat labelled scrunchie": [118]
+ }
+}

@@ -1,0 +1,6 @@
+[project]
+name = "perception-bakeoff-emblems"
+version = "0.1.0"
+description = "Hand emblem classification for the perception bake-off: PYSKL's HaGRID ST-GCN++ on 21-point hand keypoints (extracted to plain PyTorch), MediaPipe Gesture Recognizer as comparator"
+requires-python = ">=3.12,<3.13"
+dependencies = ["torch>=2.5", "numpy", "opencv-python", "mediapipe>=0.10.20"]

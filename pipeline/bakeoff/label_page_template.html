@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speaker Labelling</title>
+<style>
+:root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#e3e3e6; --card:#f6f6f8; --accent:#2f5fd0; --done:#1f7a3d; --warn:#9a6700; }
+@media (prefers-color-scheme: dark) { :root { --bg:#141416; --fg:#ececf0; --muted:#9a9aa3; --line:#2c2c31; --card:#1d1d21; --accent:#7ea2ff; --done:#6fcf8e; --warn:#e3b341; } }
+* { box-sizing:border-box; }
+body { background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; margin:0; padding:16px; }
+h1 { font-size:18px; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 12px; }
+.layout { display:grid; grid-template-columns:minmax(0, 1fr) 340px; gap:16px; align-items:start; }
+@media (max-width: 900px) { .layout { grid-template-columns:1fr; } }
+.stage { position:relative; width:100%; background:#000; border-radius:6px; overflow:hidden; }
+.stage video { display:block; width:100%; height:auto; }
+.stage canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
+button { font:inherit; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; }
+button:hover { border-color:var(--accent); } button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+button.chosen { outline:2px solid var(--done); }
+.unit { background:var(--card); border-radius:6px; padding:12px; }
+.unit .text { font-size:17px; margin:4px 0 10px; }
+.choices { display:flex; flex-wrap:wrap; gap:8px; }
+.choices button { display:flex; align-items:center; gap:8px; }
+.choices img { width:36px; height:36px; object-fit:cover; border-radius:4px; }
+kbd { font:12px ui-monospace, monospace; border:1px solid var(--line); border-radius:4px; padding:0 4px; color:var(--muted); }
+input[type=text] { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; width:100%; }
+.row { display:flex; gap:8px; margin-top:10px; } .row > * { flex:1; }
+.list { max-height:80vh; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+.item { display:grid; grid-template-columns:52px 1fr auto; gap:6px; padding:6px 8px; border-top:1px solid var(--line); cursor:pointer; }
+.item:first-child { border-top:0; } .item.current { background:var(--card); }
+.item .t { color:var(--muted); font-variant-numeric:tabular-nums; } .item .s { font-size:12px; color:var(--muted); }
+.item .s.done { color:var(--done); } .item .s.flag { color:var(--warn); }
+.help { color:var(--muted); font-size:12px; margin-top:8px; }
+</style>
+</head>
+<body>
+<h1>Who is speaking?</h1>
+<p class="sub" id="sub"></p>
+<div class="layout">
+  <div>
+    <div class="stage" id="stage">
+      <video id="video" src="__VIDEO_SRC__" preload="auto" playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="bar">
+      <button class="primary" id="play">Play utterance <kbd>space</kbd></button>
+      <button id="prev">Previous <kbd>←</kbd></button>
+      <button id="next">Next <kbd>→</kbd></button>
+      <label><input type="checkbox" id="autoplay" checked> autoplay next</label>
+      <label>speed <select id="speed"><option>1</option><option selected>0.75</option><option>0.5</option></select></label>
+      <span id="progress" class="sub" style="margin:0"></span>
+    </div>
+    <div class="unit">
+      <div class="sub" id="unit-time" style="margin:0"></div>
+      <div class="text" id="unit-text"></div>
+      <div class="choices" id="choices"></div>
+      <div class="row">
+        <input type="text" id="voice" list="voices" placeholder="Voice name for off-screen / not boxed (optional, e.g. moderator)">
+        <input type="text" id="note" placeholder="Note (optional, e.g. first word is someone else)">
+      </div>
+      <datalist id="voices"></datalist>
+      <p class="help">Numbers match the boxes drawn on the video during this utterance. If two people speak, choose <b>Several speakers</b> and say who in the note. Labels save in this browser; use <b>Export</b> to write speaker_labels.json next to this page.</p>
+    </div>
+    <div class="bar">
+      <button id="export">Export labels</button>
+      <label><button id="import-btn">Import labels</button><input type="file" id="import" accept="application/json" hidden></label>
+    </div>
+  </div>
+  <div class="list" id="list"></div>
+</div>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const KEY = 'speaker-labels:' + DATA.sha256;
+const EDGE = 0.125;  // a 4 fps track is shown half a sample gap before its first and after its last detection
+const OTHER = [
+  { kind: 'unboxed', key: 'v', text: 'Visible, not boxed' },
+  { kind: 'offscreen', key: 'o', text: 'Off-screen' },
+  { kind: 'multiple', key: 'm', text: 'Several speakers' },
+  { kind: 'not_speech', key: 'x', text: 'Not speech / wrong words' },
+  { kind: 'unsure', key: 'u', text: 'Unsure' },
+];
+const $ = id => document.getElementById(id);
+const video = $('video'), canvas = $('overlay');
+let labels = {};
+try { labels = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch { labels = {}; }
+let current = DATA.units.findIndex(u => !labels[u.id]);
+if (current < 0) current = 0;
+let stopAt = null;
+
+$('sub').textContent = `${DATA.clip} · ${DATA.units.length} utterances (${DATA.transcriber}) · face boxes from py-feat`;
+
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(labels)); } catch { /* private window: export still works */ }
+}
+
+function boxAt(track, t) {
+  if (t < track.start - EDGE || t > track.end + EDGE) return null;
+  const ts = track.t;
+  if (t <= ts[0]) return track.box[0];
+  if (t >= ts[ts.length - 1]) return track.box[ts.length - 1];
+  let i = 1;
+  while (ts[i] < t) i++;
+  const f = (t - ts[i - 1]) / (ts[i] - ts[i - 1]);
+  return track.box[i - 1].map((v, k) => v + f * (track.box[i][k] - v));
+}
+
+function unitTracks(unit) {
+  // tracks of the utterance's shot on screen at any point of it, numbered left to right
+  const on = DATA.tracks.filter(t => t.shot === unit.shot && t.start - EDGE <= unit.end && t.end + EDGE >= unit.start);
+  const meanX = t => t.box.reduce((s, b) => s + b[0] + b[2] / 2, 0) / t.box.length;
+  return on.sort((a, b) => meanX(a) - meanX(b)).slice(0, 9);
+}
+
+function trackName(track) {
+  return track.person === 'Unknown' ? `Unidentified face #${track.id}` : track.person;
+}
+
+function draw() {
+  const w = canvas.clientWidth, h = canvas.clientHeight, dpr = window.devicePixelRatio || 1;
+  // both dimensions: the first draw can run before the video has its height
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const scale = w / DATA.width, t = video.currentTime;
+  const numbered = unitTracks(DATA.units[current]);
+  for (const track of DATA.tracks) {
+    const box = boxAt(track, t);
+    if (!box) continue;
+    const n = numbered.indexOf(track) + 1;
+    const [x, y, bw, bh] = box.map(v => v * scale);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = n ? '#ffd23f' : 'rgba(255,255,255,0.45)';
+    ctx.strokeRect(x, y, bw, bh);
+    if (n) {
+      const label = `${n} ${trackName(track)}`;
+      ctx.font = '600 13px system-ui, sans-serif';
+      const tw = ctx.measureText(label).width + 8, top = Math.max(0, y - 18);
+      ctx.fillStyle = '#ffd23f'; ctx.fillRect(x, top, tw, 18);
+      ctx.fillStyle = '#000'; ctx.fillText(label, x + 4, top + 13);
+    }
+  }
+}
+
+function tick() {
+  if (stopAt !== null && video.currentTime >= stopAt) { video.pause(); stopAt = null; }
+  draw();
+  if (!video.paused) requestAnimationFrame(tick);
+}
+
+function playUnit() {
+  const unit = DATA.units[current];
+  video.playbackRate = Number($('speed').value);
+  video.currentTime = Math.max(0, unit.start - 0.15);
+  stopAt = unit.end + 0.15;
+  video.play();
+}
+
+function choose(label) {
+  const unit = DATA.units[current];
+  labels[unit.id] = { ...label, voice: $('voice').value.trim() || null, note: $('note').value.trim() || null };
+  save();
+  renderList();
+  if (current < DATA.units.length - 1) select(current + 1, $('autoplay').checked);
+  else renderUnit();
+}
+
+function renderUnit() {
+  const unit = DATA.units[current], label = labels[unit.id];
+  $('unit-time').textContent = `Utterance ${unit.id + 1} of ${DATA.units.length} · ${unit.start.toFixed(2)}–${unit.end.toFixed(2)} s`;
+  $('unit-text').textContent = unit.text;
+  $('voice').value = label?.voice || '';
+  $('note').value = label?.note || '';
+  const box = $('choices');
+  box.replaceChildren();
+  unitTracks(unit).forEach((track, i) => {
+    const b = document.createElement('button');
+    if (DATA.crops[track.person]) {
+      const img = document.createElement('img');
+      img.src = DATA.crops[track.person]; img.alt = '';
+      b.append(img);
+    }
+    b.append(`${i + 1} · ${trackName(track)}`);
+    if (label?.kind === 'face' && label.track === track.id) b.classList.add('chosen');
+    b.onclick = () => choose({ kind: 'face', track: track.id, person: track.person });
+    box.append(b);
+  });
+  for (const o of OTHER) {
+    const b = document.createElement('button');
+    b.innerHTML = `${o.text} <kbd>${o.key}</kbd>`;
+    if (label?.kind === o.kind) b.classList.add('chosen');
+    b.onclick = () => choose({ kind: o.kind });
+    box.append(b);
+  }
+  const names = new Set(Object.values(labels).map(l => l.voice).filter(Boolean));
+  $('voices').replaceChildren(...[...names].map(n => Object.assign(document.createElement('option'), { value: n })));
+  const done = DATA.units.filter(u => labels[u.id]).length;
+  $('progress').textContent = `${done} / ${DATA.units.length} labelled`;
+  document.querySelectorAll('.item').forEach((el, i) => el.classList.toggle('current', i === current));
+  draw();
+}
+
+function select(i, autoplay) {
+  current = Math.max(0, Math.min(DATA.units.length - 1, i));
+  renderUnit();
+  document.querySelectorAll('.item')[current]?.scrollIntoView({ block: 'nearest' });
+  if (autoplay) playUnit();
+  else { video.pause(); video.currentTime = DATA.units[current].start; }
+}
+
+function statusText(label) {
+  if (!label) return ['', ''];
+  if (label.kind === 'face') return [label.person === 'Unknown' ? `face #${label.track}` : label.person, 'done'];
+  const o = OTHER.find(x => x.kind === label.kind);
+  return [label.voice ? `${o.text}: ${label.voice}` : o.text, label.kind === 'unsure' ? 'flag' : 'done'];
+}
+
+function renderList() {
+  const list = $('list');
+  list.replaceChildren(...DATA.units.map((u, i) => {
+    const el = document.createElement('div');
+    el.className = 'item' + (i === current ? ' current' : '');
+    const [text, cls] = statusText(labels[u.id]);
+    el.innerHTML = `<span class="t">${u.start.toFixed(1)}s</span><span></span><span class="s ${cls}"></span>`;
+    el.children[1].textContent = u.text;
+    el.children[2].textContent = text;
+    el.onclick = () => select(i, true);
+    return el;
+  }));
+}
+
+$('play').onclick = playUnit;
+$('prev').onclick = () => select(current - 1, $('autoplay').checked);
+$('next').onclick = () => select(current + 1, $('autoplay').checked);
+video.addEventListener('play', () => requestAnimationFrame(tick));
+video.addEventListener('seeked', draw);
+video.addEventListener('loadeddata', draw);
+window.addEventListener('resize', draw);
+$('note').addEventListener('change', () => { const l = labels[DATA.units[current].id]; if (l) { l.note = $('note').value.trim() || null; save(); } });
+$('voice').addEventListener('change', () => { const l = labels[DATA.units[current].id]; if (l) { l.voice = $('voice').value.trim() || null; save(); renderList(); } });
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.metaKey || e.ctrlKey) return;
+  const unit = DATA.units[current];
+  if (e.key === ' ') { e.preventDefault(); playUnit(); }
+  else if (e.key === 'ArrowRight') select(current + 1, $('autoplay').checked);
+  else if (e.key === 'ArrowLeft') select(current - 1, $('autoplay').checked);
+  else if (/^[1-9]$/.test(e.key)) {
+    const track = unitTracks(unit)[Number(e.key) - 1];
+    if (track) choose({ kind: 'face', track: track.id, person: track.person });
+  } else {
+    const o = OTHER.find(x => x.key === e.key.toLowerCase());
+    if (o) choose({ kind: o.kind });
+  }
+});
+
+$('export').onclick = () => {
+  const out = { clip: DATA.clip, sha256: DATA.sha256, transcriber: DATA.transcriber, exported_at: new Date().toISOString(),
+    units: DATA.units.map(u => ({ ...u, label: labels[u.id] || null })) };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' }));
+  a.download = 'speaker_labels.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+$('import-btn').onclick = () => $('import').click();
+$('import').onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const data = JSON.parse(await file.text());
+  if (data.sha256 !== DATA.sha256) { $('progress').textContent = 'That file is for a different clip; nothing imported.'; return; }
+  labels = Object.fromEntries(data.units.filter(u => u.label).map(u => [u.id, u.label]));
+  save(); renderList(); renderUnit();
+};
+
+renderList();
+renderUnit();
+</script>
+</body>
+</html>

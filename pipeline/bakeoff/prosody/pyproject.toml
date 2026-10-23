@@ -1,0 +1,23 @@
+[project]
+name = "perception-bakeoff-prosody"
+version = "0.1.0"
+description = "Speech prosody, speech emotion and speaking-style captions for the perception bake-off"
+requires-python = ">=3.12,<3.13"
+# Own env: Parselmouth (GPL-3) and FunASR (emotion2vec+) stay out of the other stages' environments,
+# and Qwen3-Omni needs a transformers release with Qwen3OmniMoe.
+dependencies = [
+    "torch==2.14.*",
+    "transformers==5.20.2",
+    "accelerate",
+    "huggingface_hub",
+    "safetensors",
+    "praat-parselmouth==0.4.*",
+    "funasr==1.*",
+    "openai==2.*",
+    "soundfile",
+    "numpy",
+    "scipy",
+    # Qwen3OmniMoeProcessor builds its image and video processors even for audio-only input
+    "pillow",
+    "torchvision==0.29.*",
+]

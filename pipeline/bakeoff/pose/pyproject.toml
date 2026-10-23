@@ -1,0 +1,18 @@
+[project]
+name = "perception-bakeoff-pose"
+version = "0.1.0"
+description = "Body pose (2D whole-body keypoints) for the perception bake-off: RTMW via rtmlib, ViTPose and Sapiens2 via transformers"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "rtmlib>=0.0.16",
+    "onnxruntime>=1.20",
+    "torch>=2.7",
+    "torchvision",
+    "scipy",
+    "transformers>=5.20",
+    "safetensors",
+    "numpy",
+    "opencv-python",
+    "pillow",
+    "mediapipe==1.1.1",
+]

@@ -1,0 +1,17 @@
+[project]
+name = "perception-bakeoff-gaze"
+version = "0.1.0"
+description = "Gaze-target stage for the perception bake-off: Gaze-LLE (frozen DINOv2 + gaze decoder) heatmaps per head, intersected with face and object tracks"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch>=2.7",
+    "torchvision",
+    "timm",
+    "numpy",
+    "opencv-python",
+    "pillow",
+    "matplotlib",
+    "scikit-learn",
+    "transformers==5.6.2",
+    "safetensors>=0.8.0",
+]  # matplotlib and scikit-learn: imported at module level by gazelle/utils.py

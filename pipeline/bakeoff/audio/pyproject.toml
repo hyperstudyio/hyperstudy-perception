@@ -1,0 +1,16 @@
+[project]
+name = "perception-bakeoff-audio"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+# torchaudio is pinned to 2.8: EfficientAT's mel front end uses torchaudio.compliance.kaldi,
+# which later torchaudio releases are removing.
+dependencies = [
+    "torch==2.8.*",
+    "torchaudio==2.8.*",
+    "torchvision==0.23.*",
+    "numpy",
+    "torchlibrosa",
+    "transformers>=5",
+    "safetensors",
+    "huggingface_hub",
+]

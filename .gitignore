@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Model code and weights fetched at run time (never redistributed)
+vendor/
+**/vendor/
+
+# Video, run outputs and caches (stimuli are often copyrighted; outputs are regenerable)
+data/
+runs/
+*.mp4
+*.mov
+*.wav
+*.npz
+*.pkl
+
+# Node / Tauri
+node_modules/
+dist/
+target/
+src-tauri/gen/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets
+*.env
+.env*

@@ -1,0 +1,40 @@
+[project]
+name = "perception-bakeoff-grw"
+version = "0.1.0"
+description = "GRW semantic co-speech gesture classification (Hegde, Prajwal, Zisserman, ECCV 2026) on the bake-off's own person tracks"
+# GRW is tested on Python 3.10 with the pins below (vendor/grw/requirements.txt); its vendored fairseq needs
+# omegaconf < 2.1 and hydra-core 1.0.x, and the authors' MediaPipe Holistic stage needs mediapipe's legacy
+# `solutions` API, so these are kept at the authors' versions. Ultralytics and decord are NOT installed:
+# our pose_rtmw person tracks replace YOLO, and frames are decoded with OpenCV.
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
+    "numpy==1.26.4",
+    "mediapipe==0.10.20",
+    "opencv-python==4.11.0.86",
+    "protobuf==4.25.6",
+    "pillow==10.4.0",
+    "einops==0.8.0",
+    "transformers==4.52.4",
+    "omegaconf==2.0.6",
+    "hydra-core==1.0.7",
+    "antlr4-python3-runtime==4.8",
+    "PyYAML==6.0.3",
+    "bitarray==3.10.1",
+    "sacrebleu==2.6.0",
+    "regex",
+    "cffi",
+    "tqdm",
+]
+
+[tool.uv]
+# mediapipe 0.10.20 pulls jax -> scipy, and every scipy wheel for Python 3.10 (<= 1.15.3) fails to load on this
+# macOS ("section '__DATA/__thread_bss' has a zero-fill section type, but offset field is not zero" in the
+# Fortran-built _propack extension; scipy >= 1.16, which no longer has it, needs Python >= 3.11). transformers
+# then imports scipy as soon as GRW's models module imports it. Python 3.11 is not an option: GRW's vendored
+# fairseq declares `common: CommonConfig = CommonConfig()`, a mutable dataclass default that 3.11 rejects.
+# Nothing here uses jax (mediapipe's Holistic and HandLandmarker do not import it), so jax, jaxlib and scipy
+# are removed with an impossible marker.
+override-dependencies = ["scipy; sys_platform == 'never'", "jax; sys_platform == 'never'", "jaxlib; sys_platform == 'never'"]

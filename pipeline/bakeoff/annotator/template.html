@@ -1,0 +1,1954 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perception track review</title>
+<style>
+/* Colours are HyperStudy's design tokens. */
+:root {
+  --color-primary: #4caf50; --color-primary-hover: #388e3c; --color-primary-light: rgba(76,175,80,.12);
+  --color-danger: #f44336; --color-caution: #fbbf24; --color-caution-light: rgba(251,191,36,.12); --color-info: #2196f3;
+  --color-bg-base: #121212; --color-bg-surface: #1c1c1c; --color-bg-input: #1f1f1f; --color-bg-elevated: #252525;
+  --color-bg-card: #2c2c2c; --color-bg-hover: #333; --color-border-default: #333; --color-border-strong: #444;
+  --color-text-primary: #e0e0e0; --color-text-secondary: #b0b0b0; --color-text-muted: #999;
+  --label-w: 168px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--color-bg-base); color: var(--color-text-primary); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { background: var(--color-bg-card); border: 1px solid var(--color-border-strong); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { background: var(--color-bg-hover); }
+button.primary { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+button.primary:hover { background: var(--color-primary-hover); }
+button.on { border-color: var(--color-primary); background: var(--color-primary-light); }
+button.link { background: none; border: 0; padding: 0; color: var(--color-info); }
+button:disabled { opacity: .45; cursor: default; }
+input[type=text], input[type=number], select, textarea { background: var(--color-bg-input); border: 1px solid var(--color-border-strong); border-radius: 6px; padding: 4px 8px; }
+textarea { width: 100%; resize: vertical; min-height: 54px; }
+kbd { background: var(--color-bg-card); border: 1px solid var(--color-border-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font: 11px ui-monospace, monospace; }
+
+header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--color-bg-surface); border-bottom: 1px solid var(--color-border-default); }
+header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+header .sub { color: var(--color-text-muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+header .count { color: var(--color-text-secondary); }
+
+.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 400px; grid-template-rows: minmax(0, 1fr) auto; }
+.stage { display: flex; flex-direction: column; min-height: 0; padding: 12px 12px 8px 16px; }
+.video-wrap { position: relative; flex: 1; min-height: 200px; background: #000; border-radius: 8px; overflow: hidden; }
+video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#overlay { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; }
+.transport { display: flex; align-items: center; gap: 10px; padding-top: 8px; color: var(--color-text-secondary); flex-wrap: wrap; }
+.transport .time { font-variant-numeric: tabular-nums; min-width: 128px; }
+.transport .spacer { flex: 1; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1px solid var(--color-border-strong); border-radius: 999px; cursor: pointer; user-select: none; font-size: 12px; }
+.chip input { display: none; }
+.chip:has(input:checked) { border-color: var(--color-primary); background: var(--color-primary-light); color: var(--color-text-primary); }
+
+aside { grid-row: 1 / 3; grid-column: 2; border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); display: flex; flex-direction: column; min-height: 0; }
+.tabs { display: flex; border-bottom: 1px solid var(--color-border-default); }
+.tabs button { flex: 1; border: 0; border-radius: 0; background: none; padding: 9px 2px; color: var(--color-text-secondary); border-bottom: 2px solid transparent; }
+.tabs button.active { color: var(--color-text-primary); border-bottom-color: var(--color-primary); }
+.panel { flex: 1; overflow-y: auto; padding: 14px 16px; }
+.panel h2 { font-size: 15px; margin: 0 0 2px; display: flex; align-items: center; gap: 8px; }
+.panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--color-text-muted); margin: 16px 0 6px; font-weight: 600; }
+.meta { color: var(--color-text-muted); }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.crop { width: 96px; height: 96px; border-radius: 8px; object-fit: cover; background: var(--color-bg-card); flex: none; cursor: zoom-in; }
+.crop.sm { width: 36px; height: 36px; border-radius: 6px; }
+.crop.xs { width: 24px; height: 24px; border-radius: 4px; }
+.list { display: flex; flex-direction: column; gap: 4px; }
+.item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; background: var(--color-bg-elevated); border: 1px solid transparent; cursor: pointer; text-align: left; width: 100%; }
+.item:hover { background: var(--color-bg-hover); }
+.item.selected { border-color: var(--color-primary); }
+.item.done { opacity: .5; }
+.item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shot-group { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; color: var(--color-text-secondary); cursor: pointer; }
+.shot-group img { width: 64px; height: 36px; object-fit: cover; border-radius: 4px; }
+.choice { display: flex; gap: 6px; flex-wrap: wrap; }
+.choice button { padding: 4px 8px; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.toggle input { display: none; }
+.toggle .track { width: 30px; height: 17px; border-radius: 9px; background: var(--color-border-strong); position: relative; transition: background .15s; flex: none; }
+.toggle .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: left .15s; }
+.toggle input:checked + .track { background: var(--color-primary); }
+.toggle input:checked + .track::after { left: 15px; }
+.flag { color: var(--color-caution); font-size: 12px; font-weight: 500; }
+.callout { background: var(--color-caution-light); border-radius: 6px; padding: 6px 8px; margin: 8px 0; }
+.callout.info { background: var(--color-primary-light); }
+.help { color: var(--color-text-muted); font-size: 12px; border-top: 1px solid var(--color-border-default); padding: 8px 16px; line-height: 1.8; }
+.empty { color: var(--color-text-muted); }
+.prosody-table { border-collapse: collapse; width: 100%; margin: 4px 0 8px; }
+.prosody-table th { text-align: left; font-weight: 500; color: var(--color-text-muted); padding: 2px 8px 2px 0; white-space: nowrap; vertical-align: top; }
+.prosody-table td { padding: 2px 0; }
+.prosody-words { margin: 2px 0 8px; line-height: 1.7; }
+.prosody-words .prominent { background: var(--color-caution-light); color: var(--color-caution); border-radius: 3px; padding: 0 2px; }
+.prosody-caption { border: 1px solid var(--color-border-default); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.prosody-caption .tags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.prosody-caption .tag { background: var(--color-bg-card); border-radius: 4px; padding: 0 6px; font-size: 12px; color: var(--color-text-secondary); }
+.editable { cursor: text; border-bottom: 1px dashed transparent; }
+.editable:hover { border-bottom-color: var(--color-text-muted); }
+input.inline-name { padding: 1px 6px; width: 100%; min-width: 0; font-weight: 600; }
+.bars { display: grid; grid-template-columns: 58px 1fr 36px; gap: 2px 8px; align-items: center; font-size: 12px; }
+.bars .fill { height: 8px; border-radius: 4px; background: var(--color-info); min-width: 1px; }
+.bars .val { color: var(--color-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.stage-card { border: 1px solid var(--color-border-default); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.stage-card table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.stage-card td { padding: 2px 0; vertical-align: top; }
+.stage-card td:last-child { text-align: right; color: var(--color-text-muted); white-space: nowrap; padding-left: 8px; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--color-border-strong); color: var(--color-text-secondary); }
+.badge.academic { border-color: var(--color-caution); color: var(--color-caution); }
+.badge.commercial { border-color: var(--color-primary); color: var(--color-primary); }
+
+.timeline { grid-column: 1; border-top: 1px solid var(--color-border-default); background: var(--color-bg-surface); }
+.tl-tools { display: flex; align-items: center; gap: 10px; padding: 6px 16px; color: var(--color-text-secondary); }
+#tl-scroll { position: relative; overflow: auto; max-height: 42vh; }
+#tl-content { position: relative; width: max-content; min-width: 100%; }
+.lane { display: flex; border-bottom: 1px solid var(--color-border-default); }
+.lane.drop-target { background: var(--color-primary-light); }
+.lane-label { position: sticky; left: 0; z-index: 3; width: var(--label-w); flex: none; padding: 3px 6px 3px 16px; background: var(--color-bg-surface); color: var(--color-text-secondary); display: flex; align-items: center; gap: 6px; border-right: 1px solid var(--color-border-default); overflow: hidden; white-space: nowrap; }
+.lane-label .name { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.lane-label.clickable { cursor: pointer; }
+.lane-label.clickable:hover .name { color: var(--color-text-primary); }
+.lane-label .crop { width: 20px; height: 20px; border-radius: 4px; cursor: pointer; }
+.lane-label .hide { visibility: hidden; background: none; border: 0; padding: 0 2px; color: var(--color-text-muted); line-height: 1; }
+.lane-label:hover .hide { visibility: visible; }
+.lane-label .hide:hover { color: var(--color-text-primary); }
+.lane.group .lane-label { color: var(--color-text-primary); font-weight: 600; padding-left: 6px; cursor: pointer; background: var(--color-bg-elevated); }
+.lane.group { background: var(--color-bg-elevated); }
+.lane.group .chev { width: 10px; color: var(--color-text-muted); }
+.lane.group .lane-label .restore { font-weight: 400; }
+.lane-body { position: relative; flex: none; cursor: crosshair; }
+.lane-body .hint { position: absolute; left: 8px; top: 4px; color: var(--color-text-muted); font-size: 11px; pointer-events: none; }
+.bar { position: absolute; height: 16px; border-radius: 4px; font-size: 11px; line-height: 16px; padding: 0 4px; overflow: hidden; white-space: nowrap; text-overflow: clip; cursor: pointer; color: #111; }
+.bar.vis { height: 6px; opacity: .55; border-radius: 3px; }
+.bar.speech { cursor: grab; }
+.bar.excluded { background: transparent !important; border: 1px dashed var(--color-text-muted); color: var(--color-text-muted); }
+.bar.unconfirmed { outline: 1px dashed var(--color-text-muted); outline-offset: -1px; }
+.bar.flagged { box-shadow: inset 0 -3px 0 var(--color-caution); }
+.bar.selected { outline: 2px solid #fff; outline-offset: 0; z-index: 2; opacity: 1; }
+.bar.shot { background: var(--color-bg-card); color: var(--color-text-muted); border-radius: 0; border-right: 2px solid var(--color-bg-base); }
+.bar.shot.odd { background: var(--color-bg-elevated); }
+.bar.neutral { background: #8a8a8a; }
+.bar.summary { opacity: .5; pointer-events: none; }
+.lane.ruler .lane-body { cursor: ew-resize; }
+.tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--color-border-strong); color: var(--color-text-muted); font-size: 10px; padding-left: 3px; }
+.cut { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.12); pointer-events: none; z-index: 1; }
+#playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--color-primary); pointer-events: none; z-index: 4; }
+.marking { position: absolute; top: 0; bottom: 0; background: rgba(33,150,243,.18); pointer-events: none; z-index: 1; }
+.ghost { position: fixed; z-index: 30; pointer-events: none; padding: 2px 8px; border-radius: 4px; color: #111; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.5); }
+
+.lightbox { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.72); display: flex; align-items: center; justify-content: center; padding: 32px; }
+.lightbox .box { background: var(--color-bg-surface); border: 1px solid var(--color-border-strong); border-radius: 10px; max-width: min(1100px, 100%); max-height: 100%; overflow: auto; padding: 16px 20px 20px; }
+.lightbox h2 { margin: 0 0 4px; font-size: 16px; display: flex; gap: 12px; align-items: center; }
+.lightbox .big { max-width: 100%; max-height: 60vh; border-radius: 8px; display: block; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+.grid figure { margin: 0; cursor: pointer; }
+.grid img { width: 100%; aspect-ratio: 4 / 5; object-fit: cover; border-radius: 6px; display: block; border: 2px solid transparent; }
+.grid figure:hover img { border-color: var(--color-primary); }
+.grid figcaption { font-size: 11px; color: var(--color-text-muted); margin-top: 3px; }
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--color-bg-card); border: 1px solid var(--color-border-strong); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 40; }
+.toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Perception track review</h1>
+  <span class="sub" id="sub"></span>
+  <span class="count" id="count"></span>
+  <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+  <button id="import">Import</button>
+  <button id="export" class="primary">Export corrections</button>
+  <input type="file" id="file" accept="application/json" hidden>
+</header>
+
+<div class="workspace">
+  <section class="stage">
+    <div class="video-wrap">
+      <video id="video" src="__VIDEO_SRC__" preload="auto" playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="transport">
+      <button id="play" style="min-width:64px">Play</button>
+      <span class="time" id="time"></span>
+      <span id="shotinfo"></span>
+      <span class="spacer"></span>
+      <span id="layers"></span>
+      <label>Speed <select id="speed"><option>0.5</option><option>0.75</option><option selected>1</option><option>1.5</option><option>2</option></select></label>
+    </div>
+  </section>
+
+  <aside>
+    <nav class="tabs" id="tabs">
+      <button data-tab="inspect" class="active">Inspect</button>
+      <button data-tab="review">Review</button>
+      <button data-tab="people">People</button>
+      <button data-tab="notes">Annotate</button>
+      <button data-tab="data">Data</button>
+    </nav>
+    <div class="panel" id="panel"></div>
+    <div class="help" id="help"></div>
+  </aside>
+
+  <section class="timeline">
+    <div class="tl-tools">
+      <span>Timeline</span>
+      <span id="group-chips" class="row" style="margin:0;gap:6px"></span>
+      <span style="flex:1"></span>
+      <span class="meta">drag speech onto another person to reassign it</span>
+      <span id="hidden-rows"></span>
+      <label>Zoom <input type="range" id="zoom" min="1" max="12" step="0.5" value="1"></label>
+    </div>
+    <div id="tl-scroll"><div id="tl-content"></div></div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const DATA = __DATA__;
+const $ = id => document.getElementById(id);
+const video = $('video'), canvas = $('overlay'), ctx = canvas.getContext('2d');
+const STORE = `perception-corrections:${DATA.sha256}`;
+const VIEW_STORE = `perception-view:${DATA.sha256}`;   // per-viewer layout only (hidden rows, overlays), never corrections
+const EDGE = 0.5 / DATA.face_fps;     // a sampled track is drawn half a sample gap past its ends
+const UNCERTAIN_GAP = 1.0;            // LR-ASD top-two gap below which an utterance is queued (holds 6 of 7 errors on OOO)
+const SIMILAR_DISTANCE = 0.75;        // ArcFace centroid distance below which two people are suggested as one
+const NOT_PERSON = '__not_person';
+const PALETTE = ['#4caf50', '#3b82f6', '#f59e0b', '#ec4899', '#14b8a6', '#a78bfa', '#ef4444', '#84cc16', '#06b6d4', '#f97316', '#e879f9', '#facc15'];
+const AU_NAMES = { AU01: 'inner brow raise', AU02: 'outer brow raise', AU04: 'brow lower', AU05: 'upper lid raise', AU06: 'cheek raise',
+  AU07: 'lid tighten', AU09: 'nose wrinkle', AU10: 'upper lip raise', AU11: 'nasolabial deepen', AU12: 'lip corner pull (smile)',
+  AU14: 'dimple', AU15: 'lip corner depress', AU17: 'chin raise', AU20: 'lip stretch', AU23: 'lip tighten', AU24: 'lip press',
+  AU25: 'lips part', AU26: 'jaw drop', AU28: 'lip suck', AU43: 'eyes closed' };
+const VALUE_KINDS = { binary: 'Yes / no', category: 'Category', number: 'Number', text: 'Text' };
+const tracksById = new Map(DATA.tracks.map(t => [t.id, t]));
+const uttsById = new Map(DATA.utterances.map(u => [u.id, u]));
+const trackCrop = id => `annotator_crops/track_${id}.jpg`;
+
+// ---------- corrections: an op log folded over the machine track ----------
+let ops = [];
+try { ops = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { ops = []; }
+let S;
+function fold() {
+  S = { names: {}, voiceNames: {}, mergedInto: {}, created: [], trackPerson: {}, uttSpeaker: {}, uttText: {}, caption: {},
+        included: {}, category: {}, distinct: new Set(), types: [], notes: new Map(),
+        objNames: {}, objMergedInto: {}, objTrackIdentity: {}, userObjects: [] };
+  for (const op of ops) {
+    switch (op.op) {
+      case 'person.create': S.created.push(op.person); S.names[op.person] = op.name; break;
+      case 'person.rename': S.names[op.person] = op.name; break;
+      case 'person.merge': { const a = root(op.from), b = root(op.into); if (a !== b) S.mergedInto[a] = b; break; }
+      case 'person.not_person': { const a = root(op.person); if (a !== NOT_PERSON) S.mergedInto[a] = NOT_PERSON; break; }
+      case 'person.distinct': S.distinct.add(pairKey(op.a, op.b)); break;
+      case 'voice.rename': S.voiceNames[op.voice] = op.name; break;
+      case 'object.create': S.userObjects.push(op.track); break;
+      case 'object.rename': S.objNames[op.identity] = op.name; break;
+      case 'object.merge': { const a = oroot(op.from), b = oroot(op.into); if (a !== b) S.objMergedInto[a] = b; break; }
+      case 'object.assign': S.objTrackIdentity[op.track] = op.identity; break;
+      case 'track.assign': S.trackPerson[op.track] = op.person; break;
+      case 'utterance.speaker': if (op.speaker) S.uttSpeaker[op.utt] = op.speaker; else delete S.uttSpeaker[op.utt]; break;
+      case 'utterance.text': S.uttText[op.utt] = op.text; break;
+      case 'shot.caption': S.caption[op.shot] = op.caption; break;
+      case 'entity.include': S.included[op.id] = op.included; break;
+      case 'category.include': S.category[`${op.kind}:${op.label}`] = op.included; break;
+      // types made before value kinds existed carried only `options`: categories if any, else free text
+      case 'annotation.type': S.types.push({ kind: op.type.options?.length ? 'category' : 'text', ...op.type }); break;
+      case 'annotation.add': S.notes.set(op.note.id, { ...op.note }); break;
+      case 'annotation.edit': if (S.notes.has(op.id)) Object.assign(S.notes.get(op.id), op.fields); break;
+      case 'annotation.delete': S.notes.delete(op.id); break;
+    }
+  }
+}
+// Every open tab of this page shares one stored log. A tab must build on what is stored, never on the copy it
+// loaded: otherwise a tab opened earlier overwrites everything another tab saved since.
+function readStoredOps() { try { return JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { return null; } }
+function commit(...newOps) {
+  const stored = readStoredOps();
+  if (stored) ops = stored;
+  const at = new Date().toISOString();
+  for (const op of newOps) ops.push({ ...op, at });
+  persist(); fold(); render();
+}
+window.addEventListener('storage', e => {   // another tab saved: show its log here too
+  if (e.key !== STORE) return;
+  ops = e.newValue ? JSON.parse(e.newValue) : [];
+  fold(); render();
+});
+function undo() {   // ops committed together share a timestamp and undo together
+  const stored = readStoredOps();
+  if (stored) ops = stored;
+  if (!ops.length) return;
+  const at = ops[ops.length - 1].at;
+  while (ops.length && ops[ops.length - 1].at === at) ops.pop();
+  persist(); fold(); render(); toast('Undone');
+}
+function persist() { try { localStorage.setItem(STORE, JSON.stringify(ops)); } catch { toast('Could not save in this browser; export to keep your work'); } }
+const pairKey = (a, b) => [a, b].sort().join('|');
+function root(p) { let seen = 0; while (S.mergedInto[p] && seen++ < 1000) p = S.mergedInto[p]; return p; }
+const personOf = track => root(S.trackPerson[track.id] ?? track.person);
+const special = p => p === 'Unknown' || p === NOT_PERSON;
+const nameOf = p => p === NOT_PERSON ? 'Not a person' : p === 'Unknown' ? 'Unknown' : (S.names[p] || p);
+const voiceName = v => v ? (S.voiceNames[v] || v) : 'Unnamed voice';
+const machineLabel = p => S.names[p] ? `${S.names[p]} (${p})` : p;   // tells apart two people given the same name
+
+// Objects (objects.json, plus ones segmented by clicking) work like people: tracks within a shot, identities across shots.
+const OBJ = DATA.objects || { tracks: [], identities: [], fps: 6 };
+const objectTracks = () => [...OBJ.tracks, ...S.userObjects];
+const objTrack = id => objectTracks().find(o => o.id === id);
+function oroot(i) { let seen = 0; while (S.objMergedInto[i] && seen++ < 1000) i = S.objMergedInto[i]; return i; }
+const identityOf = o => oroot(S.objTrackIdentity[o.id] ?? o.identity);
+const objName = i => S.objNames[i] || (i.startsWith('user:') ? 'New object' : i);
+function objectIdentities() {
+  const secs = {};
+  for (const o of objectTracks()) { const i = identityOf(o); secs[i] = (secs[i] || 0) + o.end - o.start; }
+  return Object.keys(secs).sort((a, b) => secs[b] - secs[a]);
+}
+function objCrop(i) {
+  const own = OBJ.identities.find(x => x.id === i)?.crop;
+  if (own) return own;
+  return OBJ.identities.find(x => oroot(x.id) === i && x.crop)?.crop || null;
+}
+const OBJ_PALETTE = ['#90caf9', '#ffcc80', '#a5d6a7', '#f48fb1', '#80deea', '#ce93d8', '#fff59d', '#bcaaa4'];
+const objColour = i => { let h = 0; for (const c of i) h = (h * 31 + c.charCodeAt(0)) >>> 0; return OBJ_PALETTE[h % OBJ_PALETTE.length]; };
+function objSampleAt(o, t) {   // nearest sample within one sample gap
+  let best = null, bd = Infinity;
+  for (const x of o.samples) { const d = Math.abs(x.t - t); if (d < bd) { bd = d; best = x; } }
+  return bd <= 1 / (OBJ.fps || 6) ? best : null;
+}
+function lookName(look) {
+  if (look === 'camera') return 'the camera';
+  if (typeof look === 'number') return nameOf(personOf(tracksById.get(look)));
+  if (typeof look === 'string' && look.length) { const o = objTrack(look); return o ? objName(identityOf(o)) : 'an object'; }
+  return 'nobody on screen';
+}
+const machinePeople = DATA.people.map(p => p.id);
+function screenSeconds() { const s = {}; for (const t of DATA.tracks) { const p = personOf(t); s[p] = (s[p] || 0) + t.end - t.start; } return s; }
+function people() {   // current identities, most screen time first; Unknown and Not a person last
+  const secs = screenSeconds();
+  const ids = [...machinePeople.filter(p => p !== 'Unknown'), ...S.created].filter(p => root(p) === p && !special(p));
+  return [...ids.sort((a, b) => (secs[b] || 0) - (secs[a] || 0)), 'Unknown', NOT_PERSON];
+}
+const colour = {};
+machinePeople.forEach((p, i) => colour[p] = PALETTE[i % PALETTE.length]);
+const colourOf = p => p === 'Unknown' ? '#8a8a8a' : p === NOT_PERSON ? '#5a5a5a' : (colour[p] ||= PALETTE[Object.keys(colour).length % PALETTE.length]);
+function cropOf(p) {
+  if (special(p)) return null;
+  const own = DATA.people.find(x => x.id === p)?.crop;
+  if (own) return own;
+  const t = DATA.tracks.find(t => personOf(t) === p);   // a created person shows one of its tracks
+  return t ? trackCrop(t.id) : null;
+}
+function included(kind, item) {
+  if (kind === 'track') return S.included[`track:${item.id}`] ?? included('person', personOf(item));
+  if (kind === 'person') return S.included[`person:${item}`] ?? (item !== NOT_PERSON);
+  if (kind === 'utt') return S.included[`utt:${item.id}`] ?? true;
+  if (kind === 'sound') return S.included[item.id] ?? S.category[`sound:${item.label}`] ?? true;
+  if (kind === 'text') return S.included[item.id] ?? true;
+  if (kind === 'shot') return S.included[`shot:${item.index}`] ?? true;
+  if (kind === 'object') return S.included[`objtrack:${item.id}`] ?? included('objid', identityOf(item));
+  if (kind === 'objid') return S.included[`object:${item}`] ?? true;
+  return true;
+}
+const speakerOf = u => S.uttSpeaker[u.id] ?? u.predicted;
+const reviewed = u => u.id in S.uttSpeaker;
+function speakerPerson(sp) {
+  if (sp.kind === 'face') return personOf(tracksById.get(sp.track));
+  if (sp.kind === 'person') return root(sp.person);
+  return null;
+}
+function speakerName(sp) {
+  const p = speakerPerson(sp);
+  if (p) return nameOf(p) + (sp.kind === 'person' ? ' (not on screen)' : '');
+  if (sp.kind === 'offscreen') return voiceName(sp.voice);
+  return { multiple: 'Several speakers', unsure: 'Unsure', not_speech: 'Not speech' }[sp.kind];
+}
+const speakerColour = sp => { const p = speakerPerson(sp); return p ? colourOf(p) : null; };
+// Queue an utterance when faces are on screen and LR-ASD is unsure: a small gap between its top two faces, or no face
+// scored as speaking. On the hand-labelled OOO clip, TalkNet disagreeing above that gap caught no extra errors, and with
+// no face on screen the speaker is off-screen by definition, so neither queues.
+const uncertain = u => u.candidates.length > 0 && (u.predicted.kind !== 'face' || u.margin < UNCERTAIN_GAP);
+const typeOf = id => S.types.find(t => t.id === id);
+const hasValue = n => n.value !== null && n.value !== undefined && n.value !== '';
+function noteValue(n) {
+  if (!hasValue(n)) return '(no value)';
+  return typeOf(n.type)?.kind === 'binary' ? (n.value ? 'yes' : 'no') : String(n.value);
+}
+
+// ---------- view state (per viewer) ----------
+let view = { collapsed: [], hidden: [], hiddenGroups: [], layers: { boxes: true, objects: true, skeleton: false, hands: false, landmarks: false, mesh: false, gaze: false, smooth: true }, poseModel: null, handModel: null };
+try { const v = JSON.parse(localStorage.getItem(VIEW_STORE) || 'null'); if (v) view = { ...view, ...v, layers: { ...view.layers, ...v.layers } }; } catch { /* first visit or storage blocked */ }
+if (view.gazeSource === 'lle') view.gazeSource = 'gaze_lle';   // name used before PaGE was added
+function saveView() { try { localStorage.setItem(VIEW_STORE, JSON.stringify(view)); } catch { /* layout is a convenience; nothing to lose */ } }
+
+// ---------- selection, tabs, helpers ----------
+let selection = null;   // {kind: 'track'|'person'|'utt'|'sound'|'text'|'shot'|'note', id}
+let tab = 'inspect';
+let playUntil = null;
+let marking = { start: null, end: null };
+let activeType = null;
+let autoAdvance = true;
+const fmt = t => { const m = Math.floor(t / 60), s = t - m * 60; return `${m}:${s.toFixed(1).padStart(4, '0')}`; };
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (k === 'style') el.style.cssText = v;
+    else if (k === 'dataset') Object.assign(el.dataset, v);
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat(Infinity)) if (c !== null && c !== undefined && c !== false) el.append(c.nodeType ? c : String(c));
+  return el;
+}
+function toggle(label, checked, onchange) {
+  return h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked, onchange: e => onchange(e.target.checked) }), h('span', { class: 'track' }), label);
+}
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+function select(kind, id, { seek = true } = {}) {
+  selection = { kind, id };
+  if (!(tab === 'review' && (kind === 'utt' || kind === 'sound'))) tab = 'inspect';   // a new annotation opens its value editor
+  if (seek) { const span = spanOf(selection); if (span) video.currentTime = span.start; }
+  render();
+  revealInTimeline();
+}
+function spanOf(sel) {
+  if (!sel) return null;
+  if (sel.kind === 'track') return tracksById.get(sel.id);
+  if (sel.kind === 'utt') return uttsById.get(sel.id);
+  if (sel.kind === 'sound') return DATA.sounds.find(s => s.id === sel.id);
+  if (sel.kind === 'text') return DATA.texts.find(s => s.id === sel.id);
+  if (sel.kind === 'shot') return DATA.shots[sel.id];
+  if (sel.kind === 'note') return S.notes.get(sel.id);
+  if (sel.kind === 'object') return objTrack(sel.id);
+  if (sel.kind === 'gesture') return DATA.hand_events.events[sel.id];
+  if (sel.kind === 'facing') return DATA.facing[facingFile()].events[sel.id];
+  if (sel.kind === 'event') return eventOf(sel.id).e;
+  if (sel.kind === 'objid') { const os = objectTracks().filter(o => identityOf(o) === sel.id); return os.length ? { start: Math.min(...os.map(o => o.start)), end: Math.max(...os.map(o => o.end)) } : null; }
+  if (sel.kind === 'person') { const ts = DATA.tracks.filter(t => personOf(t) === sel.id); return ts.length ? { start: Math.min(...ts.map(t => t.start)), end: Math.max(...ts.map(t => t.end)) } : null; }
+  return null;
+}
+function playSpan(span) { if (!span) return; video.currentTime = span.start; playUntil = span.end; video.play(); }
+function toast(msg) { const el = $('toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 2400); }
+const shotAt = t => { let lo = 0, hi = DATA.shots.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (DATA.shots[mid].start <= t) lo = mid; else hi = mid - 1; } return DATA.shots[lo]; };
+
+// ---------- renaming: double-click a name anywhere ----------
+// Single clicks on names re-render (they select), which would destroy the element before a native dblclick
+// fires, so a second click on the same name within 400 ms opens the editor in the freshly rendered element.
+let lastNameClick = { key: null, at: 0 };
+function nameClick(e, key, area, onSingle) {
+  e.stopPropagation();
+  const now = performance.now();
+  if (lastNameClick.key === key && now - lastNameClick.at < 400) { lastNameClick = { key: null, at: 0 }; startRename(key, area); return; }
+  lastNameClick = { key, at: now };
+  onSingle();
+}
+function nameSpan(key, area, text, cls = 'name') {
+  return h('span', { class: `${cls} editable`, title: 'Double-click to rename', dataset: { rename: key, area } }, text);
+}
+function startRename(key, area) {
+  const el = document.querySelector(`[data-rename="${CSS.escape(key)}"][data-area="${area}"]`);
+  if (!el) return;
+  const [kind, id] = key.split(/:(.*)/s);
+  const current = kind === 'voice' ? voiceName(id) : kind === 'object' ? objName(id) : nameOf(id);
+  const input = h('input', { type: 'text', class: 'inline-name', value: current });
+  let finished = false;
+  const done = save => {
+    if (finished) return; finished = true;
+    const v = input.value.trim();
+    if (save && v && v !== current) commit(kind === 'voice' ? { op: 'voice.rename', voice: id, name: v }
+      : kind === 'object' ? { op: 'object.rename', identity: id, name: v } : { op: 'person.rename', person: id, name: v });
+    else render();
+  };
+  input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
+  input.addEventListener('blur', () => done(true));
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('pointerdown', e => e.stopPropagation());
+  el.replaceWith(input); input.focus(); input.select();
+}
+const renameable = p => !special(p);
+
+// ---------- lightbox ----------
+function openLightbox(...content) {
+  const close = () => { box.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const box = h('div', { class: 'lightbox', onclick: e => { if (e.target === box) close(); } },
+    h('div', { class: 'box' }, ...content.flat(), h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:14px' }, h('button', { onclick: () => close() }, 'Close'))));
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(box);
+  return close;
+}
+function trackGrid(tracks, ref) {
+  return h('div', { class: 'grid' }, ...tracks.map(t => h('figure', { title: 'Inspect this track', onclick: () => { ref.close?.(); select('track', t.id); } },
+    h('img', { src: trackCrop(t.id), alt: '', loading: 'lazy' }),
+    h('figcaption', {}, `${fmt(t.start)} · shot ${t.shot + 1}${included('track', t) ? '' : ' · excluded'}`))));
+}
+function showPerson(p) {
+  const tracks = DATA.tracks.filter(t => personOf(t) === p), ref = {};
+  ref.close = openLightbox(h('h2', {}, h('span', { class: 'swatch', style: `background:${colourOf(p)}` }), nameOf(p), h('span', { class: 'meta' }, plural(tracks.length, 'track'))),
+    h('div', { class: 'meta' }, 'Every face track assigned to this person. Click one to inspect or reassign it.'), trackGrid(tracks, ref));
+}
+function showTrack(t) {
+  openLightbox(h('h2', {}, `Face track ${t.id}`, h('span', { class: 'meta' }, `${nameOf(personOf(t))} · ${fmt(t.start)}–${fmt(t.end)}`)), h('img', { class: 'big', src: trackCrop(t.id), alt: '' }));
+}
+function showCompare(a, b) {
+  const ref = {};
+  const side = p => h('div', {}, h('h2', {}, h('span', { class: 'swatch', style: `background:${colourOf(p)}` }), nameOf(p)), trackGrid(DATA.tracks.filter(t => personOf(t) === p), ref));
+  ref.close = openLightbox(h('div', { class: 'compare' }, side(a), side(b)),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'primary', onclick: () => { ref.close(); commit({ op: 'person.merge', from: b, into: a }); toast(`Merged ${nameOf(b)} into ${nameOf(a)}`); } }, 'Same person'),
+      h('button', { onclick: () => { ref.close(); commit({ op: 'person.distinct', a, b }); } }, 'Different people')));
+}
+
+// ---------- review queue ----------
+function queue() {
+  const speakers = DATA.utterances.filter(uncertain).sort((a, b) => a.start - b.start);
+  const pairs = DATA.similar.filter(p => p.distance < SIMILAR_DISTANCE)
+    .map(p => ({ ...p, a: root(p.a), b: root(p.b) }))
+    .filter((p, i, all) => p.a !== p.b && !special(p.a) && !special(p.b) && !S.distinct.has(pairKey(p.a, p.b)) && all.findIndex(q => pairKey(q.a, q.b) === pairKey(p.a, p.b)) === i);
+  const sounds = DATA.sounds.filter(s => s.agreement === false);
+  return { speakers, pairs, sounds };
+}
+function nextInQueue(dir = 1) {
+  const q = queue().speakers;
+  if (!q.some(u => !reviewed(u))) { toast('No uncertain utterances left'); return; }
+  let i = selection?.kind === 'utt' ? q.findIndex(u => u.id === selection.id) : -1;
+  if (i < 0 && dir < 0) i = 0;
+  for (let n = 0; n < q.length; n++) { i = (i + dir + q.length) % q.length; if (!reviewed(q[i])) break; }
+  select('utt', q[i].id);
+  playSpan(q[i]);
+}
+function setSpeaker(u, speaker) {
+  commit({ op: 'utterance.speaker', utt: u.id, speaker });
+  if (autoAdvance && uncertain(u)) nextInQueue(1);
+}
+
+// ---------- video overlay ----------
+function videoRect() {
+  const W = canvas.clientWidth, H = canvas.clientHeight, s = Math.min(W / DATA.width, H / DATA.height);
+  return { s, ox: (W - DATA.width * s) / 2, oy: (H - DATA.height * s) / 2 };
+}
+function boxAt(track, t) {
+  if (t < track.start - EDGE || t > track.end + EDGE) return null;
+  const ts = track.t;
+  if (t <= ts[0]) return track.box[0];
+  if (t >= ts[ts.length - 1]) return track.box[ts.length - 1];
+  let i = 1; while (ts[i] < t) i++;
+  const f = (t - ts[i - 1]) / (ts[i] - ts[i - 1]);
+  return track.box[i - 1].map((v, k) => v + f * (track.box[i][k] - v));
+}
+// ---------- drawing at the displayed frame: blend between samples, optional centred smoothing ----------
+// Stages sample at 6-8 fps. Snapping to the nearest sample made points jump every 125 ms and trail the picture by up
+// to half a sample, so drawing blends the two samples around the frame time. Smoothing is centred (each sample
+// averaged 1-2-1 with its neighbours), so unlike a live EMA (pyfeat-live) it removes jitter without adding lag.
+// Both are display-only: stored and exported data stay raw.
+function bracket(samples, t, fps) {   // samples sorted by t -> {a, b, f}, or null when t is outside the samples
+  const gap = 1 / fps;
+  let lo = 0, hi = samples.length - 1;
+  if (!samples.length || t < samples[0].t - gap / 2 || t > samples[hi].t + gap / 2) return null;
+  if (t <= samples[0].t) return { a: samples[0], b: samples[0], f: 0 };
+  if (t >= samples[hi].t) return { a: samples[hi], b: samples[hi], f: 0 };
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (samples[m].t <= t) lo = m; else hi = m; }
+  const a = samples[lo], b = samples[hi];
+  if (b.t - a.t > 1.5 * gap) {   // a missed detection between them: do not draw a face that was not there
+    const n = t - a.t < b.t - t ? a : b;
+    return Math.abs(n.t - t) <= gap / 2 ? { a: n, b: n, f: 0 } : null;
+  }
+  return { a, b, f: (t - a.t) / (b.t - a.t) };
+}
+const lerpNums = (A, B, f) => f === 0 ? A : A.map((v, i) => v + f * (B[i] - v));
+const lerpKpts = (A, B, f) => f === 0 ? A : A.map((k, i) => [k[0] + f * (B[i][0] - k[0]), k[1] + f * (B[i][1] - k[1]), Math.min(k[2], B[i][2])]);
+function smoothNums(samples, key, fps) {   // 1-2-1 over neighbours at most 1.5 sample gaps away
+  const gap = 1.5 / fps;
+  return samples.map((x, i) => {
+    const p = samples[i - 1], n = samples[i + 1], okP = p && x.t - p.t <= gap, okN = n && n.t - x.t <= gap;
+    if (!okP && !okN) return x[key];
+    const w = 2 + (okP ? 1 : 0) + (okN ? 1 : 0);
+    return x[key].map((v, j) => (2 * v + (okP ? p[key][j] : 0) + (okN ? n[key][j] : 0)) / w);
+  });
+}
+function smoothKpts(samples, fps, threshold) {   // the same per joint, using only neighbours where that joint is visible
+  const gap = 1.5 / fps;
+  return samples.map((x, i) => {
+    const p = samples[i - 1], n = samples[i + 1], okP = p && x.t - p.t <= gap, okN = n && n.t - x.t <= gap;
+    return x.kpts.map((k, j) => {
+      let sx = 2 * k[0], sy = 2 * k[1], w = 2;
+      if (okP && p.kpts[j][2] >= threshold) { sx += p.kpts[j][0]; sy += p.kpts[j][1]; w++; }
+      if (okN && n.kpts[j][2] >= threshold) { sx += n.kpts[j][0]; sy += n.kpts[j][1]; w++; }
+      return [sx / w, sy / w, k[2]];
+    });
+  });
+}
+for (const tr of DATA.tracks) {
+  if (!tr.detail) continue;
+  const lmk = smoothNums(tr.detail, 'lmk', DATA.face_fps), gaze = smoothNums(tr.detail, 'gaze', DATA.face_fps);
+  tr.detail.forEach((d, i) => { d.i = i; d.lmkS = lmk[i]; d.gazeS = gaze[i]; });
+}
+function faceAt(tr, t) {   // py-feat geometry at the frame time; categorical fields (gaze target) from the nearer sample
+  if (!tr.detail) return null;
+  const br = bracket(tr.detail, t, DATA.face_fps);
+  if (!br) return null;
+  const sm = view.layers.smooth, near = br.f < 0.5 ? br.a : br.b;
+  return { lmk: lerpNums(sm ? br.a.lmkS : br.a.lmk, sm ? br.b.lmkS : br.b.lmk, br.f),
+           gaze: lerpNums(sm ? br.a.gazeS : br.a.gaze, sm ? br.b.gazeS : br.b.gaze, br.f), look: near.look, ia: br.a.i, ib: br.b.i, f: br.f };
+}
+let frameT = 0;   // media time of the frame on screen (requestVideoFrameCallback while playing, currentTime otherwise)
+function sampleAt(track, t) {   // nearest py-feat sample, if one is within a sample gap
+  if (!track.detail) return null;
+  let best = null, bd = Infinity;
+  for (let i = 0; i < track.detail.length; i++) { const d = Math.abs(track.detail[i].t - t); if (d < bd) { bd = d; best = i; } }
+  return bd <= 1 / DATA.face_fps ? best : null;
+}
+function visibleTracks(t) { const shot = shotAt(t).index; return DATA.tracks.filter(tr => tr.shot === shot && boxAt(tr, t)); }
+function candidateNumbers() {   // when an utterance is selected, its scored faces are numbered 1..9 on the video
+  if (selection?.kind !== 'utt') return new Map();
+  return new Map(uttsById.get(selection.id).candidates.slice(0, 9).map((c, i) => [c.track, i + 1]));
+}
+let mesh = null, meshS = null, meshLoading = false;
+async function loadMesh() {
+  if (mesh || meshLoading) return;
+  meshLoading = true; toast('Loading face mesh…');
+  try {
+    mesh = (await (await fetch('face_mesh.json')).json()).tracks;
+    meshS = mesh.map((arrs, id) => smoothNums(arrs.map((m, i) => ({ t: tracksById.get(id).detail[i].t, m })), 'm', DATA.face_fps));
+    drawOverlay();
+  }
+  catch { toast('face_mesh.json not found; run faces/face_detail.py'); view.layers.mesh = false; renderLayers(); }
+  meshLoading = false;
+}
+const LMK_PATHS = [[0, 16], [17, 21], [22, 26], [27, 30], [31, 35], [36, 41, true], [42, 47, true], [48, 59, true], [60, 67, true]];
+function drawOverlay() {
+  const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const { s, ox, oy } = videoRect(), t = frameT, numbers = candidateNumbers(), L = view.layers;
+  const X = x => ox + x * s, Y = y => oy + y * s;
+  const visible = visibleTracks(t);
+  if (L.objects) drawObjects(t, X, Y);
+  if (L.skeleton) drawSkeletons(t, X, Y);
+  if (L.hands) drawHands(t, X, Y);
+  for (const tr of visible) {
+    const [x, y, w, bh] = boxAt(tr, t), p = personOf(tr), inc = included('track', tr), col = inc ? colourOf(p) : 'rgba(200,200,200,.6)';
+    const sel = (selection?.kind === 'track' && selection.id === tr.id) || (selection?.kind === 'person' && selection.id === p);
+    const d = faceAt(tr, t);
+    if (L.mesh && mesh && d) {
+      const arrs = L.smooth ? meshS[tr.id] : mesh[tr.id], m = lerpNums(arrs[d.ia], arrs[d.ib], d.f), n = m.length / 2;
+      ctx.fillStyle = 'rgba(255,255,255,.55)';
+      for (let i = 0; i < n; i++) ctx.fillRect(X(m[i]) - .6, Y(m[n + i]) - .6, 1.2, 1.2);
+    }
+    if (L.landmarks && d) {
+      ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([]);
+      for (const [a, b, closed] of LMK_PATHS) {
+        ctx.beginPath();
+        for (let i = a; i <= b; i++) { const px = X(d.lmk[i]), py = Y(d.lmk[68 + i]); i === a ? ctx.moveTo(px, py) : ctx.lineTo(px, py); }
+        if (closed) ctx.closePath();
+        ctx.stroke();
+      }
+    }
+    if (L.gaze && DATA.gaze_models?.[gazeChoice()]) drawGazeLLE(tr, d, visible, t, X, Y, col);
+    else if (L.gaze && d) drawGaze(tr, d, visible, t, X, Y, col);
+    if (!L.boxes && !sel) continue;
+    ctx.lineWidth = sel ? 3 : 2;
+    ctx.setLineDash(inc ? [] : [5, 4]);
+    ctx.strokeStyle = col;
+    ctx.strokeRect(X(x), Y(y), w * s, bh * s);
+    ctx.setLineDash([]);
+    const n = numbers.get(tr.id), label = `${n ? n + ' · ' : ''}${nameOf(p)}`;
+    ctx.font = '600 12px system-ui, sans-serif';
+    const tw = ctx.measureText(label).width + 10, lx = X(x), ly = Math.max(0, Y(y) - 19);
+    ctx.fillStyle = inc ? colourOf(p) : 'rgba(80,80,80,.85)';
+    ctx.fillRect(lx, ly, tw, 18);
+    ctx.fillStyle = inc ? '#111' : '#ddd';
+    ctx.fillText(label, lx + 5, ly + 13);
+  }
+}
+function visibleObjects(t) {
+  const shot = shotAt(t).index;
+  return objectTracks().filter(o => o.shot === shot).map(o => ({ o, x: objSampleAt(o, t) })).filter(v => v.x);
+}
+function drawObjects(t, X, Y) {
+  for (const { o, x } of visibleObjects(t)) {
+    const i = identityOf(o), inc = included('object', o), col = objColour(i);
+    const sel = (selection?.kind === 'object' && selection.id === o.id) || (selection?.kind === 'objid' && selection.id === i);
+    ctx.beginPath();
+    x.poly.forEach(([px, py], k) => k ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py)));
+    ctx.closePath();
+    ctx.setLineDash(inc ? [] : [5, 4]);
+    ctx.fillStyle = inc ? `${col}${sel ? '55' : '26'}` : 'rgba(150,150,150,.08)';
+    ctx.fill();
+    ctx.lineWidth = sel ? 2.5 : 1.5; ctx.strokeStyle = inc ? col : 'rgba(200,200,200,.5)'; ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '600 11px system-ui, sans-serif';
+    const label = objName(i), tw = ctx.measureText(label).width + 8, lx = X(x.box[0]), ly = Math.max(0, Y(x.box[1]) - 16);
+    ctx.fillStyle = inc ? col : 'rgba(80,80,80,.85)'; ctx.fillRect(lx, ly, tw, 15);
+    ctx.fillStyle = '#111'; ctx.fillText(label, lx + 4, ly + 11);
+  }
+}
+let poseData = null, poseLoading = null;
+async function loadPose(file) {
+  if (poseData?.file === file || poseLoading === file) return;
+  poseLoading = file; toast('Loading skeletons…');
+  try {
+    const pose = await (await fetch(file)).json();
+    pose.file = file;
+    pose.byShot = new Map();
+    for (const tr of pose.tracks) { if (!pose.byShot.has(tr.shot)) pose.byShot.set(tr.shot, []); pose.byShot.get(tr.shot).push(tr); }
+    pose.handIdx = new Set([...(pose.groups.left_hand || []), ...(pose.groups.right_hand || [])]);
+    pose.faceIdx = new Set(pose.groups.face || []);
+    for (const tr of pose.tracks) { const sm = smoothKpts(tr.samples, pose.fps, pose.score_threshold); tr.samples.forEach((x, i) => { x.kptsS = sm[i]; }); }
+    poseData = pose; drawOverlay(); renderPanel();
+  } catch (err) { toast(`Could not load ${file}: ${err.message}`); }
+  poseLoading = null;
+}
+// Keypoint scores are each model's own scale (RTMW's raw SimCC peaks run 0-12; ViTPose and Sapiens2 are 0-1), so a
+// joint is drawn only above the threshold its stage wrote into the file. One fixed 0.3 drew every RTMW joint,
+// including legs hidden below the frame that RTMW itself scores ~1-2.
+const poseThreshold = () => poseData.score_threshold;
+// Hand files carry no threshold yet; these are the hand bake-off's (hands/hands.py report, 2026-10-22): RTMW's
+// fingers need >= 5 to agree with MediaPipe as well as RTMPose-hand does at 0.3.
+const HAND_THRESHOLD = { rtmw: 5.0, rtmpose_hand: 0.3, mediapipe: 0.3 };
+const handThreshold = () => handData.score_threshold ?? HAND_THRESHOLD[handData.model];
+function poseSampleAt(tr, t) {   // keypoints at the frame time; facing (3D models) from the nearer sample
+  const br = bracket(tr.samples, t, poseData.fps);
+  if (!br) return null;
+  const key = view.layers.smooth ? 'kptsS' : 'kpts';
+  return { kpts: lerpKpts(br.a[key], br.b[key], br.f), facing: (br.f < 0.5 ? br.a : br.b).facing };
+}
+function drawSkeletons(t, X, Y) {
+  if (!poseData) return;
+  for (const tr of poseData.byShot.get(shotAt(t).index) || []) {
+    const x = poseSampleAt(tr, t); if (!x) continue;
+    const face = tr.face_track !== null && tr.face_track !== undefined ? tracksById.get(tr.face_track) : null;
+    const col = face ? colourOf(personOf(face)) : '#ffffff';
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.setLineDash([]);
+    for (const [a, b] of poseData.skeleton) {
+      const ka = x.kpts[a], kb = x.kpts[b];
+      if (!ka || !kb || ka[2] < poseThreshold() || kb[2] < poseThreshold() || poseData.faceIdx.has(a) || poseData.faceIdx.has(b)) continue;
+      ctx.lineWidth = poseData.handIdx.has(a) || poseData.handIdx.has(b) ? 1 : 2.5;
+      ctx.beginPath(); ctx.moveTo(X(ka[0]), Y(ka[1])); ctx.lineTo(X(kb[0]), Y(kb[1])); ctx.stroke();
+    }
+    x.kpts.forEach((k, i) => { if (k[2] >= poseThreshold() && !poseData.faceIdx.has(i)) ctx.fillRect(X(k[0]) - 1.5, Y(k[1]) - 1.5, 3, 3); });
+    if (x.facing) drawFacing(x, X, Y, col);
+  }
+}
+// Torso facing from 3D pose (yaw + = subject's right = image left, py-feat's convention): an arrow from the
+// mid-shoulder point, its length the sideways component, so a body square to the camera shows a short stub.
+function drawFacing(x, X, Y, col) {
+  const names = poseData.keypoints, ls = x.kpts[names.indexOf('left_shoulder')], rs = x.kpts[names.indexOf('right_shoulder')];
+  if (!ls || !rs || ls[2] < poseThreshold() || rs[2] < poseThreshold()) return;
+  const [yaw] = x.facing, mx = (ls[0] + rs[0]) / 2, my = (ls[1] + rs[1]) / 2, span = Math.hypot(ls[0] - rs[0], ls[1] - rs[1]);
+  const x2 = mx - Math.sin(yaw * Math.PI / 180) * span * 1.2;
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 3; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(X(mx), Y(my)); ctx.lineTo(X(x2), Y(my)); ctx.stroke();
+  const dir = Math.sign(x2 - mx) || 1;
+  ctx.beginPath(); ctx.moveTo(X(x2) + dir * 8, Y(my)); ctx.lineTo(X(x2) - dir * 2, Y(my) - 6); ctx.lineTo(X(x2) - dir * 2, Y(my) + 6); ctx.fill();
+  ctx.font = '600 11px system-ui, sans-serif'; ctx.fillText(`${Math.round(yaw)}°`, X(mx) + 6, Y(my) - 8);
+}
+let handData = null, handLoading = null;
+async function loadHands(file) {
+  if (handData?.file === file || handLoading === file) return;
+  handLoading = file; toast('Loading hands…');
+  try {
+    const hands = await (await fetch(file)).json();
+    hands.file = file;
+    hands.byShot = new Map();
+    for (const hd of hands.hands) { if (!hands.byShot.has(hd.shot)) hands.byShot.set(hd.shot, []); hands.byShot.get(hd.shot).push(hd); }
+    const threshold = hands.score_threshold ?? HAND_THRESHOLD[hands.model];
+    for (const hd of hands.hands) { const sm = smoothKpts(hd.samples, hands.fps, threshold); hd.samples.forEach((x, i) => { x.kptsS = sm[i]; }); }
+    handData = hands; drawOverlay();
+  } catch (err) { toast(`Could not load ${file}: ${err.message}`); }
+  handLoading = null;
+}
+function drawHands(t, X, Y) {
+  if (!handData) return;
+  for (const hd of handData.byShot.get(shotAt(t).index) || []) {
+    // Hands found only by the hand detector, with no body, include faces, logos and bokeh (hand bake-off); hidden unless asked for.
+    if (!hd.person && !view.layers.unlinkedHands) continue;
+    const br = bracket(hd.samples, t, handData.fps);
+    if (!br) continue;
+    const key = view.layers.smooth ? 'kptsS' : 'kpts', kpts = lerpKpts(br.a[key], br.b[key], br.f);
+    const face = hd.person?.face_track !== undefined && hd.person?.face_track !== null ? tracksById.get(hd.person.face_track) : null;
+    const col = face ? colourOf(personOf(face)) : '#ffffff';
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1.5; ctx.setLineDash(hd.box_source === 'detector' ? [3, 3] : []);
+    let drawn = 0;
+    for (const [a, b] of handData.skeleton) {
+      const ka = kpts[a], kb = kpts[b];
+      if (ka[2] < handThreshold() || kb[2] < handThreshold()) continue;
+      ctx.beginPath(); ctx.moveTo(X(ka[0]), Y(ka[1])); ctx.lineTo(X(kb[0]), Y(kb[1])); ctx.stroke(); drawn++;
+    }
+    ctx.setLineDash([]);
+    // label only hands that were drawn: a lone L/R with no fingers marked hands too uncertain to show
+    if (hd.side && drawn) { const box = lerpNums(br.a.box, br.b.box, br.f); ctx.font = '600 10px system-ui, sans-serif'; ctx.fillText(hd.side[0].toUpperCase(), X(box[0]), Y(box[1]) - 2); }
+  }
+}
+function drawGazeLLE(tr, d, visible, t, X, Y, col) {   // eyes (or face-box centre) to the Gaze-LLE heatmap peak
+  const gm = DATA.gaze_models[gazeChoice()], samples = gm.tracks[String(tr.id)];
+  if (!samples) return;
+  const br = bracket(samples, t, gm.fps);
+  if (!br) return;
+  const near = br.f < 0.5 ? br.a : br.b;
+  const box = boxAt(tr, t);
+  const ex = d ? d.lmk.slice(36, 48).reduce((a, b) => a + b, 0) / 12 : box[0] + box[2] / 2;
+  const ey = d ? d.lmk.slice(68 + 36, 68 + 48).reduce((a, b) => a + b, 0) / 12 : box[1] + box[3] * 0.4;
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2; ctx.setLineDash([]);
+  if (near.target === 'out') { ctx.font = '600 11px system-ui, sans-serif'; ctx.fillText('looking out of frame', X(box[0]), Y(box[1] + box[3]) + 14); return; }
+  const [px, py] = lerpNums(br.a.peak, br.b.peak, br.f);
+  ctx.globalAlpha = Math.max(0.35, Math.min(1, near.inout ?? 1));
+  ctx.beginPath(); ctx.moveTo(X(ex), Y(ey)); ctx.lineTo(X(px), Y(py)); ctx.stroke();
+  ctx.beginPath(); ctx.arc(X(px), Y(py), 6, 0, 2 * Math.PI); ctx.stroke();
+  ctx.globalAlpha = 1;
+  if (near.target !== null && near.target !== undefined) {
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.fillText(`→ ${lookName(near.target)}`, X(px) + 8, Y(py) - 6);
+  }
+}
+function drawGaze(tr, d, visible, t, X, Y, col) {
+  const [yaw, pitch] = d.gaze;
+  const ex = d.lmk.slice(36, 48).reduce((a, b) => a + b, 0) / 12, ey = d.lmk.slice(68 + 36, 68 + 48).reduce((a, b) => a + b, 0) / 12;
+  const box = boxAt(tr, t), len = box[2] * 1.6;
+  const dx = -Math.sin(yaw) * Math.cos(pitch), dy = -Math.sin(pitch);
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2; ctx.setLineDash([]);
+  if (d.look === 'camera') { ctx.beginPath(); ctx.arc(X(ex), Y(ey), 7, 0, 2 * Math.PI); ctx.stroke(); return; }
+  const x2 = ex + dx * len, y2 = ey + dy * len;
+  ctx.beginPath(); ctx.moveTo(X(ex), Y(ey)); ctx.lineTo(X(x2), Y(y2)); ctx.stroke();
+  const a = Math.atan2(Y(y2) - Y(ey), X(x2) - X(ex));
+  ctx.beginPath(); ctx.moveTo(X(x2), Y(y2)); ctx.lineTo(X(x2) - 9 * Math.cos(a - .4), Y(y2) - 9 * Math.sin(a - .4)); ctx.lineTo(X(x2) - 9 * Math.cos(a + .4), Y(y2) - 9 * Math.sin(a + .4)); ctx.fill();
+  const target = typeof d.look === 'number' ? visible.find(v => v.id === d.look) : null;
+  const objTarget = typeof d.look === 'string' && d.look !== 'camera' ? objTrack(d.look) : null;
+  const b = target ? boxAt(target, t) : objTarget ? objSampleAt(objTarget, t)?.box : null;
+  if (b) {
+    ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(X(x2), Y(y2)); ctx.lineTo(X(b[0] + b[2] / 2), Y(b[1] + b[3] / 2)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+function insidePoly(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+const RUN = location.pathname.replace(/^\//, '').replace(/\/[^/]*$/, '');   // e.g. runs/nes-biking
+const SEGMENT_URL = 'http://127.0.0.1:8767/segment';
+async function segmentAt(px, py) {
+  const t = video.currentTime;
+  toast('Segmenting…');
+  let res;
+  try {
+    res = await fetch(SEGMENT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run: RUN, t, x: Math.round(px), y: Math.round(py) }) });
+  } catch {
+    toast('The segment server is not running: uv run python objects/segment_server.py'); return;
+  }
+  if (!res.ok) { toast(`Segment server error ${res.status}: ${(await res.text()).slice(0, 120)}`); return; }
+  const out = await res.json();
+  if (!out.samples?.length) { toast('Nothing segmented at that point'); return; }
+  const id = `user:${Date.now()}`;
+  commit({ op: 'object.create', track: { id, label: out.label, identity: id, shot: shotAt(t).index, start: out.start, end: out.end, score: null, samples: out.samples } });
+  select('object', id, { seek: false });
+  startRename(`object:${id}`, 'panel');
+}
+canvas.addEventListener('click', e => {
+  const r = canvas.getBoundingClientRect(), { s, ox, oy } = videoRect(), t = video.currentTime;
+  const px = (e.clientX - r.left - ox) / s, py = (e.clientY - r.top - oy) / s;
+  if (e.altKey) { video.pause(); segmentAt(px, py); return; }
+  const hit = visibleTracks(t).filter(tr => { const [x, y, w, bh] = boxAt(tr, t); return px >= x && px <= x + w && py >= y - 19 / s && py <= y + bh; })
+    .sort((a, b) => boxAt(a, t)[2] - boxAt(b, t)[2])[0];
+  if (hit) { video.pause(); select('track', hit.id, { seek: false }); return; }
+  const obj = view.layers.objects ? visibleObjects(t).filter(v => insidePoly(px, py, v.x.poly)).sort((a, b) => a.x.box[2] * a.x.box[3] - b.x.box[2] * b.x.box[3])[0] : null;
+  if (obj) { video.pause(); select('object', obj.o.id, { seek: false }); }
+  else togglePlay();
+});
+function renderLayers() {
+  const chip = (key, label, disabled) => h('label', { class: 'chip', title: disabled ? 'Run faces/face_detail.py first' : '' },
+    h('input', { type: 'checkbox', checked: view.layers[key] && !disabled, disabled, onchange: e => { view.layers[key] = e.target.checked; saveView(); if (key === 'mesh' && e.target.checked) loadMesh(); drawOverlay(); if (key === 'smooth') renderTimeline(); } }), label);
+  const noDetail = !DATA.face_detail, poses = DATA.pose_models || [];
+  if (!view.poseModel || !poses.some(p => p.file === view.poseModel)) view.poseModel = poses[0]?.file || null;
+  const skeleton = h('label', { class: 'chip', title: poses.length ? 'Body skeletons' : 'Run pose/pose.py first' },
+    h('input', { type: 'checkbox', checked: view.layers.skeleton && !!poses.length, disabled: !poses.length,
+      onchange: e => { view.layers.skeleton = e.target.checked; saveView(); if (e.target.checked) loadPose(view.poseModel); drawOverlay(); } }), 'Skeleton');
+  const picker = poses.length > 1 ? h('select', { title: 'Pose model', onchange: e => { view.poseModel = e.target.value; saveView(); if (view.layers.skeleton) loadPose(view.poseModel); } },
+    ...poses.map(p => h('option', { value: p.file, selected: p.file === view.poseModel }, `${p.model} (${p.keypoints})`))) : null;
+  picker?.addEventListener('change', () => renderTimeline());
+  const handsList = DATA.hand_models || [];
+  // RTMPose-hand on crops was the hand bake-off's recommended default (hands/hands.py report, 2026-10-22)
+  if (!view.handModel || !handsList.some(p => p.file === view.handModel)) view.handModel = (handsList.find(p => p.model === 'rtmpose_hand') || handsList[0])?.file || null;
+  const hands = h('label', { class: 'chip', title: handsList.length ? 'Hand keypoints (dashed: found by the hand detector, no body)' : 'Run hands/hands.py first' },
+    h('input', { type: 'checkbox', checked: view.layers.hands && !!handsList.length, disabled: !handsList.length,
+      onchange: e => { view.layers.hands = e.target.checked; saveView(); if (e.target.checked) loadHands(view.handModel); drawOverlay(); } }), 'Hands');
+  const handPicker = handsList.length > 1 ? h('select', { title: 'Hand model', onchange: e => { view.handModel = e.target.value; saveView(); if (view.layers.hands) loadHands(view.handModel); } },
+    ...handsList.map(p => h('option', { value: p.file, selected: p.file === view.handModel }, p.model))) : null;
+  const unlinked = handsList.length ? h('label', { class: 'chip', title: 'Also draw hands the hand detector found with no body (often faces, logos or bokeh)' },
+    h('input', { type: 'checkbox', checked: !!view.layers.unlinkedHands, onchange: e => { view.layers.unlinkedHands = e.target.checked; saveView(); drawOverlay(); } }), 'Unlinked hands') : null;
+  $('layers').replaceChildren(h('span', { class: 'row', style: 'margin:0;gap:6px' }, chip('boxes', 'Faces'), chip('objects', 'Objects', !objectTracks().length && !DATA.objects),
+    skeleton, picker, hands, handPicker, unlinked, chip('landmarks', 'Landmarks', noDetail), chip('mesh', 'Mesh', noDetail || !DATA.face_detail?.mesh), chip('gaze', 'Gaze', noDetail),
+    Object.keys(DATA.gaze_models || {}).length ? h('select', { title: 'Gaze source (also drives the Social rows)', onchange: e => { view.gazeSource = e.target.value; saveView(); render(); } },
+      h('option', { value: 'pyfeat', selected: gazeChoice() === 'pyfeat' }, 'gaze: py-feat ray'),
+      ...Object.entries({ gaze_lle: 'gaze: Gaze-LLE', gaze_page: 'gaze: PaGE' }).filter(([k]) => DATA.gaze_models[k])
+        .map(([k, label]) => h('option', { value: k, selected: gazeChoice() === k }, label))) : null,
+    h('span', { title: 'Centred 1-2-1 smoothing of drawn points (display only; data stay raw)' }, chip('smooth', 'Smooth'))));
+}
+
+// ---------- timeline ----------
+let pps = 1;
+const labelW = () => parseInt(getComputedStyle(document.documentElement).getPropertyValue('--label-w'));
+function fitPps() { return Math.max(4, ($('tl-scroll').clientWidth - labelW() - 24) / DATA.duration); }
+function stack(items) {   // assign overlapping bars to sub-rows
+  const ends = [];
+  return items.map(it => { let r = ends.findIndex(e => e <= it.start + 1e-6); if (r < 0) { r = ends.length; ends.push(0); } ends[r] = it.end; return r; });
+}
+const isSel = (kind, id) => selection?.kind === kind && selection.id === id;
+const ROW_H = 22;
+function lane({ id, labelEl, label, items = [], height, ruler, drop, hint, onCreate, extra, hideable = true, cls = '' }) {
+  const rows = Math.max(1, ...items.map(i => (i.row || 0) + 1));
+  const H = height || rows * ROW_H + 2;
+  const body = h('div', { class: 'lane-body', style: `width:${DATA.duration * pps}px;height:${H}px` });
+  for (const it of items) {
+    const el = h('div', { class: `bar ${it.cls || ''}`, title: it.title || '',
+      style: `left:${it.start * pps}px;width:${Math.max(3, (it.end - it.start) * pps - 1)}px;top:${it.top ?? (it.row || 0) * ROW_H + 3}px;${it.colour ? `background:${it.colour}` : ''}` }, it.text || '');
+    if (it.drag) el.addEventListener('pointerdown', e => startDrag(e, it.drag, it.text, it.colour));
+    else if (it.onclick) el.addEventListener('click', e => { e.stopPropagation(); it.onclick(); });
+    body.append(el);
+  }
+  if (hint && !items.length) body.append(h('span', { class: 'hint' }, hint));
+  if (ruler) for (let s = 0; s <= DATA.duration; s += ruler) body.append(h('div', { class: 'tick', style: `left:${s * pps}px` }, fmt(s).replace(/\.\d$/, '')));
+  if (extra) extra(body);
+  if (onCreate) body.dataset.create = onCreate;
+  const lbl = labelEl || h('div', { class: 'lane-label' }, h('span', { class: 'name' }, label));
+  if (hideable && id) lbl.append(h('button', { class: 'hide', title: 'Hide this row', onclick: e => { e.stopPropagation(); view.hidden.push(id); saveView(); renderTimeline(); } }, '×'));
+  return h('div', { class: `lane ${ruler ? 'ruler' : ''} ${cls}`, dataset: drop ? { drop: JSON.stringify(drop) } : {} }, lbl, body);
+}
+function waveformExtra(body) {
+  const W = Math.round(DATA.duration * pps), H = 34, dpr = window.devicePixelRatio || 1;
+  if (W * dpr > 32000) { body.append(h('span', { class: 'hint' }, 'zoom out to see the waveform')); return; }
+  const c = h('canvas', { width: Math.round(W * dpr), height: H * dpr, style: `width:${W}px;height:${H}px;position:absolute;left:0;top:0;pointer-events:none` });
+  const g = c.getContext('2d'); g.scale(dpr, dpr); g.fillStyle = '#5c8fbf';
+  const wf = DATA.waveform, per = DATA.waveform_hz;
+  for (let x = 0; x < W; x++) {
+    const i0 = Math.floor(x / pps * per), i1 = Math.max(i0 + 1, Math.floor((x + 1) / pps * per));
+    let m = 0; for (let i = i0; i < i1 && i < wf.length; i++) m = Math.max(m, wf[i]);
+    const hgt = m / 100 * (H - 4); g.fillRect(x, (H - hgt) / 2, 1, Math.max(1, hgt));
+  }
+  body.prepend(c);
+}
+// ---------- prosody (prosody.json) ----------
+const P = DATA.prosody;
+const PITCH_H = 48, PITCH_ST = 12;   // the pitch row spans ±12 semitones around each speaker's median
+// prosody.json names speakers by face cluster ("Person C") or diarized voice ("off-screen SPEAKER_00")
+const prosodySpeakerColour = name => !name ? '#8a8a8a' : name.startsWith('off-screen') ? '#8a8a8a' : colourOf(root(name));
+// Display smoothing of the pitch contour (data stay raw; the Smooth chip switches it off): voiced runs shorter than
+// PITCH_MIN_RUN steps are dropped (isolated blips at 20 Hz are mostly onsets, offsets and laughter), and each run
+// gets a centred running median over PITCH_MEDIAN steps, which removes single-step jumps without lagging.
+const PITCH_MIN_RUN = 3, PITCH_MEDIAN = 5;
+const pitchSmoothed = (() => {
+  if (!P) return null;
+  const out = new Array(P.f0_st.length).fill(null);
+  let i = 0;
+  while (i < P.f0_st.length) {
+    if (P.f0_st[i] === null || P.speaker[i] === null) { i++; continue; }
+    let j = i;
+    while (j < P.f0_st.length && P.f0_st[j] !== null && P.speaker[j] === P.speaker[i]) j++;
+    if (j - i >= PITCH_MIN_RUN) for (let k = i; k < j; k++) {
+      const half = PITCH_MEDIAN >> 1, win = P.f0_st.slice(Math.max(i, k - half), Math.min(j, k + half + 1)).sort((a, b) => a - b);
+      out[k] = win[win.length >> 1];
+    }
+    i = j;
+  }
+  return out;
+})();
+function pitchExtra(body) {
+  const W = Math.round(DATA.duration * pps), H = PITCH_H - 2, dpr = window.devicePixelRatio || 1;
+  if (W * dpr > 32000) { body.append(h('span', { class: 'hint' }, 'zoom out to see the pitch contour')); return; }
+  const c = h('canvas', { width: Math.round(W * dpr), height: H * dpr, style: `width:${W}px;height:${H}px;position:absolute;left:0;top:0;pointer-events:none` });
+  const g = c.getContext('2d'); g.scale(dpr, dpr);
+  g.strokeStyle = 'rgba(255,255,255,0.12)'; g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();   // speaker median
+  const y = st => H / 2 - Math.max(-PITCH_ST, Math.min(PITCH_ST, st)) / PITCH_ST * (H / 2 - 2);
+  const f0 = view.layers.smooth ? pitchSmoothed : P.f0_st;
+  g.lineWidth = 1.5;
+  let prev = null;
+  for (let i = 0; i < f0.length; i++) {
+    const v = f0[i], spk = P.speaker[i];
+    if (v === null || spk === null) { prev = null; continue; }
+    const x = (P.t0 + i * P.step) * pps, col = prosodySpeakerColour(P.speakers[spk]);
+    if (prev && prev.spk === spk) { g.strokeStyle = col; g.beginPath(); g.moveTo(prev.x, prev.y); g.lineTo(x, y(v)); g.stroke(); }
+    else { g.fillStyle = col; g.fillRect(x - 0.75, y(v) - 0.75, 1.5, 1.5); }
+    prev = { x, y: y(v), spk };
+  }
+  body.prepend(c);
+}
+// Arousal and valence as lines, one row per model: each utterance is a flat segment at its value, joined to the next
+// by a thin line, so changes between sentences read as rises and falls. Each line spans its own range in this
+// clip (models differ in scale and spread); the range is in the row's tooltip and raw values in the inspector.
+const lerpHex = (a, b, f) => '#' + [0, 2, 4].map(i => Math.round(parseInt(a.slice(1 + i, 3 + i), 16) * (1 - f) + parseInt(b.slice(1 + i, 3 + i), 16) * f).toString(16).padStart(2, '0')).join('');
+const AFFECT_COLOURS = { arousal: '#ff8a3d', valence: '#6fa8ff' };
+const AFFECT_H = 56;
+function affectExtra(key, ranges) {
+  return body => {
+    const W = Math.round(DATA.duration * pps), H = AFFECT_H - 2, dpr = window.devicePixelRatio || 1;
+    if (W * dpr > 32000) { body.append(h('span', { class: 'hint' }, 'zoom out to see the lines')); return; }
+    const c = h('canvas', { width: Math.round(W * dpr), height: H * dpr, style: `width:${W}px;height:${H}px;position:absolute;left:0;top:0;pointer-events:none` });
+    const g = c.getContext('2d'); g.scale(dpr, dpr);
+    g.strokeStyle = 'rgba(255,255,255,0.12)'; g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+    const utts = DATA.utterances.filter(u => P.utts[u.id]?.dims[key]).sort((a, b) => a.start - b.start);
+    for (const dim of ['valence', 'arousal']) {
+      const [lo, hi] = ranges[dim], y = v => H - 3 - (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (H - 6);
+      g.strokeStyle = AFFECT_COLOURS[dim];
+      let prev = null;
+      for (const u of utts) {
+        const v = y(P.utts[u.id].dims[key][dim]), x0 = u.start * pps, x1 = Math.max(x0 + 2, u.end * pps);
+        if (prev) { g.globalAlpha = 0.35; g.lineWidth = 1; g.beginPath(); g.moveTo(prev.x, prev.y); g.lineTo(x0, v); g.stroke(); }
+        g.globalAlpha = isSel('utt', u.id) ? 1 : 0.9; g.lineWidth = isSel('utt', u.id) ? 4 : 2.5;
+        g.beginPath(); g.moveTo(x0, v); g.lineTo(x1, v); g.stroke();
+        prev = { x: x1, y: v };
+      }
+    }
+    g.globalAlpha = 1;
+    body.prepend(c);
+  };
+}
+const GENERIC_TAGS = new Set(['clear', 'conversational']);   // on most utterances; they crowd out the informative tags
+const ENDING = { rise: '↗', fall: '↘', level: '→' };
+// Only clear final movements are drawn: most measured endings move under 2 semitones and read as noise (user review).
+const ENDING_MIN_ST = 2;
+const MODEL_NAMES = [[/^audeering\//, 'audEERING'], [/Odyssey/i, 'Odyssey'], [/emotion2vec/, 'emotion2vec+'], [/Vox-?Profile/i, 'Vox-Profile']];
+const shortModel = m => MODEL_NAMES.find(([re]) => re.test(m))?.[1] ?? m.split('/').pop();
+// The timeline draws the stage's default dimensional model (prosody.json records it); the inspector lists all.
+const shownDims = () => Object.entries(P.dims).filter(([key]) => !P.default_dim || key === P.default_dim);
+function prosodyRows() {
+  if (!P) return [];
+  const utt = DATA.utterances, pu = id => P.utts[id];
+  const pick = u => () => select('utt', u.id);
+  const base = (u, extra) => ({ start: u.start, end: u.end, onclick: pick(u), cls: `${isSel('utt', u.id) ? 'selected' : ''}`, ...extra });
+  const rows = [{ id: 'prosody:pitch', label: 'Pitch', height: PITCH_H, extra: pitchExtra,
+    hint: null }];
+  rows.push({ id: 'prosody:ending', label: `Ending (≥${ENDING_MIN_ST} st)`, items: utt.filter(u => {
+    const m = pu(u.id)?.measure;
+    return m?.final_movement && Math.abs(m.final_delta_st ?? 0) >= ENDING_MIN_ST;
+  }).map(u => {
+    const m = pu(u.id).measure;
+    return base(u, { text: `${ENDING[m.final_movement] || '?'} ${m.final_delta_st > 0 ? '+' : ''}${m.final_delta_st.toFixed(1)}`,
+      colour: prosodySpeakerColour(pu(u.id).speaker), title: `Final pitch ${m.final_movement} (${m.final_delta_st.toFixed(1)} st) · ${u.text}` });
+  }) });
+  for (const [key, meta] of shownDims()) {
+    const values = utt.map(u => pu(u.id)?.dims[key]).filter(Boolean);
+    const ranges = Object.fromEntries(['arousal', 'valence'].map(dim => { const vs = values.map(v => v[dim]); return [dim, [Math.min(...vs), Math.max(...vs)]]; }));
+    rows.push({ id: `prosody:${key}`, height: AFFECT_H, extra: affectExtra(key, ranges),
+      labelEl: h('div', { class: 'lane-label',
+        title: `${meta.model} · ${meta.licence_mode}\norange: arousal, clip range ${ranges.arousal.map(v => v.toFixed(2)).join('–')}\nblue: valence, clip range ${ranges.valence.map(v => v.toFixed(2)).join('–')}\nEach line spans its own clip range.` },
+        h('span', { class: 'name', style: 'flex:none' }, shortModel(meta.model)),
+        h('span', { style: 'font-size:11px;white-space:nowrap;margin-left:6px' },
+          h('span', { style: `color:${AFFECT_COLOURS.arousal}` }, 'arousal'), ' ', h('span', { style: `color:${AFFECT_COLOURS.valence}` }, 'valence'))) });
+  }
+  for (const [key, meta] of Object.entries(P.captions)) {
+    rows.push({ id: `prosody:caption:${key}`, labelEl: h('div', { class: 'lane-label', title: `${meta.model} · tags are suggestions, not checked` },
+      h('span', { class: 'name' }, `Delivery · ${key === 'gpt' ? 'GPT audio' : key === 'qwen' ? 'Qwen captioner' : key}`)),
+      items: utt.filter(u => pu(u.id)?.captions[key]).map(u => {
+        const c = pu(u.id).captions[key], tags = c.tags.filter(t => !GENERIC_TAGS.has(t));
+        return base(u, { text: tags.slice(0, 3).join(', '), colour: '#5d6b7a', cls: `${isSel('utt', u.id) ? 'selected' : ''} unconfirmed`,
+          title: `${c.tags.join(', ')}\n\n${c.description || ''}` });
+      }) });
+  }
+  return rows;
+}
+const GROUPS = { audio: 'Audio', prosody: 'Prosody', people: 'People', objects: 'Objects', gestures: 'Gestures', social: 'Social', sounds: 'Sounds', text: 'Text', annotations: 'Annotations' };
+function renderGroupChips() {
+  $('group-chips').replaceChildren(...Object.entries(GROUPS).map(([key, label]) => h('label', { class: 'chip', title: `Show or hide ${label.toLowerCase()} in the timeline` },
+    h('input', { type: 'checkbox', checked: !view.hiddenGroups.includes(key), onchange: e => {
+      view.hiddenGroups = e.target.checked ? view.hiddenGroups.filter(k => k !== key) : [...view.hiddenGroups, key];
+      saveView(); renderTimeline();
+    } }), label)));
+}
+function group(key, label, count, rows, summaryItems) {
+  if (view.hiddenGroups.includes(key)) return [];
+  const collapsed = view.collapsed.includes(key);
+  const hiddenHere = view.hidden.filter(id => rows.some(r => r.id === id));
+  const visibleRows = rows.filter(r => !view.hidden.includes(r.id));
+  const labelEl = h('div', { class: 'lane-label', title: collapsed ? 'Expand' : 'Collapse',
+    onclick: () => { view.collapsed = collapsed ? view.collapsed.filter(k => k !== key) : [...view.collapsed, key]; saveView(); renderTimeline(); } },
+    h('span', { class: 'chev' }, collapsed ? '▸' : '▾'), h('span', { class: 'name' }, label), h('span', { class: 'meta', style: 'font-weight:400' }, count),
+    hiddenHere.length ? h('button', { class: 'link restore', title: 'Show hidden rows', onclick: e => { e.stopPropagation(); view.hidden = view.hidden.filter(id => !hiddenHere.includes(id)); saveView(); renderTimeline(); } }, `+${hiddenHere.length} hidden`) : null);
+  const header = lane({ labelEl, items: collapsed ? summaryItems.map(i => ({ ...i, cls: `${i.cls || ''} summary`, top: 3, text: '' })) : [], height: collapsed ? 24 : 22, hideable: false, cls: 'group' });
+  return collapsed ? [header] : [header, ...visibleRows.map(r => lane(r))];
+}
+function personRows() {
+  const rows = [], speechBy = new Map();
+  const voiceRows = new Set(DATA.utterances.filter(u => speakerOf(u).kind === 'offscreen').map(u => speakerOf(u).voice || ''));
+  for (const u of DATA.utterances) {
+    const sp = speakerOf(u), p = speakerPerson(sp);
+    const key = p ? `person:${p}` : sp.kind === 'offscreen' ? `voice:${sp.voice || ''}` : 'other';
+    if (!speechBy.has(key)) speechBy.set(key, []);
+    speechBy.get(key).push(u);
+  }
+  const speechItem = (u, colour) => {
+    const sp = speakerOf(u);
+    return { start: u.start, end: u.end, top: 11, text: S.uttText[u.id] ?? u.text, colour: colour || '#8a8a8a',
+      cls: `speech ${included('utt', u) ? '' : 'excluded'} ${uncertain(u) && !reviewed(u) ? 'flagged' : ''} ${isSel('utt', u.id) ? 'selected' : ''}`,
+      title: `${fmt(u.start)} ${speakerName(sp)}${reviewed(u) ? ' (set by you)' : ' (predicted)'}: ${S.uttText[u.id] ?? u.text}\nDrag to another row to change the speaker`,
+      drag: { utt: u.id } };
+  };
+  for (const p of people()) {
+    const tracks = DATA.tracks.filter(t => personOf(t) === p), speech = speechBy.get(`person:${p}`) || [];
+    if (!tracks.length && !speech.length) continue;
+    const crop = cropOf(p);
+    const labelEl = h('div', { class: 'lane-label clickable', title: renameable(p) ? 'Click to inspect · double-click to rename' : 'Click to inspect' },
+      crop ? h('img', { class: 'crop', src: crop, alt: '', onclick: e => { e.stopPropagation(); showPerson(p); } }) : h('span', { class: 'swatch', style: `background:${colourOf(p)}` }),
+      renameable(p) ? nameSpan(`person:${p}`, 'timeline', nameOf(p)) : h('span', { class: 'name' }, nameOf(p)));
+    labelEl.addEventListener('click', e => renameable(p) ? nameClick(e, `person:${p}`, 'timeline', () => select('person', p, { seek: false })) : select('person', p, { seek: false }));
+    rows.push({ id: `person:${p}`, labelEl, height: 30, drop: p === NOT_PERSON ? null : { person: p },
+      items: [...tracks.map(t => ({ start: t.start, end: t.end + EDGE, top: 3, colour: colourOf(p),
+        cls: `vis ${included('track', t) ? '' : 'excluded'} ${isSel('track', t.id) ? 'selected' : ''}`,
+        title: `On screen: track ${t.id} · shot ${t.shot + 1} · ${fmt(t.start)}–${fmt(t.end)}`, onclick: () => select('track', t.id) })),
+        ...speech.map(u => speechItem(u, colourOf(p)))] });
+  }
+  for (const v of [...voiceRows].sort()) {
+    const labelEl = h('div', { class: 'lane-label clickable', title: 'Off-screen voice · double-click to rename' }, h('span', { class: 'swatch', style: 'background:#8a8a8a' }), nameSpan(`voice:${v}`, 'timeline', voiceName(v)));
+    labelEl.addEventListener('click', e => nameClick(e, `voice:${v}`, 'timeline', () => {}));
+    rows.push({ id: `voice:${v}`, labelEl, height: 30, drop: { voice: v }, items: (speechBy.get(`voice:${v}`) || []).map(u => speechItem(u)) });
+  }
+  rows.push({ id: 'other', height: 30, drop: { other: true }, items: (speechBy.get('other') || []).map(u => speechItem(u)),
+    labelEl: h('div', { class: 'lane-label', title: 'Unsure, several speakers, or not speech' }, h('span', { class: 'name' }, 'Unsure / other')) });
+  return rows;
+}
+function renderTimeline() {
+  const content = $('tl-content');
+  const scroll = $('tl-scroll').scrollLeft, scrollTop = $('tl-scroll').scrollTop;
+  content.replaceChildren();
+  const step = pps > 30 ? 2 : pps > 12 ? 5 : pps > 6 ? 10 : 20;
+  content.append(lane({ items: [], ruler: step, hideable: false }));
+  content.append(lane({ id: 'shots', label: 'Shots', hideable: false, items: DATA.shots.map(s => ({ start: s.start, end: s.end, text: s.index + 1, cls: `shot ${s.index % 2 ? 'odd' : ''} ${isSel('shot', s.index) ? 'selected' : ''}`,
+    title: `Shot ${s.index + 1}: ${fmt(s.start)}–${fmt(s.end)}\n${S.caption[s.index] ?? s.description ?? ''}`, onclick: () => select('shot', s.index) })) }));
+  const audioRows = [
+    { id: 'waveform', label: 'Waveform', height: 36, extra: waveformExtra },
+    { id: 'transcript', label: 'Transcript', items: DATA.utterances.map(u => {
+      const sp = speakerOf(u), col = speakerColour(sp);
+      return { start: u.start, end: u.end, text: S.uttText[u.id] ?? u.text, colour: col, cls: `${col ? '' : 'neutral'} ${included('utt', u) ? '' : 'excluded'} ${uncertain(u) && !reviewed(u) ? 'flagged' : ''} ${isSel('utt', u.id) ? 'selected' : ''}`,
+        title: `${fmt(u.start)} ${speakerName(sp)}: ${S.uttText[u.id] ?? u.text}`, onclick: () => select('utt', u.id) };
+    }) }];
+  content.append(...group('audio', 'Audio & speech', '', audioRows, DATA.utterances.map(u => ({ start: u.start, end: u.end, colour: speakerColour(speakerOf(u)) || '#8a8a8a' }))));
+  if (P) {
+    const firstDim = shownDims()[0]?.[0];
+    content.append(...group('prosody', 'Prosody', plural(shownDims().length + Object.keys(P.captions).length, 'model'), prosodyRows(),
+      DATA.utterances.filter(u => P.utts[u.id]?.dims[firstDim]).map(u => ({ start: u.start, end: u.end,
+        colour: lerpHex('#2f3b55', AFFECT_COLOURS.arousal, Math.max(0, Math.min(1, P.utts[u.id].dims[firstDim].arousal))) }))));
+  }
+  content.append(...group('people', 'People', plural(people().filter(p => !special(p) && DATA.tracks.some(t => personOf(t) === p)).length, 'person').replace('persons', 'people'), personRows(),
+    DATA.tracks.map(t => ({ start: t.start, end: t.end, colour: colourOf(personOf(t)) }))));
+  const oRows = objectIdentities().map(i => {
+    const crop = objCrop(i), col = objColour(i);
+    const labelEl = h('div', { class: 'lane-label clickable', title: 'Click to inspect · double-click to rename' },
+      crop ? h('img', { class: 'crop', src: crop, alt: '' }) : h('span', { class: 'swatch', style: `background:${col}` }), nameSpan(`object:${i}`, 'timeline', objName(i)));
+    labelEl.addEventListener('click', e => nameClick(e, `object:${i}`, 'timeline', () => select('objid', i, { seek: false })));
+    return { id: `object:${i}`, labelEl, items: objectTracks().filter(o => identityOf(o) === i).map(o => ({ start: o.start, end: o.end, colour: col,
+      cls: `${included('object', o) ? '' : 'excluded'} ${isSel('object', o.id) ? 'selected' : ''}`, title: `${objName(i)} · shot ${o.shot + 1} · ${fmt(o.start)}–${fmt(o.end)}`,
+      onclick: () => select('object', o.id) })) };
+  });
+  content.append(...group('objects', 'Objects', DATA.objects ? plural(oRows.length, 'object') : 'not run',
+    oRows.length ? oRows : [{ id: 'objects', label: 'Objects', hint: DATA.objects ? 'none found; ⌥-click the video to segment one' : 'run objects/objects.py, or ⌥-click the video to segment one', hideable: false }],
+    objectTracks().map(o => ({ start: o.start, end: o.end, colour: objColour(identityOf(o)) }))));
+  const events = DATA.hand_events?.events || [];
+  const KIND_NAMES = { hand_over_mouth: 'Hand over mouth', self_touch_face: 'Touching face', pointing: 'Pointing', raised_hand: 'Raised hand' };
+  const gRows = Object.keys(KIND_NAMES).filter(k => events.some(e => e.kind === k)).map(kind => {
+    const mine = events.map((e, i) => ({ e, i })).filter(x => x.e.kind === kind), r = stack(mine.map(x => x.e));
+    return { id: `gesture:${kind}`, label: KIND_NAMES[kind], items: mine.map(({ e, i }, k) => {
+      const face = e.face_track !== null && e.face_track !== undefined ? tracksById.get(e.face_track) : null;
+      return { start: e.start, end: e.end, row: r[k], text: face ? nameOf(personOf(face)) : '', colour: face ? colourOf(personOf(face)) : '#8a8a8a',
+        cls: `${(S.included[`gesture:${i}`] ?? true) ? '' : 'excluded'} ${isSel('gesture', i) ? 'selected' : ''}`, title: `${KIND_NAMES[kind]} · ${fmt(e.start)}–${fmt(e.end)}`, onclick: () => select('gesture', i) };
+    }) };
+  });
+  const facing = facingEvents();
+  if (facing.length) {
+    const r = stack(facing.map(x => x.e));
+    gRows.push({ id: 'gesture:facing', label: 'Facing', items: facing.map(({ e, i }, k) => {
+      const a = tracksById.get(e.from_face_track), b = tracksById.get(e.to_face_track);
+      const label = `${a ? nameOf(personOf(a)) : '?'} ${e.mutual ? '⇄' : '→'} ${b ? nameOf(personOf(b)) : '?'}`;
+      return { start: e.start, end: e.end, row: r[k], text: label, colour: a ? colourOf(personOf(a)) : '#8a8a8a',
+        cls: `${(S.included[`facing:${i}`] ?? true) ? '' : 'excluded'} ${isSel('facing', i) ? 'selected' : ''}`, title: `${label} · ${fmt(e.start)}–${fmt(e.end)}`, onclick: () => select('facing', i) };
+    }) });
+  }
+  const facingRow = gRows.pop && facing.length ? gRows.pop() : null;   // facing belongs with the social rows
+  gRows.push(...eventRows('emblems', { emblem: 'Emblems' }, e => e.label), ...eventRows('grw', { semantic_gesture: 'Meaningful gestures' }, e => (e.words || []).join(' ')));
+  const gCount = gRows.reduce((n, r) => n + r.items.length, 0);
+  if (gRows.length) content.append(...group('gestures', 'Gestures', `${gCount}`, gRows, gRows.flatMap(r => r.items).map(i => ({ start: i.start, end: i.end, colour: '#8a8a8a' }))));
+  const sRows = [...eventRows(gazeModel(), { looks_at: 'Looks at', mutual_gaze: 'Mutual gaze', joint_attention: 'Joint attention' }), ...(facingRow ? [facingRow] : [])];
+  if (sRows.length) content.append(...group('social', 'Social', `${sRows.reduce((n, r) => n + r.items.length, 0)}`, sRows, sRows.flatMap(r => r.items).map(i => ({ start: i.start, end: i.end, colour: '#8a8a8a' }))));
+  const sounds = DATA.sounds.slice().sort((a, b) => a.start - b.start), soundRows = stack(sounds);
+  const soundItems = sounds.map((s, i) => ({ start: s.start, end: s.end, row: soundRows[i], text: s.label, colour: '#90caf9',
+    cls: `${included('sound', s) ? '' : 'excluded'} ${s.agreement === false ? 'unconfirmed' : ''} ${isSel('sound', s.id) ? 'selected' : ''}`,
+    title: `${s.label} · ${s.sources.join(', ')}${s.agreement === false ? ' · no tagger agrees' : ''}`, onclick: () => select('sound', s.id) }));
+  content.append(...group('sounds', 'Sounds', `${sounds.length}`, [{ id: 'sounds', label: 'Sound events', items: soundItems }], soundItems));
+  const texts = DATA.texts, textRows = stack(texts);
+  const textItems = texts.map((s, i) => ({ start: s.start, end: s.end, row: textRows[i], text: s.text, colour: '#ffe082',
+    cls: `${included('text', s) ? '' : 'excluded'} ${isSel('text', s.id) ? 'selected' : ''}`, title: s.text, onclick: () => select('text', s.id) }));
+  content.append(...group('text', 'On-screen text', `${texts.length}`, [{ id: 'text', label: 'Text', items: textItems }], textItems));
+  const notes = [...S.notes.values()];
+  const typeRows = S.types.map(type => {
+    const mine = notes.filter(n => n.type === type.id).sort((a, b) => a.start - b.start), r = stack(mine);
+    return { id: `type:${type.id}`, onCreate: type.id, hint: 'drag across this row to add a span',
+      labelEl: h('div', { class: 'lane-label clickable', title: `${VALUE_KINDS[type.kind]} · ${type.target === 'person' ? 'about a person' : 'about the scene'}`, onclick: () => { activeType = type.id; tab = 'notes'; render(); } },
+        h('span', { class: 'swatch', style: 'background:#ce93d8' }), h('span', { class: 'name' }, type.name)),
+      items: mine.map((n, i) => ({ start: n.start, end: n.end, row: r[i], text: noteValue(n) + (n.person ? ` · ${nameOf(root(n.person))}` : ''),
+        colour: n.person ? colourOf(root(n.person)) : '#ce93d8', cls: `${hasValue(n) ? '' : 'unconfirmed'} ${isSel('note', n.id) ? 'selected' : ''}`,
+        title: `${type.name}: ${noteValue(n)}`, onclick: () => select('note', n.id) })) };
+  });
+  content.append(...group('annotations', 'Annotations', `${notes.length}`, typeRows.length ? typeRows
+    : [{ id: 'no-types', label: 'No types yet', hint: 'add an annotation type in the Annotate tab', hideable: false }], notes.map(n => ({ start: n.start, end: n.end, colour: '#ce93d8' }))));
+  for (const s of DATA.shots.slice(1)) content.append(h('div', { class: 'cut', style: `left:calc(var(--label-w) + ${s.start * pps}px)` }));
+  if (marking.start !== null) {
+    const end = marking.end ?? video.currentTime;
+    content.append(h('div', { class: 'marking', style: `left:calc(var(--label-w) + ${Math.min(marking.start, end) * pps}px);width:${Math.abs(end - marking.start) * pps}px` }));
+  }
+  content.append(h('div', { id: 'playhead' }));
+  $('tl-scroll').scrollLeft = scroll; $('tl-scroll').scrollTop = scrollTop;
+  const hidden = view.hidden.length;
+  $('hidden-rows').replaceChildren(hidden ? h('button', { class: 'link', onclick: () => { view.hidden = []; saveView(); renderTimeline(); } }, `Show ${plural(hidden, 'hidden row')}`) : '');
+  movePlayhead();
+}
+function revealInTimeline() {
+  const span = spanOf(selection); if (!span) return;
+  const sc = $('tl-scroll'), x = span.start * pps, w = sc.clientWidth - labelW();
+  if (x < sc.scrollLeft || x > sc.scrollLeft + w - 60) sc.scrollLeft = Math.max(0, x - w / 3);
+  const bar = document.querySelector('#tl-content .bar.selected:not(.summary)');
+  if (bar) { const r = bar.getBoundingClientRect(), sr = sc.getBoundingClientRect(); if (r.top < sr.top + 24 || r.bottom > sr.bottom) sc.scrollTop += r.top - sr.top - sr.height / 2; }
+}
+function movePlayhead() {
+  const ph = $('playhead'); if (!ph) return;
+  const x = video.currentTime * pps;
+  ph.style.left = `${labelW() + x}px`;
+  const sc = $('tl-scroll');
+  if (!video.paused && (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - labelW() - 40)) sc.scrollLeft = Math.max(0, x - 80);
+}
+function timeFromEvent(e) {
+  const r = $('tl-content').getBoundingClientRect();
+  return Math.min(DATA.duration, Math.max(0, (e.clientX - r.left - labelW()) / pps));
+}
+// Pointer on empty timeline: scrub, or, on an annotation row, drag out a new span.
+let scrub = null;
+$('tl-content').addEventListener('pointerdown', e => {
+  const body = e.target.closest('.lane-body');
+  if (!body || e.target.classList.contains('bar')) return;
+  e.preventDefault();
+  playUntil = null;
+  const t0 = timeFromEvent(e);
+  scrub = body.dataset.create ? { create: body.dataset.create, start: t0 } : { start: t0 };
+  video.currentTime = t0;
+});
+// Dragging speech between rows reassigns its speaker.
+let drag = null;
+function startDrag(e, payload, text, colour) {
+  e.preventDefault(); e.stopPropagation();
+  drag = { ...payload, x: e.clientX, y: e.clientY, moved: false, text, colour, ghost: null, over: null };
+}
+window.addEventListener('pointermove', e => {
+  if (scrub) {
+    video.currentTime = timeFromEvent(e);
+    if (scrub.create) { marking = { start: scrub.start, end: null }; renderTimeline(); }
+    return;
+  }
+  if (!drag) return;
+  if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6) return;
+  if (!drag.moved) { drag.moved = true; drag.ghost = h('div', { class: 'ghost', style: `background:${drag.colour || '#8a8a8a'}` }, drag.text); document.body.append(drag.ghost); }
+  drag.ghost.style.left = `${e.clientX + 12}px`; drag.ghost.style.top = `${e.clientY + 8}px`;
+  const lane = document.elementFromPoint(e.clientX, e.clientY)?.closest('.lane[data-drop]');
+  if (drag.over !== lane) { drag.over?.classList.remove('drop-target'); lane?.classList.add('drop-target'); drag.over = lane; }
+});
+window.addEventListener('pointerup', e => {
+  if (scrub) {
+    const s = scrub; scrub = null;
+    if (!s.create) return;
+    const end = timeFromEvent(e);
+    marking = { start: null, end: null };
+    if (Math.abs(end - s.start) < 0.2) { renderTimeline(); return; }
+    activeType = s.create;
+    addNote(s.create, Math.min(s.start, end), Math.max(s.start, end));
+    return;
+  }
+  if (!drag) return;
+  const d = drag; drag = null;
+  d.ghost?.remove(); d.over?.classList.remove('drop-target');
+  const u = uttsById.get(d.utt);
+  if (!d.moved) { select('utt', u.id); return; }
+  if (!d.over) return;
+  const target = JSON.parse(d.over.dataset.drop);
+  let speaker;
+  if (target.person) {
+    const onScreen = DATA.tracks.find(t => personOf(t) === target.person && t.shot === u.shot && t.start - EDGE <= u.end && t.end + EDGE >= u.start);
+    speaker = onScreen ? { kind: 'face', track: onScreen.id } : target.person === 'Unknown' ? null : { kind: 'person', person: target.person };
+  } else if ('voice' in target) speaker = { kind: 'offscreen', voice: target.voice || null };
+  else speaker = { kind: 'unsure' };
+  if (!speaker) { toast('No unknown face is on screen during this utterance'); return; }
+  if (JSON.stringify(speaker) === JSON.stringify(speakerOf(u))) return;
+  commit({ op: 'utterance.speaker', utt: u.id, speaker });
+  toast(`“${(S.uttText[u.id] ?? u.text).slice(0, 40)}” → ${speakerName(speaker)}`);
+});
+$('zoom').addEventListener('input', e => { pps = fitPps() * Number(e.target.value); renderTimeline(); });
+
+// ---------- inspector views ----------
+function personSelect(current, onpick, { allowSpecial = true, placeholder = null, allowNew = true } = {}) {
+  return h('select', { onchange: e => { if (e.target.value) onpick(e.target.value); } },
+    placeholder ? h('option', { value: '', selected: !current }, placeholder) : null,
+    ...people().filter(p => allowSpecial || !special(p)).map(p => h('option', { value: p, selected: p === current }, nameOf(p))),
+    allowNew ? h('option', { value: '__new' }, 'New person…') : null);
+}
+function newPersonFlow(container, onCreated) {
+  const input = h('input', { type: 'text', placeholder: 'Name for the new person' });
+  const go = () => { const name = input.value.trim(); if (name) onCreated(`New ${S.created.length + 1}`, name); };
+  input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') go(); });
+  container.replaceChildren(h('div', { class: 'row' }, input, h('button', { class: 'primary', onclick: go }, 'Create')));
+  input.focus();
+}
+function personHeading(p, area, sub) {
+  const crop = cropOf(p);
+  const title = renameable(p) ? nameSpan(`person:${p}`, area, nameOf(p), '') : nameOf(p);
+  if (renameable(p)) title.addEventListener('dblclick', () => startRename(`person:${p}`, area));
+  return h('div', { class: 'row' },
+    crop ? h('img', { class: 'crop', src: crop, alt: '', title: 'Show every track of this person', onclick: () => showPerson(p) }) : h('span', { class: 'swatch', style: `background:${colourOf(p)};width:28px;height:28px` }),
+    h('div', { style: 'min-width:0;flex:1' }, h('h2', {}, title), sub));
+}
+let liveKey = null;
+function liveFace(tr) {   // py-feat at the playhead, refreshed as the video moves
+  const box = h('div', { id: 'live' });
+  fillLive(box, tr);
+  return box;
+}
+function fillLive(box, tr) {
+  const k = sampleAt(tr, video.currentTime);
+  liveKey = `${tr.id}:${k}`;
+  if (!DATA.face_detail) { box.replaceChildren(h('div', { class: 'meta' }, 'Run faces/face_detail.py to see action units and gaze here.')); return; }
+  if (k === null) { box.replaceChildren(h('div', { class: 'meta' }, `Move the playhead inside this track (${fmt(tr.start)}–${fmt(tr.end)}) to see py-feat for that frame.`)); return; }
+  const d = tr.detail[k], names = DATA.face_detail.au_names;
+  const others = Object.entries(DATA.gaze_models || {}).map(([k, gm]) => {
+    const smp = gm.tracks[String(tr.id)];
+    if (!smp) return null;
+    const near = smp.reduce((best, x) => Math.abs(x.t - d.t) < Math.abs(best.t - d.t) ? x : best, smp[0]);
+    return `${near.target === 'out' ? 'out of frame' : lookName(near.target)} (${k === 'gaze_page' ? 'PaGE' : 'Gaze-LLE'})`;
+  }).filter(Boolean);
+  const look = [`${lookName(d.look)} (py-feat ray)`, ...others].join(' · ');
+  const deg = r => `${Math.round(r * 57.3)}°`;
+  box.replaceChildren(
+    h('div', { class: 'meta' }, `Sample at ${fmt(d.t)}`),
+    h('div', { class: 'row' }, h('b', {}, 'Looking at:'), look, h('span', { class: 'meta' }, '(estimated from 2D gaze)')),
+    h('div', { class: 'meta' }, `Gaze yaw ${deg(d.gaze[0])}, pitch ${deg(d.gaze[1])} · head yaw ${deg(d.head[0])}, pitch ${deg(d.head[1])}, roll ${deg(d.head[2])} · valence ${d.va[0].toFixed(2)}, arousal ${d.va[1].toFixed(2)}`),
+    h('h3', {}, 'Emotions'),
+    h('div', { class: 'bars' }, ...DATA.face_detail.emotion_names.flatMap((n, i) => [h('span', {}, n), h('div', { class: 'fill', style: `width:${Math.round(d.emo[i] * 100)}%;background:#a78bfa` }), h('span', { class: 'val' }, d.emo[i].toFixed(2))])),
+    h('h3', {}, 'Action units'),
+    h('div', { class: 'bars' }, ...names.flatMap((n, i) => [h('span', { title: AU_NAMES[n] || '' }, n), h('div', { class: 'fill', title: AU_NAMES[n] || '', style: `width:${Math.round(Math.min(1, Math.max(0, d.au[i])) * 100)}%` }), h('span', { class: 'val' }, d.au[i].toFixed(2))])));
+}
+function bodyInfo(tr) {
+  if (!DATA.pose_models?.length) return null;
+  if (!poseData) return [h('h3', {}, 'Body'), h('div', { class: 'meta' }, 'Switch on Skeleton to see this face’s body.')];
+  const bodies = poseData.tracks.filter(b => b.face_track === tr.id);
+  if (!bodies.length) return [h('h3', {}, `Body · ${poseData.model}`), h('div', { class: 'meta' }, 'No body linked to this face track.')];
+  const x = bodies.map(b => poseSampleAt(b, video.currentTime)).find(Boolean);
+  return [h('h3', {}, `Body · ${poseData.model}`), h('div', { class: 'meta' }, `${plural(bodies.length, 'body track')} linked (${bodies[0].link}).`,
+    x?.facing ? ` Facing ${Math.round(x.facing[0])}° yaw${x.facing[1] === null ? ' (shoulders only, no pitch)' : `, ${Math.round(x.facing[1])}° pitch`} at the playhead.` : '')];
+}
+function objectSelect(current, onpick) {
+  return h('select', { onchange: e => { if (e.target.value) onpick(e.target.value); } },
+    h('option', { value: '', selected: !current }, 'Choose an object…'),
+    ...objectIdentities().map(i => h('option', { value: i, selected: i === current }, objName(i))), h('option', { value: '__new' }, 'New object…'));
+}
+function objHeading(i, area, sub) {
+  const crop = objCrop(i), title = nameSpan(`object:${i}`, area, objName(i), '');
+  title.addEventListener('dblclick', () => startRename(`object:${i}`, area));
+  return h('div', { class: 'row' },
+    crop ? h('img', { class: 'crop', src: crop, alt: '', title: 'Enlarge', onclick: () => openLightbox(h('h2', {}, objName(i)), h('img', { class: 'big', src: crop, alt: '' })) })
+      : h('span', { class: 'swatch', style: `background:${objColour(i)};width:28px;height:28px` }),
+    h('div', { style: 'min-width:0;flex:1' }, h('h2', {}, title), sub));
+}
+function lookedAtBy(ids) {   // face tracks whose estimated gaze lands on these object tracks
+  const counts = {};
+  for (const t of DATA.tracks) for (const d of t.detail || []) if (ids.has(d.look)) { const p = nameOf(personOf(t)); counts[p] = (counts[p] || 0) + 1; }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([p, n]) => `${p} (${(n / DATA.face_fps).toFixed(1)} s)`).join(', ');
+}
+function viewObject(o) {
+  const i = identityOf(o), box = h('div');
+  const looked = lookedAtBy(new Set([o.id]));
+  return [
+    objHeading(i, 'panel', h('div', { class: 'meta' }, `${o.label ? `detected as “${o.label}” · ` : 'segmented by you · '}shot ${o.shot + 1} · ${fmt(o.start)}–${fmt(o.end)} · `,
+      h('button', { class: 'link', onclick: () => playSpan(o) }, 'play'), ' · ', h('button', { class: 'link', onclick: () => startRename(`object:${i}`, 'panel') }, 'rename'))),
+    h('h3', {}, 'Which object is this?'),
+    h('div', { class: 'row' }, 'This is', objectSelect(i, v => {
+      if (v === '__new') { const id = `user:${Date.now()}`; commit({ op: 'object.assign', track: o.id, identity: id }); startRename(`object:${id}`, 'panel'); }
+      else commit({ op: 'object.assign', track: o.id, identity: v });
+    })), box,
+    h('div', { class: 'meta' }, 'Changes this appearance only. ', h('button', { class: 'link', onclick: () => select('objid', i, { seek: false }) }, `Edit every ${objName(i)} instead`)),
+    h('h3', {}, 'Send to agents'),
+    h('div', { class: 'list' },
+      toggle('Include this appearance', included('object', o), v => commit({ op: 'entity.include', id: `objtrack:${o.id}`, included: v })),
+      toggle(`Include ${objName(i)} everywhere`, included('objid', i), v => commit({ op: 'entity.include', id: `object:${i}`, included: v }))),
+    looked ? [h('h3', {}, 'Looked at by (estimated)'), h('div', { class: 'meta' }, looked)] : null,
+  ];
+}
+function viewObjectIdentity(i) {
+  const tracks = objectTracks().filter(o => identityOf(o) === i);
+  const looked = lookedAtBy(new Set(tracks.map(o => o.id)));
+  return [
+    objHeading(i, 'panel', h('div', { class: 'meta' }, `${plural(tracks.length, 'appearance')} · ${tracks.reduce((a, o) => a + o.end - o.start, 0).toFixed(1)} s · `,
+      h('button', { class: 'link', onclick: () => startRename(`object:${i}`, 'panel') }, 'rename'))),
+    h('h3', {}, 'Same object as'),
+    h('div', { class: 'row' }, objectSelect(null, v => { if (v === '__new') return; commit({ op: 'object.merge', from: i, into: v }); select('objid', oroot(v), { seek: false }); toast(`Merged ${objName(i)} into ${objName(oroot(v))}`); })),
+    h('h3', {}, 'Send to agents'),
+    toggle(`Include ${objName(i)}`, included('objid', i), v => commit({ op: 'entity.include', id: `object:${i}`, included: v })),
+    h('div', { class: 'meta' }, 'Switch off for things that are irrelevant to the study.'),
+    looked ? [h('h3', {}, 'Looked at by (estimated)'), h('div', { class: 'meta' }, looked)] : null,
+    h('h3', {}, 'Appearances'),
+    h('div', { class: 'list' }, ...tracks.map(o => h('button', { class: `item ${included('object', o) ? '' : 'done'}`, onclick: () => select('object', o.id) },
+      h('span', { class: 'swatch', style: `background:${objColour(i)}` }), h('span', { class: 'grow' }, `${fmt(o.start)}–${fmt(o.end)} · shot ${o.shot + 1}`), h('span', { class: 'meta' }, o.label || 'yours')))),
+  ];
+}
+// Events from model outputs (gaze_lle.json, emblems.json, grw.json): one timeline row per kind, coloured by the person.
+const personName = ft => { const t = ft === null || ft === undefined ? null : tracksById.get(ft); return t ? nameOf(personOf(t)) : null; };
+const personColour = ft => { const t = ft === null || ft === undefined ? null : tracksById.get(ft); return t ? colourOf(personOf(t)) : '#8a8a8a'; };
+function eventTarget(e) {
+  if (e.object) { const o = objTrack(e.object); return o ? objName(identityOf(o)) : 'an object'; }
+  return personName(e.to_face_track);
+}
+function eventLabel(e, extra) {
+  const who = personName(e.from_face_track ?? e.face_track) || '?', target = eventTarget(e), also = personName(e.also_face_track);
+  if (e.kind === 'mutual_gaze') return `${who} ⇄ ${target || '?'}`;
+  if (e.kind === 'joint_attention') return `${who} + ${also || '?'} → ${target || '?'}`;
+  if (e.kind === 'looks_at') return `${who} → ${target || '?'}`;
+  return `${who}${extra ? `: ${extra}` : ''}`;
+}
+function eventRows(src, kinds, extra = () => '') {
+  const source = DATA.event_sources?.[src];
+  if (!source) return [];
+  return Object.entries(kinds).filter(([k]) => source.events.some(e => e.kind === k)).map(([kind, label]) => {
+    const mine = source.events.map((e, i) => ({ e, i })).filter(x => x.e.kind === kind), r = stack(mine.map(x => x.e));
+    return { id: `${src}:${kind}`, label, items: mine.map(({ e, i }, k) => ({ start: e.start, end: e.end, row: r[k], text: eventLabel(e, extra(e)),
+      colour: personColour(e.from_face_track ?? e.face_track), cls: `${(S.included[`${src}:${i}`] ?? true) ? '' : 'excluded'} ${isSel('event', `${src}:${i}`) ? 'selected' : ''}`,
+      title: `${label} · ${eventLabel(e, extra(e))} · ${fmt(e.start)}–${fmt(e.end)} · ${source.model}`, onclick: () => select('event', `${src}:${i}`) })) };
+  });
+}
+// Gaze-LLE is the academic default: on OOO it read more accurately by eye than PaGE (user review 2026-10-23),
+// although the 2026-10-22 bake-off had preferred PaGE on small heads and poster faces.
+const GAZE_DEFAULT_ORDER = ['gaze_lle', 'gaze_page'];
+function defaultGazeModel() {
+  return GAZE_DEFAULT_ORDER.find(k => DATA.gaze_models?.[k]) || Object.keys(DATA.gaze_models || {})[0] || null;
+}
+// What the picker shows and the overlay draws: the viewer's pick ('pyfeat' or a model), else the default model.
+function gazeChoice() {
+  if (view.gazeSource === 'pyfeat' || DATA.gaze_models?.[view.gazeSource]) return view.gazeSource;
+  return defaultGazeModel() || 'pyfeat';
+}
+// Which gaze-target model drives the Social rows: the one picked, else the default
+// (the py-feat ray has no events, so with it selected the rows still come from a model).
+function gazeModel() {
+  const choice = gazeChoice();
+  return DATA.gaze_models?.[choice] ? choice : defaultGazeModel();
+}
+function eventOf(id) { const [src, i] = id.split(/:(?=\d+$)/); return { src, i: Number(i), e: DATA.event_sources[src].events[Number(i)] }; }
+function viewEvent(id) {
+  const { src, e } = eventOf(id), source = DATA.event_sources[src];
+  return [
+    h('h2', {}, e.kind.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()), e.label ? h('span', { class: 'meta', style: 'font-weight:400' }, `“${e.label}”`) : null),
+    h('div', { class: 'meta' }, `${fmt(e.start)}–${fmt(e.end)} · `, h('button', { class: 'link', onclick: () => playSpan(e) }, 'play'), ` · ${source.model} (${source.licence_mode})`),
+    h('div', { class: 'row' }, eventLabel(e, (e.words || []).join(' '))),
+    e.words?.length ? h('div', { class: 'meta' }, `Words: “${e.words.join(' ')}”`) : null,
+    e.score !== undefined ? h('div', { class: 'meta' }, `score ${Number(e.score).toFixed(2)}`) : null,
+    h('h3', {}, 'Send to agents'),
+    toggle('Include this (switch off if it is wrong)', S.included[id] ?? true, v => commit({ op: 'entity.include', id, included: v })),
+  ];
+}
+function facingFile() {
+  const files = Object.keys(DATA.facing || {});
+  const model = (view.poseModel || '').replace(/^pose_/, '');
+  // the chosen skeleton's own facing file if it has one; otherwise MediaPipe's, which agreed with py-feat head yaw
+  // in sign 97% of the time on OOO against RTMW3D's 73% (pose/pose3d.py report, 2026-10-22)
+  return files.find(f => f === `facing_${model}.json`) || files.find(f => f === 'facing_mediapipe.json') || files[0] || null;
+}
+const facingEvents = () => { const f = facingFile(); return f ? DATA.facing[f].events.map((e, i) => ({ e, i })) : []; };
+function viewFacing(i) {
+  const f = facingFile(), e = DATA.facing[f].events[i];
+  const a = tracksById.get(e.from_face_track), b = tracksById.get(e.to_face_track);
+  return [
+    h('h2', {}, e.mutual ? 'Facing each other' : 'Facing'),
+    h('div', { class: 'meta' }, `${fmt(e.start)}–${fmt(e.end)} · `, h('button', { class: 'link', onclick: () => playSpan(e) }, 'play'), ` · from ${DATA.facing[f].source}`),
+    h('div', { class: 'row' }, a ? h('button', { class: 'link', onclick: () => select('person', personOf(a), { seek: false }) }, nameOf(personOf(a))) : '?', e.mutual ? '⇄' : '→',
+      b ? h('button', { class: 'link', onclick: () => select('person', personOf(b), { seek: false }) }, nameOf(personOf(b))) : '?'),
+    e.detail?.mean_angle_deg !== undefined ? h('div', { class: 'meta' }, `mean angle off ${e.detail.mean_angle_deg.toFixed(1)}° · score ${Number(e.score).toFixed(2)}`) : null,
+    h('h3', {}, 'Send to agents'),
+    toggle('Include this (switch off if it is wrong)', S.included[`facing:${i}`] ?? true, v => commit({ op: 'entity.include', id: `facing:${i}`, included: v })),
+  ];
+}
+function viewGesture(i) {
+  const e = DATA.hand_events.events[i], face = e.face_track !== null && e.face_track !== undefined ? tracksById.get(e.face_track) : null;
+  const target = e.detail?.target;
+  const targetName = target === null || target === undefined ? null : typeof target === 'number' ? nameOf(personOf(tracksById.get(target))) : lookName(target);
+  return [
+    h('h2', {}, e.kind.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())),
+    h('div', { class: 'meta' }, `${fmt(e.start)}–${fmt(e.end)} · `, h('button', { class: 'link', onclick: () => playSpan(e) }, 'play'), ` · from ${DATA.hand_events.source}`),
+    h('div', { class: 'row' }, 'Who:', face ? h('button', { class: 'link', onclick: () => select('person', personOf(face), { seek: false }) }, nameOf(personOf(face))) : 'not linked to a face'),
+    targetName ? h('div', { class: 'row' }, 'Pointing at:', targetName, h('span', { class: 'meta' }, '(estimated)')) : null,
+    e.score !== undefined ? h('div', { class: 'meta' }, `score ${Number(e.score).toFixed(2)}`) : null,
+    h('h3', {}, 'Send to agents'),
+    toggle('Include this gesture (switch off if it is wrong)', S.included[`gesture:${i}`] ?? true, v => commit({ op: 'entity.include', id: `gesture:${i}`, included: v })),
+  ];
+}
+function viewTrack(tr) {
+  const p = personOf(tr), assignBox = h('div');
+  const speaking = DATA.utterances.filter(u => speakerOf(u).kind === 'face' && speakerOf(u).track === tr.id);
+  const looks = (tr.detail || []).map(d => d.look);
+  const lookCounts = {}; for (const l of looks) { const key = lookName(l); lookCounts[key] = (lookCounts[key] || 0) + 1; }
+  const lookSummary = Object.entries(lookCounts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${Math.round(100 * n / looks.length)}%`).join(', ');
+  return [
+    h('div', { class: 'row' }, h('img', { class: 'crop', src: trackCrop(tr.id), alt: '', title: 'Enlarge', onclick: () => showTrack(tr) }),
+      h('div', {}, h('h2', {}, h('span', { class: 'swatch', style: `background:${colourOf(p)}` }), `Face track ${tr.id}`),
+        h('div', { class: 'meta' }, `Shot ${tr.shot + 1} · ${fmt(tr.start)}–${fmt(tr.end)} · `, h('button', { class: 'link', onclick: () => playSpan(tr) }, 'play')))),
+    h('h3', {}, 'Who is this?'),
+    h('div', { class: 'row' }, 'This face is', personSelect(p, v => {
+      if (v === '__new') newPersonFlow(assignBox, (id, name) => commit({ op: 'person.create', person: id, name }, { op: 'track.assign', track: tr.id, person: id }));
+      else commit({ op: 'track.assign', track: tr.id, person: v });
+    })), assignBox,
+    h('div', { class: 'meta' }, 'Changes this track only. ', !special(p) ? h('button', { class: 'link', onclick: () => select('person', p, { seek: false }) }, `Edit ${nameOf(p)} instead`) : null),
+    h('h3', {}, 'Send to agents'),
+    h('div', { class: 'list' },
+      toggle('Include this track', included('track', tr), v => commit({ op: 'entity.include', id: `track:${tr.id}`, included: v })),
+      !special(p) ? toggle(`Include ${nameOf(p)} everywhere`, included('person', p), v => commit({ op: 'entity.include', id: `person:${p}`, included: v })) : null),
+    bodyInfo(tr),
+    h('h3', {}, 'py-feat at the playhead (academic)'),
+    liveFace(tr),
+    h('h3', {}, 'Whole track'),
+    h('div', { class: 'meta' }, `Mean expression ${tr.emotion}. Speaker in ${plural(speaking.length, 'utterance')}.${lookSummary ? ` Looking at: ${lookSummary}.` : ''}`),
+  ];
+}
+// Pairs of one person's face tracks detected in the same frames at different places: impossible for one person.
+// Span overlap alone is not enough (a long track with gaps interleaves with others), so this needs
+// CO_VISIBLE_MIN shared sample times whose boxes barely overlap (two boxes on one face would overlap).
+const CO_VISIBLE_MIN = 2, SAME_FACE_IOU = 0.3;
+function iou(a, b) {
+  const w = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0])), hh = Math.max(0, Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]));
+  const i = w * hh; return i ? i / (a[2] * a[3] + b[2] * b[3] - i) : 0;
+}
+function coVisible(tracks) {
+  const pairs = [];
+  for (let i = 0; i < tracks.length; i++) for (let j = i + 1; j < tracks.length; j++) {
+    const a = tracks[i], b = tracks[j];
+    if (a.shot !== b.shot || a.start >= b.end || b.start >= a.end) continue;
+    const at = new Map(a.t.map((t, k) => [t.toFixed(2), a.box[k]]));
+    const apart = b.t.filter((t, k) => at.has(t.toFixed(2)) && iou(at.get(t.toFixed(2)), b.box[k]) < SAME_FACE_IOU).length;
+    if (apart >= CO_VISIBLE_MIN) pairs.push([a, b]);
+  }
+  return pairs;
+}
+function viewPerson(p) {
+  const tracks = DATA.tracks.filter(t => personOf(t) === p);
+  const suggestions = queue().pairs.filter(q => q.a === p || q.b === p).slice(0, 4);
+  const secs = tracks.reduce((s, t) => s + t.end - t.start, 0);
+  const sub = h('div', { class: 'meta' }, `${plural(tracks.length, 'track')} · ${secs.toFixed(1)} s on screen${S.names[p] && machinePeople.includes(p) ? ` · machine label ${p}` : ''}`,
+    renameable(p) ? [' · ', h('button', { class: 'link', onclick: () => startRename(`person:${p}`, 'panel') }, 'rename')] : null);
+  return [
+    personHeading(p, 'panel', sub),
+    ...(special(p) ? [] : coVisible(tracks).slice(0, 3).map(([a, b]) => h('div', { class: 'callout' },
+      `Two of ${nameOf(p)}'s faces are on screen together in shot ${a.shot + 1} (${fmt(Math.max(a.start, b.start))}), so one of them is someone else, probably from a merge. `,
+      h('button', { class: 'link', onclick: () => select('track', a.id) }, `track ${a.id}`), ' · ', h('button', { class: 'link', onclick: () => select('track', b.id) }, `track ${b.id}`)))),
+    p === 'Unknown' ? h('div', { class: 'callout' }, 'Faces the clustering could not match to anyone. Open each track to assign it.') : null,
+    p === NOT_PERSON ? h('div', { class: 'callout' }, 'Detections that are not a person: false detections, or faces in pictures and on screens. Agents never receive these.') : null,
+    !special(p) ? [
+      ...people().filter(q => q !== p && !special(q) && nameOf(q) === nameOf(p)).map(q => h('div', { class: 'callout info' },
+        `${machineLabel(q)} is also named ${nameOf(p)}. `, h('button', { class: 'link', onclick: () => showCompare(p, q) }, 'Compare'), ' or ',
+        h('button', { class: 'link', onclick: () => { commit({ op: 'person.merge', from: q, into: p }); toast(`Merged ${machineLabel(q)} into ${nameOf(p)}`); } }, 'merge them'))),
+      h('h3', {}, 'Same person as'),
+      h('div', { class: 'row' }, personSelect(null, v => {
+        commit({ op: 'person.merge', from: p, into: v }); select('person', root(v), { seek: false }); toast(`Merged ${nameOf(p)} into ${nameOf(root(v))}`);
+      }, { allowSpecial: false, placeholder: 'Choose a person…', allowNew: false })),
+      suggestions.length ? h('div', { class: 'list' }, ...suggestions.map(q => {
+        const other = q.a === p ? q.b : q.a, oc = cropOf(other);
+        return h('div', { class: 'item' }, oc ? h('img', { class: 'crop sm', src: oc, alt: '', title: 'Compare side by side', onclick: () => showCompare(p, other) }) : null,
+          h('span', { class: 'grow', title: `ArcFace distance ${q.distance}` }, `${nameOf(other)} looks similar`),
+          h('button', { onclick: () => showCompare(p, other) }, 'Compare'),
+          h('button', { onclick: () => commit({ op: 'person.distinct', a: p, b: other }) }, 'Different'));
+      })) : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { onclick: () => { commit({ op: 'person.not_person', person: p }); toast(`${nameOf(p)} marked as not a person`); select('person', NOT_PERSON, { seek: false }); } }, 'Not a person'),
+        h('span', { class: 'meta' }, 'false detection, or a face in a picture or on a screen')),
+      h('h3', {}, 'Send to agents'),
+      toggle(`Include ${nameOf(p)}`, included('person', p), v => commit({ op: 'entity.include', id: `person:${p}`, included: v })),
+    ] : null,
+    h('h3', {}, 'Appearances'),
+    h('div', { class: 'list' }, ...tracks.map(t => h('button', { class: `item ${included('track', t) ? '' : 'done'}`, onclick: () => select('track', t.id) },
+      h('img', { class: 'crop xs', src: trackCrop(t.id), alt: '' }), h('span', { class: 'grow' }, `${fmt(t.start)}–${fmt(t.end)} · shot ${t.shot + 1}`), h('span', { class: 'meta' }, `#${t.id}`)))),
+  ];
+}
+const PROMINENT = 1.0;   // a word this many SDs above its speaker's typical f0/intensity/duration mix is highlighted
+function prosodySection(u) {
+  const p = P?.utts[u.id];
+  if (!p) return [];
+  const m = p.measure, num = (v, d = 1) => v === null || v === undefined ? '–' : Number(v).toFixed(d);
+  const rows = [
+    ['Speaker (for pitch)', `${p.speaker || '–'} (${(p.speaker_source || '').replaceAll('_', ' ')})`],
+    ['Ending', m.final_movement ? `${ENDING[m.final_movement] || ''} ${m.final_movement}, ${num(m.final_delta_st)} st` : '–'],
+    ['Pitch', `median ${num(m.f0_median_hz, 0)} Hz · range ${num(m.f0_range_st)} st`],
+    ['Rate', `${num(m.speech_rate_syl_s)} syllables/s · ${m.internal_pauses ?? 0} pause(s) · ${num(m.pause_before_s, 2)} s before`],
+    ['Voice', `${num(m.intensity_db, 0)} dB · HNR ${num(m.hnr_db)} dB · jitter ${num(m.jitter_local * 100)}% · shimmer ${num(m.shimmer_local * 100)}%`],
+  ];
+  for (const [key, meta] of Object.entries(P.dims)) {
+    const d = p.dims[key];
+    if (d) rows.push([shortModel(meta.model), `arousal ${num(d.arousal, 2)} · valence ${num(d.valence, 2)} · dominance ${num(d.dominance, 2)}`]);
+  }
+  const words = p.words.length ? h('div', { class: 'prosody-words' }, ...p.words.map(([w, z]) =>
+    h('span', { class: z !== null && z >= PROMINENT ? 'prominent' : '', title: z === null ? 'no voiced frames' : `prominence ${z}` }, w, ' '))) : null;
+  const caps = Object.entries(p.captions).map(([key, c]) => h('div', { class: 'prosody-caption' },
+    h('div', { class: 'meta' }, `${key === 'gpt' ? 'GPT audio' : key === 'qwen' ? 'Qwen captioner' : key} · suggestion, not checked`),
+    h('div', {}, c.description || '(no description)'),
+    h('div', { class: 'tags' }, ...c.tags.map(t => h('span', { class: 'tag' }, t)))));
+  return [
+    h('h3', {}, 'Prosody'),
+    h('table', { class: 'prosody-table' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v)))),
+    words ? h('div', { class: 'meta' }, 'Stressed words (highlighted, measured):') : null, words,
+    ...caps,
+  ];
+}
+function viewUtterance(u) {
+  const sp = speakerOf(u), pred = u.predicted;
+  const textArea = h('textarea', { onchange: e => { if (e.target.value !== (S.uttText[u.id] ?? u.text)) commit({ op: 'utterance.text', utt: u.id, text: e.target.value }); } });
+  textArea.value = S.uttText[u.id] ?? u.text;
+  const voices = [...new Set(DATA.utterances.map(x => x.voice).filter(Boolean))];
+  const same = c => JSON.stringify(c) === JSON.stringify(sp);
+  const evidence = [];
+  if (pred.kind === 'face') evidence.push(`predicted ${speakerName(pred)} (gap to next face ${u.margin?.toFixed(2)})`);
+  else evidence.push(`no visible face scored as speaking; diarized voice ${voiceName(u.voice)}`);
+  if (u.talknet_agrees === false) evidence.push('TalkNet picks a different face');
+  const offscreen = h('select', { onchange: e => { const v = e.target.value; if (!v) return; setSpeaker(u, v.startsWith('voice:') ? { kind: 'offscreen', voice: v.slice(6) || null } : { kind: 'person', person: v.slice(7) }); } },
+    h('option', { value: '' }, 'Someone not on screen…'),
+    h('optgroup', { label: 'Off-screen voices' }, ...voices.map(v => h('option', { value: `voice:${v}`, selected: sp.kind === 'offscreen' && sp.voice === v }, voiceName(v)))),
+    h('optgroup', { label: 'A known person, off camera' }, ...people().filter(p => !special(p)).map(p => h('option', { value: `person:${p}`, selected: sp.kind === 'person' && root(sp.person) === p }, nameOf(p)))));
+  return [
+    h('h2', {}, 'Utterance', uncertain(u) && !reviewed(u) ? h('span', { class: 'flag' }, 'needs review') : null),
+    h('div', { class: 'meta' }, `${fmt(u.start)}–${fmt(u.end)} · shot ${u.shot + 1} · `, h('button', { class: 'link', onclick: () => playSpan(u) }, 'play (space)')),
+    h('h3', {}, 'Transcript'), textArea,
+    h('h3', {}, 'Who is speaking?'),
+    h('div', { class: 'meta' }, evidence.join(' · ')),
+    h('div', { class: 'list', style: 'margin-top:6px' }, ...u.candidates.slice(0, 9).map((c, i) => {
+      const tr = tracksById.get(c.track), p = personOf(tr), choice = { kind: 'face', track: c.track };
+      return h('button', { class: `item ${same(choice) ? 'selected' : ''}`, onclick: () => setSpeaker(u, choice) },
+        h('kbd', {}, i + 1), h('img', { class: 'crop xs', src: trackCrop(tr.id), alt: '' }), h('span', { class: 'grow' }, nameOf(p)),
+        h('span', { class: 'meta' }, `score ${c.score.toFixed(1)}`));
+    }), u.candidates.length ? null : h('div', { class: 'empty' }, 'No face is on screen long enough to score.')),
+    h('div', { class: 'row' }, offscreen, h('span', { class: 'meta' }, h('kbd', {}, 'o'), ' diarized voice')),
+    h('div', { class: 'choice' },
+      h('button', { class: sp.kind === 'multiple' ? 'on' : '', onclick: () => setSpeaker(u, { kind: 'multiple' }) }, h('kbd', {}, 'm'), ' Several'),
+      h('button', { class: sp.kind === 'unsure' ? 'on' : '', onclick: () => setSpeaker(u, { kind: 'unsure' }) }, h('kbd', {}, 'u'), ' Unsure'),
+      h('button', { class: sp.kind === 'not_speech' ? 'on' : '', onclick: () => setSpeaker(u, { kind: 'not_speech' }) }, h('kbd', {}, 'x'), ' Not speech')),
+    reviewed(u) ? h('div', { class: 'row' }, h('span', { class: 'meta' }, `Set by you: ${speakerName(sp)}`), h('button', { onclick: () => commit({ op: 'utterance.speaker', utt: u.id, speaker: null }) }, 'Back to prediction')) : null,
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: autoAdvance, onchange: e => { autoAdvance = e.target.checked; } }), 'After choosing, go to the next uncertain utterance'),
+    h('div', { class: 'row' }, toggle('Send this utterance to agents', included('utt', u), v => commit({ op: 'entity.include', id: `utt:${u.id}`, included: v }))),
+    ...prosodySection(u),
+  ];
+}
+function viewSound(s) {
+  const peers = DATA.sounds.filter(x => x.label === s.label).length;
+  return [
+    h('h2', {}, `Sound: ${s.label}`),
+    h('div', { class: 'meta' }, `${fmt(s.start)}–${fmt(s.end)} · `, h('button', { class: 'link', onclick: () => playSpan(s) }, 'play')),
+    h('h3', {}, 'Evidence'),
+    h('div', {}, `Reported by ${s.sources.join(' and ')}${s.score !== null ? ` (peak ${s.score.toFixed(2)})` : ''}.`),
+    s.agreement === false ? h('div', { class: 'callout' }, 'Only PE-A-Frame reports this. It also reports sounds that are absent, so listen before keeping it.') : null,
+    s.agreement === true ? h('div', { class: 'meta' }, 'An AudioSet tagger agrees.') : null,
+    h('h3', {}, 'Send to agents'),
+    h('div', { class: 'list' },
+      toggle('Include this sound', included('sound', s), v => commit({ op: 'entity.include', id: s.id, included: v })),
+      toggle(`Include every "${s.label}" (${peers})`, S.category[`sound:${s.label}`] ?? true, v => commit({ op: 'category.include', kind: 'sound', label: s.label, included: v }))),
+  ];
+}
+function viewText(x) {
+  return [
+    h('h2', {}, 'On-screen text'), h('div', { class: 'meta' }, `${fmt(x.start)}–${fmt(x.end)}`),
+    h('div', { style: 'font-size:16px;margin:10px 0' }, `“${x.text}”`),
+    h('div', { class: 'meta' }, DATA.sources.text),
+    h('h3', {}, 'Send to agents'),
+    toggle('Include this text', included('text', x), v => commit({ op: 'entity.include', id: x.id, included: v })),
+  ];
+}
+function viewShot(s) {
+  const area = h('textarea', { rows: 5, onchange: e => { if (e.target.value !== (S.caption[s.index] ?? s.description)) commit({ op: 'shot.caption', shot: s.index, caption: e.target.value }); } });
+  area.value = S.caption[s.index] ?? s.description ?? '';
+  const onScreen = [...new Set(DATA.tracks.filter(t => t.shot === s.index).map(personOf))];
+  const texts = DATA.texts.filter(x => x.start < s.end && x.end > s.start);
+  return [
+    h('h2', {}, `Shot ${s.index + 1} of ${DATA.shots.length}`),
+    h('div', { class: 'meta' }, `${fmt(s.start)}–${fmt(s.end)} · `, h('button', { class: 'link', onclick: () => playSpan(s) }, 'play')),
+    h('h3', {}, `Caption · ${DATA.sources.captions || 'none'}`), area,
+    s.setting ? h('div', { class: 'meta' }, `Setting: ${s.setting}`) : null,
+    s.mood ? h('div', { class: 'meta' }, `Mood: ${s.mood}`) : null,
+    h('div', { style: 'margin-top:8px' }, toggle('Send this caption to agents', included('shot', s), v => commit({ op: 'entity.include', id: `shot:${s.index}`, included: v }))),
+    h('h3', {}, 'People in this shot'),
+    onScreen.length ? h('div', { class: 'list' }, ...onScreen.map(p => h('button', { class: 'item', onclick: () => select('person', p, { seek: false }) },
+      cropOf(p) ? h('img', { class: 'crop sm', src: cropOf(p), alt: '' }) : h('span', { class: 'swatch', style: `background:${colourOf(p)}` }), h('span', { class: 'grow' }, nameOf(p))))) : h('div', { class: 'empty' }, 'No faces detected.'),
+    texts.length ? [h('h3', {}, 'On-screen text'), h('div', { class: 'list' }, ...texts.map(x => h('button', { class: 'item', onclick: () => select('text', x.id) }, h('span', { class: 'grow' }, x.text))))] : null,
+  ];
+}
+function valueEditor(type, value, onchange) {
+  if (type.kind === 'binary') return h('div', { class: 'choice' },
+    h('button', { class: value === true ? 'on' : '', onclick: () => onchange(true) }, 'Yes'), h('button', { class: value === false ? 'on' : '', onclick: () => onchange(false) }, 'No'));
+  if (type.kind === 'category') return h('div', { class: 'choice' }, ...type.options.map(o => h('button', { class: value === o ? 'on' : '', onclick: () => onchange(o) }, o)));
+  if (type.kind === 'number') {
+    const input = h('input', { type: 'number', value: value ?? '', min: type.min ?? null, max: type.max ?? null, step: 'any', style: 'width:120px',
+      onchange: e => onchange(e.target.value === '' ? null : Number(e.target.value)) });
+    input.addEventListener('keydown', e => e.stopPropagation());
+    return h('div', { class: 'row' }, input, type.min !== undefined || type.max !== undefined ? h('span', { class: 'meta' }, `range ${type.min ?? '…'} to ${type.max ?? '…'}`) : null);
+  }
+  const area = h('textarea', { onchange: e => onchange(e.target.value) }); area.value = value ?? ''; return area;
+}
+function defaultPerson() {   // the person in focus: the selection, else the only face on screen
+  if (selection?.kind === 'person' && !special(selection.id)) return selection.id;
+  if (selection?.kind === 'track') { const p = personOf(tracksById.get(selection.id)); return special(p) ? null : p; }
+  if (selection?.kind === 'utt') return speakerPerson(speakerOf(uttsById.get(selection.id)));
+  const on = [...new Set(visibleTracks(video.currentTime).map(personOf))].filter(p => !special(p));
+  return on.length === 1 ? on[0] : null;
+}
+function addNote(typeId, start, end) {
+  const type = typeOf(typeId);
+  const note = { id: `note:${Date.now()}`, type: typeId, start, end, value: null, person: type.target === 'person' ? defaultPerson() : null };
+  marking = { start: null, end: null };
+  commit({ op: 'annotation.add', note });
+  select('note', note.id, { seek: false });
+}
+function viewNote(n) {
+  const type = typeOf(n.type);
+  return [
+    h('h2', {}, type?.name || 'Note', h('span', { class: 'meta', style: 'font-weight:400' }, VALUE_KINDS[type?.kind] || '')),
+    h('div', { class: 'meta' }, `${fmt(n.start)}–${fmt(n.end)} · `, h('button', { class: 'link', onclick: () => playSpan(n) }, 'play')),
+    h('h3', {}, 'Value'), valueEditor(type, n.value, v => commit({ op: 'annotation.edit', id: n.id, fields: { value: v } })),
+    type?.target === 'person' ? [h('h3', {}, 'About'), personSelect(n.person ? root(n.person) : null, v => commit({ op: 'annotation.edit', id: n.id, fields: { person: v } }), { allowSpecial: false, placeholder: 'Choose a person…', allowNew: false })] : null,
+    h('h3', {}, 'Span'),
+    h('div', { class: 'row' }, h('button', { onclick: () => commit({ op: 'annotation.edit', id: n.id, fields: { start: Math.min(video.currentTime, n.end) } }) }, 'Start = playhead'),
+      h('button', { onclick: () => commit({ op: 'annotation.edit', id: n.id, fields: { end: Math.max(video.currentTime, n.start) } }) }, 'End = playhead')),
+    h('div', { class: 'row', style: 'margin-top:14px' }, h('button', { onclick: () => { commit({ op: 'annotation.delete', id: n.id }); selection = null; render(); } }, 'Delete')),
+  ];
+}
+function viewNothing() {
+  const s = shotAt(video.currentTime);
+  return [h('div', { class: 'callout info' }, 'Click a face on the video or any bar on the timeline to inspect it. Double-click a name to rename. The Review tab lists what the models are least sure about.'), ...viewShot(s)];
+}
+
+// ---------- tabs ----------
+function renderReview() {
+  const q = queue(), open = q.speakers.filter(u => !reviewed(u)).length;
+  const cur = selection?.kind === 'utt' ? uttsById.get(selection.id) : null;
+  const byShot = new Map();
+  for (const u of q.speakers) { if (!byShot.has(u.shot)) byShot.set(u.shot, []); byShot.get(u.shot).push(u); }
+  const decided = s => s.id in S.included;
+  return [
+    cur ? h('div', { style: 'border:1px solid var(--color-border-strong);border-radius:8px;padding:10px 12px;margin-bottom:6px' }, viewUtterance(cur))
+      : h('div', { class: 'callout info' }, 'Pick an utterance below, or press ', h('kbd', {}, 'j'), ' to start. Its faces are numbered on the video.'),
+    h('h3', {}, `Who is speaking · ${open} of ${q.speakers.length} left`),
+    h('div', { class: 'meta' }, `Faces are on screen but the speaker model is unsure (gap under ${UNCERTAIN_GAP}, or no face scored as speaking). Grouped by shot.`),
+    ...[...byShot.entries()].map(([shot, us]) => [
+      h('div', { class: 'shot-group', onclick: () => select('shot', shot) }, DATA.shots[shot].thumb ? h('img', { src: DATA.shots[shot].thumb, alt: '' }) : null,
+        h('span', {}, `Shot ${shot + 1} · ${fmt(DATA.shots[shot].start)}`), h('span', { class: 'meta' }, `${us.filter(u => !reviewed(u)).length} left`)),
+      h('div', { class: 'list' }, ...us.map(u => {
+        const sp = speakerOf(u), tr = sp.kind === 'face' ? sp.track : null;
+        return h('button', { class: `item ${reviewed(u) ? 'done' : ''} ${isSel('utt', u.id) ? 'selected' : ''}`, onclick: () => { select('utt', u.id); playSpan(u); } },
+          tr !== null ? h('img', { class: 'crop xs', src: trackCrop(tr), alt: '' }) : h('span', { class: 'swatch', style: `background:${speakerColour(sp) || '#8a8a8a'}` }),
+          h('span', { class: 'grow' }, `“${S.uttText[u.id] ?? u.text}”`), h('span', { class: 'meta' }, speakerName(sp)));
+      }))]),
+    h('h3', {}, `Possible duplicate people · ${q.pairs.length}`),
+    h('div', { class: 'meta', style: 'margin-bottom:6px' }, 'Similar faces that are never on screen together. Compare shows every track of both.'),
+    q.pairs.length ? h('div', { class: 'list' }, ...q.pairs.map(p => h('div', { class: 'item' },
+      cropOf(p.a) ? h('img', { class: 'crop sm', src: cropOf(p.a), alt: '', onclick: () => showCompare(p.a, p.b) }) : null, cropOf(p.b) ? h('img', { class: 'crop sm', src: cropOf(p.b), alt: '', onclick: () => showCompare(p.a, p.b) }) : null,
+      h('span', { class: 'grow', title: `ArcFace distance ${p.distance}` }, `${nameOf(p.a)} / ${nameOf(p.b)}`),
+      h('button', { onclick: () => showCompare(p.a, p.b) }, 'Compare')))) : h('div', { class: 'empty' }, 'None left.'),
+    h('h3', {}, `Sounds only one model heard · ${q.sounds.filter(s => !decided(s)).length} of ${q.sounds.length} left`),
+    h('div', { class: 'list' }, ...q.sounds.map(s => h('div', { class: `item ${decided(s) ? 'done' : ''} ${isSel('sound', s.id) ? 'selected' : ''}` },
+      h('span', { class: 'meta' }, fmt(s.start)), h('span', { class: 'grow', onclick: () => select('sound', s.id) }, s.label),
+      h('button', { onclick: () => playSpan(s) }, 'Play'),
+      h('button', { class: S.included[s.id] === true ? 'on' : '', onclick: () => commit({ op: 'entity.include', id: s.id, included: true }) }, 'Keep'),
+      h('button', { class: S.included[s.id] === false ? 'on' : '', onclick: () => commit({ op: 'entity.include', id: s.id, included: false }) }, 'Exclude')))),
+  ];
+}
+function renderPeople() {
+  const secs = screenSeconds();
+  return [h('div', { class: 'meta', style: 'margin-bottom:8px' }, 'Identities from face clustering. Double-click a name to rename; click a picture to see every track.'),
+    h('div', { class: 'list' }, ...people().map(p => {
+      const n = DATA.tracks.filter(t => personOf(t) === p).length; if (!n) return null;
+      const crop = cropOf(p);
+      const item = h('div', { class: `item ${isSel('person', p) ? 'selected' : ''} ${included('person', p) ? '' : 'done'}` },
+        crop ? h('img', { class: 'crop sm', src: crop, alt: '', onclick: e => { e.stopPropagation(); showPerson(p); } }) : h('span', { class: 'swatch', style: `background:${colourOf(p)}` }),
+        renameable(p) ? nameSpan(`person:${p}`, 'people', nameOf(p), 'grow') : h('span', { class: 'grow' }, nameOf(p)), h('span', { class: 'meta' }, `${(secs[p] || 0).toFixed(0)} s · ${n}`));
+      item.addEventListener('click', e => renameable(p) ? nameClick(e, `person:${p}`, 'people', () => select('person', p, { seek: false })) : select('person', p, { seek: false }));
+      return item;
+    }))];
+}
+function renderNotes() {
+  const nameIn = h('input', { type: 'text', placeholder: 'Name, e.g. Mental state', style: 'flex:1' });
+  const kindIn = h('select', {}, ...Object.entries(VALUE_KINDS).map(([k, v]) => h('option', { value: k }, v)));
+  const optsIn = h('input', { type: 'text', placeholder: 'Categories, comma separated', style: 'flex:1' });
+  const minIn = h('input', { type: 'number', placeholder: 'min', style: 'width:80px' }), maxIn = h('input', { type: 'number', placeholder: 'max', style: 'width:80px' });
+  const targetIn = h('select', {}, h('option', { value: 'person' }, 'about a person'), h('option', { value: 'scene' }, 'about the scene'));
+  const optsRow = h('div', { class: 'row' }, optsIn), rangeRow = h('div', { class: 'row' }, 'Range (optional)', minIn, maxIn);
+  const showKind = () => { optsRow.style.display = kindIn.value === 'category' ? '' : 'none'; rangeRow.style.display = kindIn.value === 'number' ? '' : 'none'; };
+  kindIn.addEventListener('change', showKind); showKind();
+  for (const el of [nameIn, optsIn, minIn, maxIn]) el.addEventListener('keydown', e => e.stopPropagation());
+  const addType = () => {
+    const name = nameIn.value.trim(); if (!name) { toast('Give the type a name'); return; }
+    const kind = kindIn.value, options = optsIn.value.split(',').map(s => s.trim()).filter(Boolean);
+    if (kind === 'category' && options.length < 2) { toast('List at least two categories'); return; }
+    const type = { id: `type:${Date.now()}`, name, kind, target: targetIn.value, options: kind === 'category' ? options : [] };
+    if (kind === 'number') { if (minIn.value !== '') type.min = Number(minIn.value); if (maxIn.value !== '') type.max = Number(maxIn.value); }
+    activeType = type.id;
+    view.collapsed = view.collapsed.filter(k => k !== 'annotations'); saveView();
+    commit({ op: 'annotation.type', type });
+    toast(`“${name}” is now a timeline row. Drag across it to annotate.`);
+  };
+  const notes = [...S.notes.values()].sort((a, b) => a.start - b.start);
+  if (!activeType || !typeOf(activeType)) activeType = S.types[0]?.id ?? null;
+  const span = selection && selection.kind !== 'person' && selection.kind !== 'note' ? spanOf(selection) : null;
+  const what = { utt: 'utterance', track: 'face track', sound: 'sound', text: 'text', shot: 'shot' };
+  const addHere = activeType ? h('div', { class: 'list' },
+    h('div', { class: 'row' }, 'Type', h('select', { onchange: e => { activeType = e.target.value; } }, ...S.types.map(t => h('option', { value: t.id, selected: t.id === activeType }, t.name)))),
+    h('div', { class: 'row' },
+      span ? h('button', { class: 'primary', onclick: () => addNote(activeType, span.start, span.end) }, `Annotate the selected ${what[selection.kind]} (${fmt(span.start)}–${fmt(span.end)})`) : null,
+      h('button', { class: span ? '' : 'primary', onclick: () => { const s = shotAt(video.currentTime); addNote(activeType, s.start, s.end); } }, 'Annotate the current shot')),
+    h('div', { class: 'meta' }, 'Or drag across the type’s row in the timeline, or press ', h('kbd', {}, '['), ' and ', h('kbd', {}, ']'), ' at the start and end while playing.')) : null;
+  return [
+    h('div', { class: 'meta' }, 'Your own annotations, kept apart from the machine track. Agents never receive a type unless an experiment turns it on.'),
+    S.types.length ? [h('h3', {}, 'Add an annotation'), addHere] : null,
+    h('h3', {}, `Annotations · ${notes.length}`),
+    notes.length ? h('div', { class: 'list' }, ...notes.map(n => h('button', { class: `item ${isSel('note', n.id) ? 'selected' : ''}`, onclick: () => select('note', n.id) },
+      h('span', { class: 'meta' }, fmt(n.start)), h('span', { class: 'grow' }, `${typeOf(n.type)?.name}: ${noteValue(n)}${n.person ? ` (${nameOf(root(n.person))})` : ''}`)))) : h('div', { class: 'empty' }, S.types.length ? 'None yet.' : 'Add a type first.'),
+    h('h3', {}, 'Types'),
+    S.types.length ? h('div', { class: 'list' }, ...S.types.map(t => h('div', { class: 'item' }, h('span', { class: 'grow' }, t.name),
+      h('span', { class: 'meta' }, `${VALUE_KINDS[t.kind]}${t.kind === 'category' ? `: ${t.options.join(', ')}` : ''} · ${t.target === 'person' ? 'person' : 'scene'}`)))) : null,
+    h('h3', {}, 'New type'),
+    h('div', { class: 'row' }, nameIn), h('div', { class: 'row' }, 'Value', kindIn, targetIn), optsRow, rangeRow,
+    h('div', { class: 'row' }, h('button', { onclick: addType }, 'Add type')),
+  ];
+}
+function renderData() {
+  const m = DATA.manifest;
+  const size = b => b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} kB`;
+  return [
+    h('div', { class: 'meta' }, 'Everything extracted for this video, including features the timeline does not draw. In HyperStudy each run is a versioned record you can compare with earlier runs and re-run; this prototype reads one run directory.'),
+    h('div', { class: 'row meta' }, `Video ${DATA.clip} · sha256 ${DATA.sha256.slice(0, 12)}… · ${DATA.width}×${DATA.height} · ${fmt(DATA.duration)}`),
+    ...m.stages.map(s => h('div', { class: 'stage-card' },
+      h('div', { class: 'row', style: 'margin:0' }, h('b', {}, s.stage), h('span', { class: `badge ${s.licence_mode === 'academic-only' ? 'academic' : s.licence_mode === 'commercial-ok' ? 'commercial' : ''}`, title: s.licence }, s.licence_mode)),
+      h('div', { class: 'meta' }, s.model),
+      h('div', { class: 'meta' }, `${s.file} · ${size(s.bytes)} · run ${s.run_at}${s.seconds ? ` · took ${s.seconds} s` : ''}`),
+      h('table', {}, ...s.features.map(f => h('tr', {}, h('td', {}, f.name), h('td', {}, f.shape)))),
+      s.note ? h('div', { class: 'meta', style: 'margin-top:4px' }, s.note) : null)),
+  ];
+}
+function renderPanel() {
+  const panel = $('panel');
+  const scroll = panel.scrollTop;
+  document.querySelectorAll('#tabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+    if (b.dataset.tab === 'review') { const q = queue(); b.textContent = `Review (${q.speakers.filter(u => !reviewed(u)).length + q.pairs.length})`; }
+  });
+  let content;
+  if (tab === 'review') content = renderReview();
+  else if (tab === 'people') content = renderPeople();
+  else if (tab === 'notes') content = renderNotes();
+  else if (tab === 'data') content = renderData();
+  else if (!selection) content = viewNothing();
+  else {
+    const { kind, id } = selection;
+    content = kind === 'track' ? viewTrack(tracksById.get(id)) : kind === 'person' ? viewPerson(id) : kind === 'utt' ? viewUtterance(uttsById.get(id))
+      : kind === 'sound' ? viewSound(DATA.sounds.find(s => s.id === id)) : kind === 'text' ? viewText(DATA.texts.find(s => s.id === id))
+      : kind === 'shot' ? viewShot(DATA.shots[id]) : kind === 'object' && objTrack(id) ? viewObject(objTrack(id)) : kind === 'objid' ? viewObjectIdentity(id)
+      : kind === 'gesture' && DATA.hand_events ? viewGesture(id) : kind === 'facing' && facingFile() ? viewFacing(id)
+      : kind === 'event' && DATA.event_sources ? viewEvent(id)
+      : S.notes.has(id) ? viewNote(S.notes.get(id)) : viewNothing();
+  }
+  panel.replaceChildren(...[content].flat(Infinity).filter(Boolean));
+  panel.scrollTop = scroll;
+  const help = selection?.kind === 'utt'
+    ? [h('kbd', {}, '1'), '–', h('kbd', {}, '9'), ' face  ', h('kbd', {}, 'o'), ' voice  ', h('kbd', {}, 'm'), ' several  ', h('kbd', {}, 'u'), ' unsure  ', h('kbd', {}, 'x'), ' not speech  ', h('kbd', {}, 'j'), '/', h('kbd', {}, 'k'), ' next/prev']
+    : [h('kbd', {}, 'space'), ' play  ', h('kbd', {}, '←'), h('kbd', {}, '→'), ' 1 s  ', h('kbd', {}, ','), h('kbd', {}, '.'), ' shot  ', h('kbd', {}, 'e'), ' include  ', h('kbd', {}, '['), h('kbd', {}, ']'), ' annotate  ', h('kbd', {}, 'j'), ' review  ', h('kbd', {}, '⌥'), '-click segment'];
+  $('help').replaceChildren(...help, '  ', h('kbd', {}, '⌘Z'), ' undo');
+}
+function render() {
+  $('count').textContent = plural(ops.length, 'correction');
+  $('undo').disabled = !ops.length;
+  renderPanel(); renderTimeline(); drawOverlay();
+}
+document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { tab = b.dataset.tab; renderPanel(); }));
+
+// ---------- transport, keys, import/export ----------
+function togglePlay() { playUntil = null; video.paused ? video.play() : video.pause(); }
+$('play').addEventListener('click', togglePlay);
+$('speed').addEventListener('change', e => { video.playbackRate = Number(e.target.value); });
+video.addEventListener('play', () => { $('play').textContent = 'Pause'; tick(); });
+video.addEventListener('pause', () => { $('play').textContent = 'Play'; });
+let lastShot = -1;
+function onTime() {
+  if (video.paused) frameT = video.currentTime;
+  const t = frameT, shot = shotAt(t);
+  if (playUntil !== null && t >= playUntil) { video.pause(); playUntil = null; }
+  $('time').textContent = `${fmt(t)} / ${fmt(DATA.duration)}`;
+  $('shotinfo').textContent = `Shot ${shot.index + 1} of ${DATA.shots.length}`;
+  drawOverlay(); movePlayhead();
+  if (shot.index !== lastShot) { lastShot = shot.index; if (!selection && tab === 'inspect') renderPanel(); }
+  const live = $('live');
+  if (live && selection?.kind === 'track') { const tr = tracksById.get(selection.id); if (`${tr.id}:${sampleAt(tr, t)}` !== liveKey) fillLive(live, tr); }
+  if (marking.start !== null && marking.end === null && !scrub) renderTimeline();
+}
+function tick() {   // one draw per presented video frame, at that frame's media time
+  video.requestVideoFrameCallback((_now, meta) => { frameT = meta.mediaTime; onTime(); if (!video.paused) tick(); });
+}
+video.addEventListener('seeked', onTime);
+video.addEventListener('pause', onTime);
+video.addEventListener('loadedmetadata', onTime);
+window.addEventListener('resize', () => { pps = fitPps() * Number($('zoom').value); render(); });
+
+document.addEventListener('keydown', e => {
+  if (e.target.closest?.('input, textarea, select')) return;
+  const k = e.key, utt = selection?.kind === 'utt' ? uttsById.get(selection.id) : null;
+  if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (k === ' ') { e.preventDefault(); const span = spanOf(selection); if (video.paused && span && selection.kind !== 'person' && selection.kind !== 'shot') playSpan(span); else togglePlay(); }
+  else if (k === 'ArrowLeft' || k === 'ArrowRight') { e.preventDefault(); playUntil = null; video.currentTime = Math.max(0, Math.min(DATA.duration, video.currentTime + (k === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 5 : 1))); }
+  else if (k === ',' || k === '.') { const i = shotAt(video.currentTime).index + (k === ',' ? -1 : 1); if (DATA.shots[i]) video.currentTime = DATA.shots[i].start + 0.01; }
+  else if (k === 'j' || k === 'k') { tab = 'review'; nextInQueue(k === 'j' ? 1 : -1); }
+  else if (k === 'Escape') { selection = null; render(); }
+  else if (k === '[') { if (!S.types.length) { tab = 'notes'; render(); toast('Add an annotation type first'); return; } marking = { start: video.currentTime, end: null }; renderTimeline(); toast('Start marked; press ] at the end'); }
+  else if (k === ']') { if (marking.start !== null && activeType) { const a = marking.start, b = video.currentTime; addNote(activeType, Math.min(a, b), Math.max(a, b)); } }
+  else if (k === 'e' && selection) {
+    const { kind, id } = selection, key = kind === 'track' ? `track:${id}` : kind === 'person' ? `person:${id}` : kind === 'utt' ? `utt:${id}` : kind === 'shot' ? `shot:${id}`
+      : kind === 'object' ? `objtrack:${id}` : kind === 'objid' ? `object:${id}` : id;
+    const item = kind === 'track' ? tracksById.get(id) : kind === 'utt' ? uttsById.get(id) : kind === 'sound' ? DATA.sounds.find(s => s.id === id) : kind === 'text' ? DATA.texts.find(s => s.id === id)
+      : kind === 'shot' ? DATA.shots[id] : kind === 'object' ? objTrack(id) : id;
+    if (kind !== 'note') commit({ op: 'entity.include', id: key, included: !included(kind, item) });
+  }
+  else if (utt && /^[1-9]$/.test(k)) { const c = utt.candidates[Number(k) - 1]; if (c) setSpeaker(utt, { kind: 'face', track: c.track }); }
+  else if (utt && k === 'o') setSpeaker(utt, { kind: 'offscreen', voice: utt.voice });
+  else if (utt && k === 'm') setSpeaker(utt, { kind: 'multiple' });
+  else if (utt && k === 'u') setSpeaker(utt, { kind: 'unsure' });
+  else if (utt && k === 'x') setSpeaker(utt, { kind: 'not_speech' });
+});
+
+$('undo').addEventListener('click', undo);
+$('export').addEventListener('click', () => {
+  const doc = { format: 'perception-corrections/1', clip: DATA.clip, sha256: DATA.sha256, sources: DATA.sources, exported_at: new Date().toISOString(), ops };
+  const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })), download: 'perception_corrections.json' });
+  document.body.append(a); a.click(); a.remove();
+});
+$('import').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const doc = JSON.parse(await f.text());
+    if (doc.sha256 !== DATA.sha256) { toast('That file is for a different video'); return; }
+    ops = doc.ops; persist(); fold(); render(); toast(`Imported ${plural(ops.length, 'correction')}`);
+  } catch { toast('Could not read that file'); }
+  e.target.value = '';
+});
+
+$('sub').textContent = `${DATA.clip} · ${DATA.shots.length} shots · ${DATA.utterances.length} utterances · ${DATA.tracks.length} face tracks · ${DATA.sounds.length} sound events`;
+$('sub').title = Object.entries(DATA.sources).map(([k, v]) => `${k}: ${v}`).join('\n');
+fold();
+pps = fitPps();
+renderLayers();
+renderGroupChips();
+if (view.layers.mesh && DATA.face_detail?.mesh) loadMesh();
+if (view.layers.skeleton && view.poseModel) loadPose(view.poseModel);
+if (view.layers.hands && view.handModel) loadHands(view.handModel);
+render();
+onTime();
+</script>
+</body>
+</html>

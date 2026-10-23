@@ -1,0 +1,6 @@
+[project]
+name = "perception-bakeoff-faces"
+version = "0.1.0"
+description = "Face tracks, identity clusters, affect and gaze for the perception bake-off (py-feat)"
+requires-python = ">=3.12,<3.13"
+dependencies = ["py-feat", "scikit-learn", "pillow"]

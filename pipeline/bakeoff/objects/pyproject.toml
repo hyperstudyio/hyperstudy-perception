@@ -1,0 +1,19 @@
+[project]
+name = "perception-bakeoff-objects"
+version = "0.1.0"
+description = "Object vocabulary, segmentation, tracking and cross-shot identities for the perception bake-off (SAM 3)"
+requires-python = ">=3.12,<3.13"
+# Own env: SAM 3 video needs transformers 5.20, which the root env's whisperx stack does not allow.
+dependencies = [
+    "torch==2.14.*",
+    "torchvision==0.29.*",
+    "transformers==5.20.2",
+    "timm==1.0.30",
+    "accelerate",
+    "huggingface_hub",
+    "safetensors",
+    "anthropic==2.1.0",
+    "opencv-python-headless==5.0.0.93",
+    "numpy",
+    "pillow",
+]

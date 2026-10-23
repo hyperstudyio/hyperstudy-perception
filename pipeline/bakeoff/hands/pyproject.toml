@@ -1,0 +1,6 @@
+[project]
+name = "perception-bakeoff-hands"
+version = "0.1.0"
+description = "Hand pose (21 keypoints per hand) and derived hand events for the perception bake-off: RTMW whole-body hands, RTMPose-hand via rtmlib, MediaPipe Hand Landmarker"
+requires-python = ">=3.12,<3.13"
+dependencies = ["rtmlib>=0.0.16", "onnxruntime>=1.20", "mediapipe>=0.10.20", "scipy", "numpy", "opencv-python"]
