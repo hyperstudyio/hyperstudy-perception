@@ -21,6 +21,7 @@ import json
 import os
 import platform
 import re
+import stat
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,9 +102,24 @@ class Backend(ABC):
     @abstractmethod
     def cancel(self, handle: dict) -> None: ...
 
+    def work_dir(self, attempt_dir: Path) -> Path:
+        """Where the node itself reads and writes (its request, out/, response.json)."""
+        return attempt_dir
+
+    def output_dir(self, attempt_dir: Path) -> Path:
+        return self.work_dir(attempt_dir) / "out"
+
     def collect(self, attempt_dir: Path) -> dict | None:
-        path = attempt_dir / "response.json"
-        return json.loads(path.read_text()) if path.exists() else None
+        """The node's response, read only if it is a regular file: the node controls this directory, and a symlink
+        here could point anywhere."""
+        path = self.work_dir(attempt_dir) / "response.json"
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        return json.loads(path.read_text())
 
     def cleanup(self, attempt_dir: Path) -> None:
         return None

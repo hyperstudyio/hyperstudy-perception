@@ -134,6 +134,28 @@ def sha256_tree(path: Path) -> str:
     return h.hexdigest()
 
 
+def special_files(path: Path) -> list[str]:
+    """Entries that are not plain files or directories (symlinks, sockets, devices), found without following links.
+    Outputs must have none: publishing a symlink would copy whatever it points at on the host."""
+    import os
+    import stat
+    bad = []
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        return [f"{path.name} (symlink)"]
+    if stat.S_ISDIR(st.st_mode):
+        for root, dirs, files in os.walk(path, followlinks=False):
+            for name in dirs + files:
+                mode = os.lstat(os.path.join(root, name)).st_mode
+                if stat.S_ISLNK(mode):
+                    bad.append(f"{os.path.relpath(os.path.join(root, name), path)} (symlink)")
+                elif not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                    bad.append(f"{os.path.relpath(os.path.join(root, name), path)} (not a regular file)")
+    elif not stat.S_ISREG(st.st_mode):
+        bad.append(f"{path.name} (not a regular file)")
+    return bad
+
+
 def content_hash(path: Path) -> str:
     return sha256_tree(path) if path.is_dir() else sha256_file(path)
 

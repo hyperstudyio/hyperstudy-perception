@@ -247,7 +247,7 @@ class Coordinator:
             "protocol": 1, "run": run_id, "node": node.id, "uses": m.ref, "attempt": attempt, "partition": None,
             "accelerator": placement.runner.accelerator,
             "inputs": placement.backend.stage_inputs(attempt_dir, inputs), "config": node.config,
-            "out_dir": str(attempt_dir / "out"), "secrets": m.secrets,
+            "out_dir": str(placement.backend.output_dir(attempt_dir)), "secrets": m.secrets,
             "producer": {"stage": m.stage or m.id, "stage_version": m.version, "models": [x.model_dump(exclude={"size_gb", "gated"}) for x in m.models]},
         }
         (attempt_dir / "request.json").write_text(json.dumps(request, indent=1))
@@ -292,7 +292,7 @@ class Coordinator:
             err = response["error"]
             self._attempt_failed(run_id, graph, node.id, t["attempt"], err["code"], err["message"])
             return
-        problems, outs = self._publish(node, attempt_dir, response)
+        problems, outs = self._publish(node, backend.output_dir(attempt_dir), response)
         if problems:
             self._attempt_failed(run_id, graph, node.id, t["attempt"], problems[0][0], "; ".join(p for _, p in problems))
             return
@@ -307,7 +307,7 @@ class Coordinator:
             db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (cost, run_id))
         self.store.event(run_id, node.id, "task.succeeded", f"{usage.get('seconds', '?')} s")
 
-    def _publish(self, node: CompiledNode, attempt_dir: Path, response: dict) -> tuple[list[tuple[str, str]], dict[str, Artifact]]:
+    def _publish(self, node: CompiledNode, out_dir: Path, response: dict) -> tuple[list[tuple[str, str]], dict[str, Artifact]]:
         """Validate every declared output, check the models it reports, then publish. Nothing is published unless all
         of it is valid."""
         m, problems, ready = node.manifest, [], {}
@@ -322,9 +322,17 @@ class Coordinator:
             if entry is None:
                 problems.append(("schema", f"output {name} was not written"))
                 continue
-            path = (attempt_dir / "out" / entry["path"]).resolve()
-            if not path.is_relative_to((attempt_dir / "out").resolve()) or not path.exists():
-                problems.append(("schema", f"output {name}: {entry['path']} is missing or outside the output directory"))
+            raw = out_dir / entry["path"]
+            if not raw.exists() and not raw.is_symlink():
+                problems.append(("schema", f"output {name}: {entry['path']} is missing"))
+                continue
+            special = artifacts.special_files(raw)
+            if special:
+                problems.append(("schema", f"output {name}: contains a symlink or special file: {', '.join(special[:5])}"))
+                continue
+            path = raw.resolve()
+            if not path.is_relative_to(out_dir.resolve()):
+                problems.append(("schema", f"output {name}: {entry['path']} is outside the output directory"))
                 continue
             for p in artifacts.get(type_id).validate(path):
                 problems.append(("schema", f"output {name} ({type_id}): {p}"))

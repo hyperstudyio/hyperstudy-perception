@@ -43,3 +43,22 @@ def test_a_tree_is_published_whole_under_its_tree_hash(tmp_path):
     art = store.publish(tree, "assets.v1")
     assert art.shape == "tree" and art.hash == artifacts.sha256_tree(tree)
     assert (art.path / "crops" / "x.jpg").read_bytes() == b"jpeg"
+
+
+def test_a_symlink_is_never_published(tmp_path):
+    """Publishing follows nothing: a symlink in an output would copy a host file into the store and the bundle."""
+    import pytest
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private")
+    store = Store(tmp_path / "store")
+    tree = tmp_path / "assets"
+    tree.mkdir()
+    (tree / "x.jpg").symlink_to(secret)
+    with pytest.raises(ValueError, match="symlink"):
+        store.publish(tree, "assets.v1")
+    link = tmp_path / "out.json"
+    link.symlink_to(secret)
+    with pytest.raises(ValueError, match="symlink"):
+        store.publish(link, "json.v1")
+    assert not [p for p in (store.root / "objects").rglob("*") if p.is_file()]
+    assert not [p for p in (store.root / "trees").rglob("*") if p.is_file()]

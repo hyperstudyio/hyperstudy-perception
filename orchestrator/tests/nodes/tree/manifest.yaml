@@ -1,0 +1,9 @@
+id: test.tree
+version: 1.0.0
+description: Writes an assets tree; with `link_to` set, one entry is a symlink to that host path (security tests)
+inputs: {a: json.v1}
+outputs: {assets: assets.v1}
+config:
+  link_to: {type: string, default: ""}
+runners:
+  - {kind: self, entry: node.py}

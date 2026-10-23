@@ -256,3 +256,55 @@ def test_a_run_exports_as_a_bundle_with_licences_carried_downstream(tmp_path):
     result = subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_an_output_with_a_symlink_fails_and_publishes_nothing(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, graph_doc(tmp_path, [{"id": "t", "uses": "test.tree@1.0.0", "inputs": {"a": "$inputs.seed"},
+                                                      "config": {"link_to": str(secret)}}]))
+    assert status == "failed"
+    task = coord._tasks(run_id)["t"]
+    assert task["error_code"] == "schema" and "symlink" in task["error"]
+    assert not list((coord.store.root / "trees").rglob("*.jpg"))
+
+
+def test_a_response_that_is_a_symlink_is_not_read(tmp_path):
+    from perception.backends.native import SelfBackend
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"ok": true, "outputs": {}}')
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    (attempt / "response.json").symlink_to(secret)
+    assert SelfBackend().collect(attempt) is None
+
+
+def test_containers_see_only_their_own_folder(tmp_path):
+    """The container can write where it is mounted, so nothing the host writes or reads blindly may live there."""
+    from perception.backends.oci import OciBackend
+    from perception.manifests import Runner
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    (attempt / "request.json").write_text(json.dumps({"inputs": {"video": {"host_path": "/data/v.mp4", "path": "/in/video"}},
+                                                      "out_dir": str(attempt / "out"), "secrets": []}))
+    runner = Runner(kind="oci", image="example/node@sha256:" + "a" * 64, platforms=["linux/amd64"], accelerator="cpu")
+    cmd = OciBackend().command(runner, attempt, {})
+    mounts = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-v"]
+    assert f"{attempt / 'container'}:/work" in mounts
+    assert not any(m.startswith(f"{attempt}:") for m in mounts)
+    assert "/data/v.mp4:/in/video:ro" in mounts
+    request = json.loads((attempt / "container" / "request.container.json").read_text())
+    assert request["out_dir"] == "/work/out" and "host_path" not in json.dumps(request)
+    assert OciBackend().output_dir(attempt) == attempt / "container" / "out"
+
+
+def test_the_host_log_is_never_written_through_a_symlink(tmp_path):
+    from perception.backends.oci import append_log
+    target = tmp_path / "authorized_keys"
+    target.write_text("original")
+    log = tmp_path / "log.txt"
+    log.symlink_to(target)
+    with pytest.raises(OSError):
+        append_log(log, "container output")
+    assert target.read_text() == "original"

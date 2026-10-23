@@ -124,10 +124,13 @@ class Store:
     def publish(self, path: Path, type_id: str) -> Artifact:
         """Copy a node's output into the store under its content hash. Idempotent: the same content published again
         (under any name) resolves to the object already there."""
+        bad = artifacts.special_files(path)
+        if bad:   # never follow a link out of a node's output: it would publish a host file
+            raise ValueError(f"refusing to publish {path.name}: contains a symlink or special file: {', '.join(bad[:5])}")
         shape = "tree" if path.is_dir() else "file"
         staged = self.root / "tmp" / uuid.uuid4().hex
         if shape == "tree":
-            shutil.copytree(path, staged)
+            shutil.copytree(path, staged, symlinks=True)
             h = artifacts.sha256_tree(staged)
         else:
             staged.mkdir()
