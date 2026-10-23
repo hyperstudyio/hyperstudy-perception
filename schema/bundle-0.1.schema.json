@@ -53,12 +53,24 @@
           }
         }
       }
+    },
+    "assets": {
+      "type": "array",
+      "description": "Small images under assets/ (person, face-track and object crops), referenced by relative path from layers.",
+      "items": {
+        "type": "object", "required": ["file", "sha256", "bytes"],
+        "properties": {
+          "file": { "type": "string", "pattern": "^assets/[A-Za-z0-9_./-]+$" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0 }
+        }
+      }
     }
   },
 
   "$defs": {
     "semver": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-    "layerName": { "enum": ["shots", "transcript", "speakers", "faces", "bodies", "hands", "gestures", "facing", "gaze", "objects", "sounds", "text", "prosody"] },
+    "layerName": { "enum": ["shots", "transcript", "speakers", "faces", "bodies", "hands", "gestures", "facing", "gaze", "objects", "sounds", "text", "prosody", "waveform"] },
     "licenceMode": { "enum": ["academic-only", "commercial-ok", "needs-review", "api-terms"] },
     "time": { "type": "number", "minimum": 0 },
     "box": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[x, y, w, h] in source pixels" },
@@ -187,6 +199,7 @@
               "person": { "oneOf": [{ "$ref": "#/$defs/id/person" }, { "type": "null" }], "description": "null: not assigned to any identity cluster (the clusterer's Unknown)" },
               "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
               "linked_body": { "type": ["boolean", "null"], "description": "Ever linked to a posed body; false is a strong false-face hint." },
+              "crop": { "type": ["string", "null"], "description": "assets/ path of a padded crop from the track's largest detection." },
               "samples": { "type": "array", "items": { "type": "object", "required": ["t", "box"],
                 "properties": { "t": { "$ref": "#/$defs/time" }, "box": { "$ref": "#/$defs/box" },
                   "mouth": { "type": ["number", "null"] }, "gaze": { "oneOf": [{ "$ref": "#/$defs/point" }, { "type": "null" }] } } } }
@@ -327,13 +340,30 @@
               "speakers": { "type": "array", "items": { "type": "string" } },
               "f0_st": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Semitones relative to each speaker's median" },
               "speaker": { "type": "array", "items": { "type": ["integer", "null"] } } } },
-          "default_dimensional": { "type": ["string", "null"] },
+          "default_dimensional": { "type": ["string", "null"], "description": "The emotion_models key readers show by default." },
+          "emotion_models": { "type": "object", "description": "Per emotion key: the model that wrote it.",
+            "additionalProperties": { "type": "object", "required": ["model", "licence_mode", "kind"],
+              "properties": { "model": { "type": "string" }, "licence_mode": { "$ref": "#/$defs/licenceMode" },
+                "kind": { "enum": ["dimensional", "categorical"] } } } },
+          "caption_models": { "type": "object", "description": "Per caption key: the model that wrote it.",
+            "additionalProperties": { "type": "object", "required": ["model", "licence_mode"],
+              "properties": { "model": { "type": "string" }, "licence_mode": { "$ref": "#/$defs/licenceMode" } } } },
           "utterances": { "type": "array", "items": { "type": "object", "required": ["utt"],
             "properties": { "utt": { "$ref": "#/$defs/id/utt" }, "speaker": { "type": ["string", "null"] },
               "measures": { "type": "object" },
               "words": { "type": "array" },
-              "emotion": { "type": "object", "description": "Per model key: {arousal, valence, dominance} or categorical scores." },
-              "captions": { "type": "object", "description": "Per source key: {description, tags, emphasized}." } } } }
+              "emotion": { "type": "object", "description": "Per emotion_models key: {arousal, valence, dominance} or categorical scores." },
+              "captions": { "type": "object", "description": "Per caption_models key: {description, tags, emphasized_words}." } } } }
+        }
+      },
+
+      "waveform": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "waveform" } } }],
+        "required": ["hz", "peaks"],
+        "properties": {
+          "hz": { "type": "number", "exclusiveMinimum": 0, "description": "Bins per second." },
+          "peaks": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "description": "Peak absolute amplitude per bin, 0-100 relative to the loudest bin." }
         }
       }
     }

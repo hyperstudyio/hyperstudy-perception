@@ -57,6 +57,18 @@ def references(node, key=None):
         yield key, node
 
 
+def crop_paths(node, key=None):
+    """Yield (key, path) for every non-null `crop` at any depth."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield from crop_paths(v, k)
+    elif isinstance(node, list):
+        for v in node:
+            yield from crop_paths(v, key)
+    elif key == "crop" and isinstance(node, str):
+        yield key, node
+
+
 def main():
     bundle = Path(sys.argv[1])
     problems = []
@@ -84,6 +96,18 @@ def main():
             problems.append(f"{name}: {e.json_path}: {e.message[:200]}")
         if docs[name].get("layer") != name:
             problems.append(f"{name}: file says layer {docs[name].get('layer')!r}")
+
+    for f in manifest.get("assets", []):
+        path = bundle / f["file"]
+        if not path.exists():
+            problems.append(f"assets: missing {f['file']}")
+        elif path.stat().st_size != f["bytes"] or hashlib.sha256(path.read_bytes()).hexdigest() != f["sha256"]:
+            problems.append(f"assets: {f['file']} does not match its manifest checksum or size")
+    listed = {f["file"] for f in manifest.get("assets", [])}
+    for name, doc in docs.items():
+        for key, value in crop_paths(doc):
+            if value not in listed:
+                problems.append(f"{name}: {key} points at {value}, which the manifest's assets do not list")
 
     defined = {}
     for kind, (layer_name, places) in DEFINES.items():

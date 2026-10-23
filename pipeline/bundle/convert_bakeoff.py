@@ -17,6 +17,7 @@ Then: uv run python validate.py OUT_DIR
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from collections import Counter
@@ -106,6 +107,29 @@ def person_id(label):
     return None if label in (None, "Unknown") else f"person:{label}"
 
 
+class Assets:
+    """Small images copied into the bundle's assets/ (person, face-track and object crops), with checksums for the
+    manifest. Sources are the bake-off's own crops; a missing source is no asset (the reader shows a swatch)."""
+
+    def __init__(self, run, out):
+        self.run, self.out, self.files = run, out, []
+
+    def add(self, src_rel, dest_rel):
+        if not src_rel or not (self.run / src_rel).exists():
+            return None
+        dest = self.out / "assets" / dest_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.run / src_rel, dest)
+        data = dest.read_bytes()
+        rel = str(dest.relative_to(self.out))
+        self.files.append({"file": rel, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
+        return rel
+
+
+def slug(text):
+    return "".join(c if c.isalnum() else "_" for c in text).strip("_")
+
+
 def num_id(prefixed, kind):
     """'pose:12' -> 'body:12', 'hand:3' -> 'hand:3'."""
     return None if prefixed is None else f"{kind}:{str(prefixed).split(':', 1)[1]}"
@@ -184,18 +208,20 @@ def speakers_layer(run, units, faces, lrasd, talknet, links_file):
                  utterances=rows, voice_links=voice_links)
 
 
-def faces_layer(run, faces, detail, similarity, pose, out_dir):
+def faces_layer(run, faces, detail, similarity, pose, out_dir, assets):
     linked = {t["face_track"] for t in (pose or {}).get("tracks", []) if t.get("face_track") is not None}
     tracks = []
     for i, t in enumerate(faces["tracks"]):
         tracks.append({"id": face_id(i), "person": person_id(t["person"]), "shot": f"shot:{t['shot']}",
                        "start": t["start"], "end": t["end"], "linked_body": (i in linked) if pose else None,
+                       "crop": assets.add(f"annotator_crops/track_{i}.jpg", f"crops/face_{i}.jpg"),
                        "samples": [{"t": s["t"], "box": s["box"], "mouth": s.get("mouth"),
                                     "gaze": [s["gaze_yaw"], s["gaze_pitch"]] if s.get("gaze_yaw") is not None else None}
                                    for s in t["series"]],
                        "summary": {k: t.get(k) for k in ("head_yaw", "gaze_yaw", "gaze_pitch", "dominant_emotion", "emotions", "mean_box")}})
     people = [{"id": person_id(p["label"]), "first_seen": p.get("first_seen"), "seconds_on_screen": p.get("seconds_on_screen"),
-               "crop": None, "shots": [f"shot:{s}" for s in p.get("shots", [])]}
+               "crop": assets.add(p.get("crop"), f"crops/person_{slug(p['label'])}.jpg"),
+               "shots": [f"shot:{s}" for s in p.get("shots", [])]}
               for p in faces["people"] if person_id(p["label"])]
     pairs = [{"a": person_id(p["a"]), "b": person_id(p["b"]), "distance": p["distance"], "co_visible": p["co_visible"]}
              for p in (similarity or {}).get("pairs", []) if person_id(p["a"]) and person_id(p["b"])]
@@ -280,14 +306,15 @@ def gaze_layer(run, gaze):
                  fps=gaze["fps"], tracks=tracks, events=events)
 
 
-def objects_layer(run, objects):
+def objects_layer(run, objects, assets):
     def sample(s):
         return {"t": s["t"], "box": s["box"], "poly": s.get("poly", []), "score": s.get("score")}
     tracks = [{"id": t["id"], "label": t["label"], "identity": f"objid:{t['identity']}", "shot": f"shot:{t['shot']}",
                "start": t["start"], "end": t["end"], "wearer": person_id(t.get("wearer")), "verdict": t.get("verdict"),
                "samples": [sample(s) for s in t["samples"]]} for t in objects["tracks"]]
     identities = [{"id": f"objid:{i['id']}", "label": i["label"], "family": i.get("family"),
-                   "worn_by": [person_id(p) for p in i.get("worn_by", []) if person_id(p)], "tracks": i["tracks"], "crop": None}
+                   "worn_by": [person_id(p) for p in i.get("worn_by", []) if person_id(p)], "tracks": i["tracks"],
+               "crop": assets.add(i.get("crop"), f"crops/{slug(i['id'].split(':', 1)[-1])}.jpg")}
                   for i in objects["identities"]]
     rejected = [{"id": t["id"], "label": t["label"], "verdict": t["verdict"], "shot": f"shot:{t['shot']}",
                  "start": t["start"], "end": t["end"], "samples": [sample(s) for s in t["samples"]]} for t in objects.get("rejected_tracks", [])]
@@ -331,16 +358,33 @@ def prosody_layer(run, prosody):
     for key, v in prosody["captions"].items():
         if isinstance(v, dict) and "model" in v:
             models.append(model(v["model"], v.get("licence_mode", "needs-review"), licence=v.get("licence")))
+    # which model wrote each per-utterance key (emotion.dimensional, captions.gpt, ...): readers name and licence them
+    def keyed(section, kind=None):
+        return {key: {"model": v["model"], "licence_mode": v.get("licence_mode", "needs-review"), **({"kind": kind(key)} if kind else {})}
+                for key, v in section.items() if isinstance(v, dict) and "model" in v and key != "tagger"}
+    emotion_models = keyed(prosody["emotion"], lambda key: "categorical" if key.startswith("categorical") else "dimensional")
+    caption_models = keyed(prosody["captions"])
     utts = [{"utt": f"utt:{u['id']}", "speaker": u.get("speaker"), "speaker_source": u.get("speaker_source"),
              "measures": u.get("prosody", {}), "words": u.get("words", []), "emotion": u.get("emotion", {}),
              "captions": u.get("captions", {})} for u in prosody["utterances"]]
     return layer("prosody", producer("prosody", models, {"utterance_source": prosody.get("utterance_source")},
                                      run_at=mtime(run / "prosody.json")),
                  contour={"step": c["step_s"], "t0": c.get("t0", 0.0), "speakers": c["speakers"], "f0_st": c["f0_st"], "speaker": c["speaker"]},
-                 default_dimensional=prosody["emotion"].get("default_dimensional"), utterances=utts)
+                 default_dimensional=prosody["emotion"].get("default_dimensional"), emotion_models=emotion_models,
+                 caption_models=caption_models, utterances=utts)
 
 
 # --- writing -------------------------------------------------------------------------------------
+
+def waveform_layer(run):
+    path = run / "audio.wav"
+    if not path.exists():
+        return None
+    peaks = build.waveform(path)
+    return layer("waveform", producer("extract", [model("peak absolute amplitude per bin", "commercial-ok", licence="this repo")],
+                                      {"scale": "0-100, relative to the loudest bin"}, run_at=mtime(path)),
+                 hz=build.WAVEFORM_HZ, peaks=peaks)
+
 
 def write_json(path, doc):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -366,10 +410,10 @@ def main():
     captions = load(run, f"captions/{CAPTIONS}.json")
     pose = load(run, "pose_rtmw.json")
 
-    docs, sides = {}, {}
+    docs, sides, assets = {}, {}, Assets(run, out)
     docs["shots"] = shots_layer(run, extract, captions)
     docs["transcript"], units = transcript_layer(run, transcript, extract)
-    docs["faces"], sides["faces"] = faces_layer(run, faces, load(run, "face_detail.json"), load(run, "identity_similarity.json"), pose, out)
+    docs["faces"], sides["faces"] = faces_layer(run, faces, load(run, "face_detail.json"), load(run, "identity_similarity.json"), pose, out, assets)
     lrasd = load(run, "asd_lrasd.json")
     if lrasd:
         docs["speakers"] = speakers_layer(run, units, faces, lrasd, load(run, "asd_talknet.json"), load(run, "speaker_links_lrasd.json"))
@@ -377,7 +421,7 @@ def main():
         docs["bodies"] = bodies_layer(run, pose)
     optional = {"hands": ("hands_rtmpose_hand.json", hands_layer), "gestures": ("hand_events.json", gestures_layer),
                 "facing": ("facing_mediapipe.json", facing_layer), "gaze": ("gaze_lle.json", gaze_layer),
-                "objects": ("objects.json", objects_layer), "sounds": ("audio_events.json", sounds_layer),
+                "objects": ("objects.json", lambda r, d: objects_layer(r, d, assets)), "sounds": ("audio_events.json", sounds_layer),
                 "prosody": ("prosody.json", prosody_layer)}
     for name, (file, make) in optional.items():
         doc = load(run, file)
@@ -385,6 +429,9 @@ def main():
             docs[name] = make(run, doc)
     if captions:
         docs["text"] = text_layer(run, extract, captions)
+    wave = waveform_layer(run)
+    if wave:
+        docs["waveform"] = wave
 
     own = {name: strictest([m["licence_mode"] for m in d["producer"]["models"]]) for name, d in docs.items()}
     effective = {}
@@ -408,10 +455,10 @@ def main():
                           "width": video["width"], "height": video["height"], "filename": Path(video["source"]).name},
                 "pipeline": {"name": "hyperstudy-perception", "version": "0.0.0-bakeoff", "git_commit": git_commit(),
                              "source": f"converted from bake-off run {run.name}"},
-                "layers": layers}
+                "layers": layers, "assets": assets.files}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
     total = sum(l["bytes"] + sum(s["bytes"] for s in l.get("side_files", [])) for l in layers.values())
-    print(f"{out}: {len(layers)} layers, {total / 1e6:.1f} MB")
+    print(f"{out}: {len(layers)} layers, {total / 1e6:.1f} MB; {len(assets.files)} assets, {sum(a['bytes'] for a in assets.files) / 1e6:.1f} MB")
     for name, l in layers.items():
         print(f"  {name:10s} {l['bytes'] / 1e6:6.2f} MB  {l['licence_mode']}" + (f"  (own: {own[name]})" if own[name] != l["licence_mode"] else ""))
 
