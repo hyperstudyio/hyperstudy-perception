@@ -13,6 +13,8 @@ the HyperStudy repo before the refactor described in [PLAN.md](PLAN.md).
 
 | Path | Contents |
 |---|---|
+| `schema/` | Track bundle format: conventions and the JSON Schema (v0.1 draft) |
+| `pipeline/bundle/` | `convert_bakeoff.py` (bake-off run → bundle) and `validate.py` (schema, checksums, cross-references) |
 | `pipeline/bakeoff/` | Bake-off stages (one uv environment each), the HTML annotator prototype, evaluation scripts |
 | `eval/labels/` | Hand labels and reference sets (track ids and times only; no video) |
 | `docs/research/`, `docs/reports/` | Model surveys, measured results (`docs/research/Agent video perception audio and objects/measured_bakeoff_results.md`), hosting report |
