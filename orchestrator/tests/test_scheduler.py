@@ -308,3 +308,40 @@ def test_the_host_log_is_never_written_through_a_symlink(tmp_path):
     with pytest.raises(OSError):
         append_log(log, "container output")
     assert target.read_text() == "original"
+
+
+def _publish_case(tmp_path, out_dir, rel):
+    """Ask the coordinator to publish output `out` of a test.work node from `out_dir`, as named by `rel`."""
+    coord = coordinator(tmp_path)
+    graph = compile_graph(graph_doc(tmp_path, [work("a", record_dir=str(tmp_path / "rec"))]), coord.registry)
+    return coord._publish(graph.nodes["a"], out_dir, {"ok": True, "outputs": {"out": {"path": rel}}, "models": []})
+
+
+def test_an_output_folder_replaced_by_a_symlink_is_not_published(tmp_path):
+    host = tmp_path / "host"
+    host.mkdir()
+    (host / "out.json").write_text('{"value": "host secret"}')
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    (attempt / "out").symlink_to(host)                 # what a container can do to /work/out
+    problems, outs = _publish_case(tmp_path, attempt / "out", "out.json")
+    assert outs == {} and problems and "symlink" in problems[0][1]
+
+
+def test_a_symlinked_folder_inside_the_output_path_is_not_followed(tmp_path):
+    host = tmp_path / "host"
+    host.mkdir()
+    (host / "out.json").write_text('{"value": "host secret"}')
+    out = tmp_path / "attempt" / "out"
+    out.mkdir(parents=True)
+    (out / "sub").symlink_to(host)
+    problems, outs = _publish_case(tmp_path, out, "sub/out.json")
+    assert outs == {} and problems and "symlink" in problems[0][1]
+
+
+@pytest.mark.parametrize("rel", ["../out.json", "/etc/hosts", "./out.json", ""])
+def test_output_paths_must_be_plain_relative_paths(tmp_path, rel):
+    out = tmp_path / "attempt" / "out"
+    out.mkdir(parents=True)
+    problems, outs = _publish_case(tmp_path, out, rel)
+    assert outs == {} and problems and "plain relative path" in problems[0][1]

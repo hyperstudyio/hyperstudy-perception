@@ -22,10 +22,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import stat
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from . import artifacts
 from .backends.base import Backend, child_env
@@ -36,6 +38,28 @@ from .store import Artifact, Store, dumps
 TERMINAL = {"succeeded", "cached", "failed", "canceled"}
 DONE = {"succeeded", "cached"}
 LICENCE_ORDER = ["commercial-ok", "api-terms", "needs-review", "academic-only"]
+
+
+def output_path(out_dir: Path, rel) -> tuple[Path | None, str]:
+    """Where output `rel` is, checked without trusting anything the node could have changed: `rel` must be a plain
+    relative path (checked before touching the disk), and no step from `out_dir` itself down to it may be a symlink.
+    Nothing is resolved: a node (or a container) can replace any of these entries with a link to a host path."""
+    parts = PurePath(rel).parts if isinstance(rel, str) and rel else ()
+    if not parts or PurePath(rel).is_absolute() or PurePath(rel).drive or any(p in (".", "..") for p in rel.replace("\\", "/").split("/")):
+        return None, f"{rel!r} is not a plain relative path"
+    steps = [out_dir]
+    for part in parts:
+        steps.append(steps[-1] / part)
+    for i, current in enumerate(steps):
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            return None, f"{rel} is missing"
+        if stat.S_ISLNK(mode):
+            return None, f"{current.name} is a symlink"
+        if i < len(steps) - 1 and not stat.S_ISDIR(mode):
+            return None, f"{current.name} is not a directory"
+    return steps[-1], ""
 
 
 class LeaseHeld(RuntimeError):
@@ -322,17 +346,13 @@ class Coordinator:
             if entry is None:
                 problems.append(("schema", f"output {name} was not written"))
                 continue
-            raw = out_dir / entry["path"]
-            if not raw.exists() and not raw.is_symlink():
-                problems.append(("schema", f"output {name}: {entry['path']} is missing"))
+            path, why = output_path(out_dir, entry.get("path"))
+            if path is None:
+                problems.append(("schema", f"output {name}: {why}"))
                 continue
-            special = artifacts.special_files(raw)
+            special = artifacts.special_files(path)
             if special:
                 problems.append(("schema", f"output {name}: contains a symlink or special file: {', '.join(special[:5])}"))
-                continue
-            path = raw.resolve()
-            if not path.is_relative_to(out_dir.resolve()):
-                problems.append(("schema", f"output {name}: {entry['path']} is outside the output directory"))
                 continue
             for p in artifacts.get(type_id).validate(path):
                 problems.append(("schema", f"output {name} ({type_id}): {p}"))
