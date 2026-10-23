@@ -1,0 +1,341 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyperstudy.io/schemas/perception-bundle/0.1/bundle.schema.json",
+  "title": "HyperStudy perception track bundle, v0.1",
+  "description": "Root: manifest.json. Layer files validate against #/$defs/layer/<name>. Conventions in schema/README.md.",
+  "type": "object",
+  "required": ["format", "schema_version", "created_at", "video", "pipeline", "layers"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": "hyperstudy-perception-bundle" },
+    "schema_version": { "$ref": "#/$defs/semver" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "video": {
+      "type": "object",
+      "required": ["sha256", "duration", "fps", "width", "height"],
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "duration": { "type": "number", "exclusiveMinimum": 0 },
+        "fps": { "type": "number", "exclusiveMinimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "filename": { "type": "string", "description": "Name of the source file when the bundle was made; a hint only." }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "git_commit": { "type": ["string", "null"] },
+        "source": { "type": "string", "description": "How the bundle was made, e.g. 'pipeline run' or 'converted from bake-off run'." }
+      }
+    },
+    "layers": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/layerName" },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["file", "sha256", "bytes", "licence_mode", "stage"],
+        "properties": {
+          "file": { "type": "string", "pattern": "^layers/[a-z_]+\\.json$" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "licence_mode": { "$ref": "#/$defs/licenceMode" },
+          "stage": { "type": "string" },
+          "side_files": {
+            "type": "array",
+            "items": {
+              "type": "object", "required": ["file", "sha256", "bytes"],
+              "properties": { "file": { "type": "string" }, "sha256": { "type": "string" }, "bytes": { "type": "integer" } }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "semver": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "layerName": { "enum": ["shots", "transcript", "speakers", "faces", "bodies", "hands", "gestures", "facing", "gaze", "objects", "sounds", "text", "prosody"] },
+    "licenceMode": { "enum": ["academic-only", "commercial-ok", "needs-review", "api-terms"] },
+    "time": { "type": "number", "minimum": 0 },
+    "box": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[x, y, w, h] in source pixels" },
+    "point": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+    "keypoints": { "type": "array", "items": { "type": "array", "items": { "type": ["number", "null"] }, "minItems": 3, "maxItems": 3 }, "description": "[[x, y, score], ...]" },
+    "span": {
+      "type": "object", "required": ["start", "end"],
+      "properties": { "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" } }
+    },
+    "id": {
+      "shot": { "type": "string", "pattern": "^shot:\\d+$" },
+      "utt": { "type": "string", "pattern": "^utt:\\d+$" },
+      "voice": { "type": "string", "pattern": "^voice:.+$" },
+      "face": { "type": "string", "pattern": "^face:\\d+$" },
+      "person": { "type": "string", "pattern": "^person:.+$" },
+      "body": { "type": "string", "pattern": "^body:\\d+$" },
+      "hand": { "type": "string", "pattern": "^hand:\\d+$" },
+      "obj": { "type": "string", "pattern": "^obj:\\d+$" },
+      "objid": { "type": "string", "pattern": "^objid:.+$" },
+      "event": { "type": "string", "pattern": "^(sound|text|gesture|facing|gaze):\\d+$" }
+    },
+    "model": {
+      "type": "object", "required": ["id", "licence_mode"],
+      "properties": {
+        "id": { "type": "string", "description": "Model name, e.g. 'facebook/sam3' or 'LR-ASD TalkSet finetune'." },
+        "source": { "type": ["string", "null"], "description": "hf://repo@revision[/file] or a URL." },
+        "revision": { "type": ["string", "null"] },
+        "licence": { "type": ["string", "null"] },
+        "licence_mode": { "$ref": "#/$defs/licenceMode" }
+      }
+    },
+    "producer": {
+      "type": "object", "required": ["stage", "stage_version", "models"],
+      "properties": {
+        "stage": { "type": "string" },
+        "stage_version": { "type": "string" },
+        "models": { "type": "array", "items": { "$ref": "#/$defs/model" } },
+        "config": { "type": "object" },
+        "device": { "type": ["string", "null"] },
+        "run_at": { "type": ["string", "null"] },
+        "timings": { "type": "object" }
+      }
+    },
+    "layerBase": {
+      "type": "object", "required": ["layer", "schema_version", "producer"],
+      "properties": {
+        "layer": { "$ref": "#/$defs/layerName" },
+        "schema_version": { "$ref": "#/$defs/semver" },
+        "producer": { "$ref": "#/$defs/producer" }
+      }
+    },
+
+    "layer": {
+      "shots": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "shots" } } }],
+        "required": ["shots"],
+        "properties": {
+          "shots": { "type": "array", "items": {
+            "type": "object", "required": ["id", "index", "start", "end"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id/shot" }, "index": { "type": "integer", "minimum": 0 },
+              "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+              "keyframes": { "type": "array", "items": { "type": "object", "required": ["t"], "properties": { "t": { "$ref": "#/$defs/time" }, "file": { "type": ["string", "null"] } } } },
+              "caption": { "type": ["object", "null"], "properties": {
+                "description": { "type": ["string", "null"] }, "setting": { "type": ["string", "null"] }, "mood": { "type": ["string", "null"] },
+                "people": { "type": "array" }, "model": { "type": "string" } } }
+            } } }
+        }
+      },
+
+      "transcript": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "transcript" } } }],
+        "required": ["words", "utterances", "voices"],
+        "properties": {
+          "voices": { "type": "array", "items": { "type": "object", "required": ["id"], "properties": { "id": { "$ref": "#/$defs/id/voice" } } } },
+          "words": { "type": "array", "items": {
+            "type": "object", "required": ["w", "start", "end"],
+            "properties": { "w": { "type": "string" }, "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+              "voice": { "oneOf": [{ "$ref": "#/$defs/id/voice" }, { "type": "null" }] } } } },
+          "utterances": { "type": "array", "items": {
+            "type": "object", "required": ["id", "start", "end", "text", "shot", "words"],
+            "properties": { "id": { "$ref": "#/$defs/id/utt" }, "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+              "text": { "type": "string" }, "shot": { "$ref": "#/$defs/id/shot" },
+              "words": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2, "description": "[first, last] word index, inclusive" },
+              "voice": { "oneOf": [{ "$ref": "#/$defs/id/voice" }, { "type": "null" }] } } } }
+        }
+      },
+
+      "speakers": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "speakers" } } }],
+        "required": ["utterances"],
+        "properties": {
+          "utterances": { "type": "array", "items": {
+            "type": "object", "required": ["utt", "predicted", "candidates"],
+            "properties": {
+              "utt": { "$ref": "#/$defs/id/utt" },
+              "predicted": { "type": "object", "required": ["kind"], "properties": {
+                "kind": { "enum": ["face", "person", "offscreen"], "description": "face: a visible face track; person: a known identity not visible (trusted voice link); offscreen: an unidentified voice" },
+                "face": { "$ref": "#/$defs/id/face" }, "person": { "$ref": "#/$defs/id/person" },
+                "voice": { "oneOf": [{ "$ref": "#/$defs/id/voice" }, { "type": "null" }] },
+                "via": { "enum": ["asd", "voice_link", "none"] } } },
+              "candidates": { "type": "array", "items": { "type": "object", "required": ["face", "score"],
+                "properties": { "face": { "$ref": "#/$defs/id/face" }, "score": { "type": "number" } } } },
+              "margin": { "type": ["number", "null"] },
+              "second_opinion_agrees": { "type": ["boolean", "null"] }
+            } } },
+          "voice_links": { "type": "array", "items": { "type": "object", "required": ["voice", "person", "word_share"],
+            "properties": { "voice": { "$ref": "#/$defs/id/voice" }, "person": { "$ref": "#/$defs/id/person" },
+              "word_share": { "type": "number" }, "trusted": { "type": "boolean" } } } }
+        }
+      },
+
+      "faces": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "faces" } } }],
+        "required": ["sample_fps", "people", "tracks"],
+        "properties": {
+          "sample_fps": { "type": "number" },
+          "angles": { "type": "string", "description": "Units and sign convention of head pose and gaze." },
+          "people": { "type": "array", "items": { "type": "object", "required": ["id"],
+            "properties": { "id": { "$ref": "#/$defs/id/person" }, "first_seen": { "type": ["number", "null"] },
+              "seconds_on_screen": { "type": ["number", "null"] }, "crop": { "type": ["string", "null"] } } } },
+          "tracks": { "type": "array", "items": {
+            "type": "object", "required": ["id", "person", "shot", "start", "end", "samples"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id/face" }, "shot": { "$ref": "#/$defs/id/shot" },
+              "person": { "oneOf": [{ "$ref": "#/$defs/id/person" }, { "type": "null" }], "description": "null: not assigned to any identity cluster (the clusterer's Unknown)" },
+              "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+              "linked_body": { "type": ["boolean", "null"], "description": "Ever linked to a posed body; false is a strong false-face hint." },
+              "samples": { "type": "array", "items": { "type": "object", "required": ["t", "box"],
+                "properties": { "t": { "$ref": "#/$defs/time" }, "box": { "$ref": "#/$defs/box" },
+                  "mouth": { "type": ["number", "null"] }, "gaze": { "oneOf": [{ "$ref": "#/$defs/point" }, { "type": "null" }] } } } }
+            } } },
+          "person_pairs": { "type": "array", "items": { "type": "object", "required": ["a", "b", "distance"],
+            "properties": { "a": { "$ref": "#/$defs/id/person" }, "b": { "$ref": "#/$defs/id/person" },
+              "distance": { "type": "number" }, "co_visible": { "type": "boolean" } } } },
+          "detail": { "type": ["object", "null"], "required": ["file"], "properties": {
+            "file": { "type": "string" }, "fields": { "type": "array", "items": { "type": "string" } } } }
+        }
+      },
+
+      "bodies": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "bodies" } } }],
+        "required": ["keypoint_names", "score_threshold", "fps", "tracks"],
+        "properties": {
+          "keypoint_names": { "type": "array", "items": { "type": "string" } },
+          "skeleton": { "type": "array", "items": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 } },
+          "score_threshold": { "type": "number" }, "fps": { "type": "number" },
+          "tracks": { "type": "array", "items": { "type": "object", "required": ["id", "shot", "start", "end", "samples"],
+            "properties": { "id": { "$ref": "#/$defs/id/body" }, "shot": { "$ref": "#/$defs/id/shot" },
+              "face": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }] },
+              "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+              "samples": { "type": "array", "items": { "type": "object", "required": ["t", "box", "kpts"],
+                "properties": { "t": { "$ref": "#/$defs/time" }, "box": { "$ref": "#/$defs/box" }, "kpts": { "$ref": "#/$defs/keypoints" } } } } } } }
+        }
+      },
+
+      "hands": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "hands" } } }],
+        "required": ["keypoint_names", "fps", "hands"],
+        "properties": {
+          "keypoint_names": { "type": "array", "items": { "type": "string" } },
+          "skeleton": { "type": "array" }, "score_threshold": { "type": ["number", "null"] }, "fps": { "type": "number" },
+          "hands": { "type": "array", "items": { "type": "object", "required": ["id", "shot", "side", "start", "end", "samples"],
+            "properties": { "id": { "$ref": "#/$defs/id/hand" }, "shot": { "$ref": "#/$defs/id/shot" },
+              "side": { "enum": ["left", "right", null] },
+              "body": { "oneOf": [{ "$ref": "#/$defs/id/body" }, { "type": "null" }] },
+              "face": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }] },
+              "box_source": { "type": "string" },
+              "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+              "samples": { "type": "array", "items": { "type": "object", "required": ["t", "box", "kpts"],
+                "properties": { "t": { "$ref": "#/$defs/time" }, "box": { "$ref": "#/$defs/box" }, "kpts": { "$ref": "#/$defs/keypoints" } } } } } } }
+        }
+      },
+
+      "gestures": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "gestures" } } }],
+        "required": ["events"],
+        "properties": { "events": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "start", "end"],
+          "properties": { "id": { "$ref": "#/$defs/id/event" }, "kind": { "type": "string" },
+            "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+            "face": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }] },
+            "hand": { "oneOf": [{ "$ref": "#/$defs/id/hand" }, { "type": "null" }] },
+            "score": { "type": ["number", "null"] }, "detail": { "type": "object" } } } } }
+      },
+
+      "facing": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "facing" } } }],
+        "required": ["events"],
+        "properties": { "events": { "type": "array", "items": { "type": "object", "required": ["id", "from", "to", "start", "end"],
+          "properties": { "id": { "$ref": "#/$defs/id/event" }, "from": { "$ref": "#/$defs/id/face" }, "to": { "$ref": "#/$defs/id/face" },
+            "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+            "mutual": { "type": "boolean" }, "score": { "type": ["number", "null"] }, "detail": { "type": "object" } } } } }
+      },
+
+      "gaze": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "gaze" } } }],
+        "required": ["fps", "tracks", "events"],
+        "properties": {
+          "fps": { "type": "number" },
+          "tracks": { "type": "array", "items": { "type": "object", "required": ["face", "samples"],
+            "properties": { "face": { "$ref": "#/$defs/id/face" },
+              "samples": { "type": "array", "items": { "type": "object", "required": ["t"],
+                "properties": { "t": { "$ref": "#/$defs/time" },
+                  "peak": { "oneOf": [{ "$ref": "#/$defs/point" }, { "type": "null" }] },
+                  "in_frame": { "type": ["number", "null"] },
+                  "target": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "$ref": "#/$defs/id/obj" }, { "enum": ["out", "camera", null] }] },
+                  "target_score": { "type": ["number", "null"] } } } } } } },
+          "events": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "from", "start", "end"],
+            "properties": { "id": { "$ref": "#/$defs/id/event" }, "kind": { "enum": ["looks_at", "mutual_gaze", "joint_attention"] },
+              "from": { "$ref": "#/$defs/id/face" },
+              "to": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }] },
+              "object": { "oneOf": [{ "$ref": "#/$defs/id/obj" }, { "type": "null" }] },
+              "also": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }] },
+              "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" }, "score": { "type": ["number", "null"] } } } }
+        }
+      },
+
+      "objects": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "objects" } } }],
+        "required": ["fps", "tracks", "identities"],
+        "properties": {
+          "fps": { "type": "number" },
+          "tracks": { "type": "array", "items": { "type": "object", "required": ["id", "label", "identity", "shot", "start", "end", "samples"],
+            "properties": { "id": { "$ref": "#/$defs/id/obj" }, "label": { "type": "string" }, "identity": { "$ref": "#/$defs/id/objid" },
+              "shot": { "$ref": "#/$defs/id/shot" }, "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+              "wearer": { "oneOf": [{ "$ref": "#/$defs/id/person" }, { "type": "null" }] },
+              "verdict": { "enum": ["object", "graphic", "absent", null] },
+              "samples": { "type": "array", "items": { "type": "object", "required": ["t", "box"],
+                "properties": { "t": { "$ref": "#/$defs/time" }, "box": { "$ref": "#/$defs/box" },
+                  "poly": { "type": "array", "items": { "$ref": "#/$defs/point" } }, "score": { "type": ["number", "null"] } } } } } } },
+          "identities": { "type": "array", "items": { "type": "object", "required": ["id", "label", "tracks"],
+            "properties": { "id": { "$ref": "#/$defs/id/objid" }, "label": { "type": "string" }, "family": { "type": ["string", "null"] },
+              "worn_by": { "type": "array", "items": { "$ref": "#/$defs/id/person" } },
+              "tracks": { "type": "array", "items": { "$ref": "#/$defs/id/obj" } }, "crop": { "type": ["string", "null"] } } } },
+          "rejected_tracks": { "type": "array", "items": { "type": "object", "required": ["id", "label", "verdict", "start", "end"],
+            "properties": { "id": { "$ref": "#/$defs/id/obj" }, "verdict": { "enum": ["graphic", "absent"] } } } }
+        }
+      },
+
+      "sounds": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "sounds" } } }],
+        "required": ["events"],
+        "properties": { "events": { "type": "array", "items": { "type": "object", "required": ["id", "label", "start", "end", "sources"],
+          "properties": { "id": { "$ref": "#/$defs/id/event" }, "label": { "type": "string" },
+            "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+            "sources": { "type": "array", "items": { "type": "string" } },
+            "agreement": { "type": ["boolean", "null"], "description": "For query-model events: did a tagger agree? null for tagger events." },
+            "score": { "type": ["number", "null"] } } } } }
+      },
+
+      "text": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "text" } } }],
+        "required": ["items"],
+        "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["id", "text", "start", "end"],
+          "properties": { "id": { "$ref": "#/$defs/id/event" }, "text": { "type": "string" },
+            "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+            "box": { "oneOf": [{ "$ref": "#/$defs/box" }, { "type": "null" }] } } } } }
+      },
+
+      "prosody": {
+        "allOf": [{ "$ref": "#/$defs/layerBase" }, { "properties": { "layer": { "const": "prosody" } } }],
+        "required": ["contour", "utterances"],
+        "properties": {
+          "contour": { "type": "object", "required": ["step", "t0", "speakers", "f0_st", "speaker"],
+            "properties": { "step": { "type": "number" }, "t0": { "type": "number" },
+              "speakers": { "type": "array", "items": { "type": "string" } },
+              "f0_st": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Semitones relative to each speaker's median" },
+              "speaker": { "type": "array", "items": { "type": ["integer", "null"] } } } },
+          "default_dimensional": { "type": ["string", "null"] },
+          "utterances": { "type": "array", "items": { "type": "object", "required": ["utt"],
+            "properties": { "utt": { "$ref": "#/$defs/id/utt" }, "speaker": { "type": ["string", "null"] },
+              "measures": { "type": "object" },
+              "words": { "type": "array" },
+              "emotion": { "type": "object", "description": "Per model key: {arousal, valence, dominance} or categorical scores." },
+              "captions": { "type": "object", "description": "Per source key: {description, tags, emphasized}." } } } }
+        }
+      }
+    }
+  }
+}

@@ -1,7 +1,8 @@
 # Plan: perception pipeline, track bundle, and annotator app
 
 Status: draft, 2026-10-23. Repos: **hyperstudy-perception** (this pipeline) and **hyperstudy-annotator** (the app).
-Owner org and licence are open decisions (end).
+Both start **private under `ljchang`** (next to the main app and Flowmail) and move to `hyperstudyio`, home of the
+open-source helpers, when open-sourced. Licence is an open decision (end).
 
 ## 1. Shape
 
@@ -120,17 +121,26 @@ licence mode: weights trained on non-commercial data stay academic-tier.
 **Where it runs.** The same stage code in two forms: native uv environments on the user's machine (a Mac uses the
 Apple GPU; Docker on macOS cannot), and container images on NVIDIA (Modal first, AWS Batch second; see
 `docs/reports/Perception pipeline hosting options.md`). The CLI takes `--on local|modal`; Modal runs use the user's
-own Modal account and token, inputs passed as presigned URLs, bundles returned as files. Local runs schedule one
+own account and token, inputs passed as presigned URLs, bundles returned as files (`--on modal` first; an AWS Batch
+or HF Jobs runner if it measures cheaper). Local runs schedule one
 heavy GPU stage at a time (overlapping SAM 3 and Sapiens2 pushed a 128 GB Mac into 45 GB of swap). Nothing has been
-timed on NVIDIA yet; Modal academic credits are being applied for.
+timed on NVIDIA yet.
+
+**Cloud host: chosen on measured cost, not assumed.** Modal has no academic grant programme open (checked 2026-10-23),
+so it has to win on ease at a competitive price. Estimates per 2-hour film from the hosting report (unmeasured GPU
+time): AWS Batch Spot L4 $1.00–3.60 (cheapest; films stay next to S3; Dartmouth billing), Hugging Face Jobs L4
+$1.40–4.30, Modal L4 $1.50–4.80. Plan: time one 10-minute clip on Modal using the lab account's $30/month Starter
+credit (quickest way to get real NVIDIA numbers), then price the same stage timings on AWS Batch Spot and HF Jobs
+and pick. The stage containers are the same on all three, so the choice stays reversible.
 
 **Chosen models (academic tier).** See `docs/research/Agent video perception audio and objects/measured_bakeoff_results.md`.
 
 ## 5. Annotator app (new repo)
 
-- **Stack:** Tauri 2, Svelte 5, Vite, SQLite through sqlx with migrations: the HyperStudy Bridge stack. Copy
-  Bridge's macOS signing and notarization (`scripts/build-and-sign-mac.sh`, `scripts/notarize.sh`,
-  `.github/workflows/release-macos.yml`) and its updater setup. Trim the entitlements: no serial devices, JIT or
+- **Stack:** Tauri 2, Svelte 5, Vite, SQLite through sqlx with migrations: the HyperStudy Bridge stack. Copy the
+  release setup from **Flowmail** (`ljchang/flowmail`), which already signs, notarizes and auto-updates a private
+  Tauri app from this account (`.github/workflows/release-macos.yml`, `scripts/notarize.sh`, an update token for
+  private releases); Bridge's `scripts/build-and-sign-mac.sh` is the other reference. Trim the entitlements: no serial devices, JIT or
   debugger; keep network client and user-selected files.
 - **Reuse from pyfeat-live** (same stack, cosanlab, MIT): `OverlayCanvas`, `MeshCanvas`, `ScrubBar`,
   `TimeseriesPlot`, `ValenceArousalPlot`, and the identity review components (`IdentityClusterPanel`,
@@ -166,7 +176,7 @@ HyperStudy integrates the bundles and the annotator through interfaces of its ow
 | 2 | Annotator app skeleton: Tauri + Svelte 5 + SQLite, import a bundle, locate video, play with overlays, signing CI | 1 |
 | 3 | Annotator ported into the app as a package; corrections in SQLite; export | 2 |
 | 4 | Pipeline refactor to the graph, stage contract and stage catalogue; `ptrack` CLI; shared decode and person boxes; environments merged where locks agree | 1 |
-| 5 | Containers and Modal (`--on modal`); first NVIDIA timing on a 10-minute clip, then a full film | 4 |
+| 5 | Containers; first NVIDIA timing on Modal's free credit (10-minute clip); price on AWS Batch Spot and HF Jobs; pick a host; full film | 4 |
 | 5b | App "Extract…": install the CLI with bundled uv, stage picker, local and Modal runs, auto-import | 3, 4 |
 | 6 | HyperStudy: trigger, storage, annotator embed, agent read API | 3, 5 |
 | ∥ | Evaluation set grown through the app (identities, speakers, gaze, prosody ratings) | 3 |
@@ -175,8 +185,10 @@ Phases 2–3 and 4–5 can run in parallel once the schema exists.
 
 ## 8. Open decisions
 
-- Owner org (hyperstudyio, like Bridge, matching the hyperstudy- names) and visibility. CLI command name
-  (`ptrack` is a placeholder).
-  Signing secrets live per org, so the app's org decides whose Apple secrets the release workflow uses.
+- Visibility (private to start was proposed). CLI command name (`ptrack` is a placeholder).
+  Decided 2026-10-23: private under ljchang, moved to hyperstudyio when open-sourced; repos hyperstudy-perception and
+  hyperstudy-annotator.
+  Signing secrets are per repository: add Flowmail's set (Apple certificate, identity, Apple ID, team ID, Tauri
+  updater key) to hyperstudy-annotator when signed builds start.
 - Licence for the code (MIT, like pyfeat-live, with a `LICENSE-MODELS.md` for the pipeline's weights).
 - Bundle as a directory or a single `.ptrack` zip for transfer (both can be supported).
