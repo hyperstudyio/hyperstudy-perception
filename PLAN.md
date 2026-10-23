@@ -12,8 +12,8 @@ Two products joined by one file format.
 video ──► PIPELINE (this repo: Python package + CLI) ──► TRACK BUNDLE (versioned files) ──► ANNOTATOR APP (separate repo)
             stages chosen per run; each stage's models           the contract                Tauri + Svelte 5: view, edit,
             and uv environment fetched on first use;                                         add data; SQLite
-            runs on the user's Mac or NVIDIA box, or on Modal          │                     optional "Extract…": drives the
-                ▲                                                      │                     pipeline CLI locally or on Modal
+            runs on the user's Mac or NVIDIA box, or on cloud GPUs     │                     optional "Extract…": drives the
+                ▲                                                      │                     pipeline CLI locally or in the cloud
                 └──────────────── app shells out to the CLI ───────────┼─────────────────────────────┘
                                                                        └──► HYPERSTUDY: stores bundles, serves them to
                                                                             agents, embeds the annotator component
@@ -25,7 +25,7 @@ video ──► PIPELINE (this repo: Python package + CLI) ──► TRACK BUNDL
 - The app is the annotator: it views bundles, edits them (corrections) and adds data (annotations, imported layers).
   Import-only use needs nothing else. Extraction is optional: the app installs the pipeline CLI with a bundled `uv`
   (pyfeat-live's pattern), shows the stage catalogue (what each stage extracts, its models, download size, licence
-  mode, hardware), and runs the stages the user picks on their own hardware or on Modal. Models are fetched only for
+  mode, hardware), and runs the stages the user picks on their own hardware or on cloud GPUs. Models are fetched only for
   chosen stages, and licences are shown before download, so the app itself still ships no weights.
 - The bundle format is the only coupling. Both sides pin a schema version and validate against it.
 - Corrections never modify a bundle. They are an append-only op log over it (the annotator prototype's design),
@@ -35,7 +35,7 @@ video ──► PIPELINE (this repo: Python package + CLI) ──► TRACK BUNDL
 
 | Repo | Contents | Consumers |
 |---|---|---|
-| **hyperstudy-perception** (this one) | Stage code, one environment per stage group, the graph runner and CLI, container images, the Modal app, evaluation scripts and labels, **the bundle JSON Schema** (the producer owns it) | The lab, HyperStudy's backend |
+| **hyperstudy-perception** (this one) | Stage code, one environment per stage group, the graph runner and CLI, container images, the cloud backend, evaluation scripts and labels, **the bundle JSON Schema** (the producer owns it) | The lab, HyperStudy's backend |
 | **hyperstudy-annotator** (new) | Tauri 2 + Svelte 5 desktop app; the annotator as a Svelte 5 package with a data adapter; a pinned copy of the bundle schema with fixture tests | Researchers; HyperStudy imports the annotator package |
 
 A third repo for the schema alone is not worth it yet. If HyperStudy, the app and the pipeline start drifting, move
@@ -119,19 +119,19 @@ The py-feat organisation on Hugging Face is the natural home for the mirrors. Mi
 licence mode: weights trained on non-commercial data stay academic-tier.
 
 **Where it runs.** The same stage code in two forms: native uv environments on the user's machine (a Mac uses the
-Apple GPU; Docker on macOS cannot), and container images on NVIDIA (Modal first, AWS Batch second; see
-`docs/reports/Perception pipeline hosting options.md`). The CLI takes `--on local|modal`; Modal runs use the user's
-own account and token, inputs passed as presigned URLs, bundles returned as files (`--on modal` first; an AWS Batch
-or HF Jobs runner if it measures cheaper). Local runs schedule one
+Apple GPU; Docker on macOS cannot), and container images on NVIDIA. Cloud GPUs are reached through one SkyPilot
+backend (decided 2026-10-23, `docs/research/orchestration_frameworks.md`): the same pinned image runs on whichever
+provider is cheapest and available (RunPod, Lambda, Vast, AWS, GCP, Azure, Kubernetes, Slurm), using the user's own
+accounts, with inputs passed as signed URLs and outputs returned as artifacts. Local runs schedule one
 heavy GPU stage at a time (overlapping SAM 3 and Sapiens2 pushed a 128 GB Mac into 45 GB of swap). Nothing has been
 timed on NVIDIA yet.
 
-**Cloud host: chosen on measured cost, not assumed.** Modal has no academic grant programme open (checked 2026-10-23),
-so it has to win on ease at a competitive price. Estimates per 2-hour film from the hosting report (unmeasured GPU
-time): AWS Batch Spot L4 $1.00–3.60 (cheapest; films stay next to S3; Dartmouth billing), Hugging Face Jobs L4
-$1.40–4.30, Modal L4 $1.50–4.80. Plan: time one 10-minute clip on Modal using the lab account's $30/month Starter
-credit (quickest way to get real NVIDIA numbers), then price the same stage timings on AWS Batch Spot and HF Jobs
-and pick. The stage containers are the same on all three, so the choice stays reversible.
+**Cloud host: chosen on measured cost, not assumed.** No provider is preferred; the user will use whichever is best
+and cheapest (2026-10-23). Estimates per 2-hour film from the hosting report (unmeasured GPU time): AWS Batch Spot L4
+$1.00–3.60 (films stay next to S3; Dartmouth billing), Hugging Face Jobs L4 $1.40–4.30, Modal L4 $1.50–4.80; the
+spec cites RunPod serverless from $0.69/h for 24 GB GPUs (not yet checked). Plan: time one 10-minute clip on one
+NVIDIA GPU through SkyPilot, then price the measured stage timings across providers and pick. Modal is not reachable
+through SkyPilot; it would need its own adapter, worth writing only if a measurement favours it.
 
 **Chosen models (academic tier).** See `docs/research/Agent video perception audio and objects/measured_bakeoff_results.md`.
 
@@ -157,7 +157,7 @@ and pick. The stage containers are the same on all three, so the choice stays re
   HyperStudy URL.
 - **Extract (optional).** "Extract…" on a video opens the stage catalogue; the app installs or updates the pipeline
   CLI through its bundled `uv` (as pyfeat-live installs its runtime), shows download sizes and licences, runs the
-  chosen stages locally or on Modal, streams progress from the CLI's JSON log, and imports the bundle when done. The
+  chosen stages locally or on cloud GPUs, streams progress from the CLI's JSON log, and imports the bundle when done. The
   app never imports pipeline code; it only runs the CLI, so the two repos version independently.
 - **The annotator as a package:** port `pipeline/bakeoff/annotator/template.html` to Svelte 5 components behind a
   data adapter (load bundle, media URL, load and append corrections). The app supplies a SQLite adapter; HyperStudy
@@ -176,8 +176,8 @@ HyperStudy integrates the bundles and the annotator through interfaces of its ow
 | 2 | Annotator app skeleton: Tauri + Svelte 5 + SQLite, import a bundle, locate video, play with overlays, signing CI | 1 |
 | 3 | Annotator ported into the app as a package; corrections in SQLite; export | 2 |
 | 4 | Pipeline refactor to the graph, stage contract and stage catalogue; `ptrack` CLI; shared decode and person boxes; environments merged where locks agree | 1 |
-| 5 | Containers; first NVIDIA timing on Modal's free credit (10-minute clip); price on AWS Batch Spot and HF Jobs; pick a host; full film | 4 |
-| 5b | App "Extract…": install the CLI with bundled uv, stage picker, local and Modal runs, auto-import | 3, 4 |
+| 5 | Containers; first NVIDIA timing through SkyPilot (10-minute clip); price the timings across providers; pick; full film | 4 |
+| 5b | App "Extract…": install the CLI with bundled uv, stage picker, local and cloud runs, auto-import | 3, 4 |
 | 6 | HyperStudy: trigger, storage, annotator embed, agent read API | 3, 5 |
 | ∥ | Evaluation set grown through the app (identities, speakers, gaze, prosody ratings) | 3 |
 

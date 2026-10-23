@@ -1,0 +1,17 @@
+id: audio.asr
+version: 1.0.0
+stage: transcribe
+description: Word-timed transcript and utterances (Parakeet TDT v3); voices come from diarization
+inputs: {audio: audio.wav.v1, shots: bundle.shots@0.1}
+outputs: {transcript: bundle.transcript@0.1}
+config:
+  model: {enum: [mlx-community/parakeet-tdt-0.6b-v3], default: mlx-community/parakeet-tdt-0.6b-v3}
+runners:
+  - {kind: native, env: envs/audio, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # TODO: [PERCEPTION-GRAPH] Phase 1 step 7 - a CUDA runner (NeMo nvidia/parakeet-tdt-0.6b-v3 in a pinned image)
+  # Spec: same output on linux/amd64 + CUDA; validate word times against the MLX conversion on the OOO clip.
+  # Plan: docs/plans/GRAPH_MVP_PLAN.md#phase-1--local-mvp
+resources: {cpu_cores: 2, memory_gb: 6, gpu: shared}
+models:
+  - {id: mlx-community/parakeet-tdt-0.6b-v3, source: hf://mlx-community/parakeet-tdt-0.6b-v3, licence: CC-BY-4.0,
+     licence_mode: commercial-ok, size_gb: 2.3}

@@ -1,0 +1,9 @@
+id: test.layer
+version: 1.0.0
+description: Writes media.v1 and a bundle shots layer for a video (export tests)
+inputs: {video: video.v1}
+outputs: {media: media.v1, shots: bundle.shots@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-shots, licence_mode: academic-only}

@@ -1,0 +1,18 @@
+id: core.decode
+version: 1.0.0
+stage: extract
+description: Video identity and timing, shots, keyframes and 16 kHz mono audio
+inputs: {video: video.v1}
+outputs:
+  media: media.v1
+  shots: bundle.shots@0.1
+  keyframes: assets.v1
+  audio: audio.wav.v1
+config:
+  shot_threshold: {type: number, default: 3.0, description: "AdaptiveDetector adaptive_threshold (PySceneDetect default)"}
+  keyframe_width: {type: integer, minimum: 64, default: 768}
+runners:
+  - {kind: native, env: envs/core, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 2, memory_gb: 2, gpu: none}
+models:
+  - {id: PySceneDetect AdaptiveDetector, licence: BSD-3-Clause, licence_mode: commercial-ok}

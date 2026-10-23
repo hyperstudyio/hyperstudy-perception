@@ -1,0 +1,22 @@
+id: vision.face-track
+version: 1.0.0
+stage: faces
+description: Face tracks within shots, identity clusters across the video (py-feat + ArcFace), crops
+inputs: {video: video.v1, media: media.v1, shots: bundle.shots@0.1}
+outputs: {faces: bundle.faces@0.1, crops: assets.v1}
+config:
+  fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 8, description: "frames sampled per second"}
+  cluster_threshold: {type: number, minimum: 0, maximum: 2, default: 0.65}
+  batch_size: {type: integer, minimum: 1, default: 32}
+runners:
+  - {kind: native, env: envs/faces, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  - {kind: native, env: envs/faces, entry: node.py, accelerator: cpu}
+  # TODO: [PERCEPTION-GRAPH] Phase 1 step 7 - CUDA image for linux/amd64 (pinned digest), validated against MPS output
+  # Plan: docs/plans/GRAPH_MVP_PLAN.md#phase-1--local-mvp
+resources: {cpu_cores: 4, memory_gb: 8, gpu: exclusive}
+models:
+  # py-feat fetches its weights from hf://py-feat/* on first use, through its own fallback logic: `plan` cannot check
+  # them repository by repository, so no hf:// source is declared here for the cache check.
+  - {id: "py-feat Detectorv2 (RetinaFace + multitask)", source: "py-feat==2.1.5 (weights from hf://py-feat)",
+     licence: "py-feat code MIT; v2 weights non-commercial", licence_mode: academic-only}
+  - {id: "ArcFace (InsightFace, via py-feat)", source: "py-feat==2.1.5", licence: research-only weights, licence_mode: academic-only}

@@ -1,0 +1,17 @@
+# Phase 1 graph: decode, face tracks and speech, published as a track bundle.
+#   perception run graphs/mvp.yaml --input video=PATH/TO/VIDEO.mp4
+schema_version: 1
+pipeline: perception-mvp
+inputs:
+  video: {type: video.v1, uri: '../data/video.mp4'}   # relative to this file; usually set with --input
+policy: {placement: local, privacy: local-only, max_cost_usd: 0, retries: 1}
+nodes:
+  - id: decode
+    uses: core.decode@1.0.0
+    inputs: {video: $inputs.video}
+  - id: asr
+    uses: audio.asr@1.0.0
+    inputs: {audio: $nodes.decode.audio, shots: $nodes.decode.shots}
+  - id: faces
+    uses: vision.face-track@1.0.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
