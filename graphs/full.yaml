@@ -1,6 +1,7 @@
 # Everything the pipeline can do: the graph the annotator app runs. The app's feature list picks what runs (--only, with
 # what it needs), settings (--set) and places (--place). Nothing leaves the machine without --allow-uploads, and then
-# only the kinds allow_upload names; max_cost_usd caps the spend.
+# only the kinds allow_upload names: frames, faces and transcript for the captions API, and video and audio for a step
+# placed on another machine (a lab server, a cloud GPU), which receives its inputs. max_cost_usd caps the spend.
 #   perception plan graphs/full.yaml --input video=PATH/TO/VIDEO.mp4
 #   perception run graphs/full.yaml --input video=PATH --only asr,faces          # the local, free features
 #   perception run graphs/full.yaml --input video=PATH --allow-uploads           # everything, captions too
@@ -11,7 +12,7 @@ inputs:
 policy:
   placement: hybrid
   privacy: local-preferred
-  allow_upload: [frames, faces, transcript]
+  allow_upload: [video, audio, frames, faces, transcript]
   max_cost_usd: 0.50
   retries: 1
 nodes:

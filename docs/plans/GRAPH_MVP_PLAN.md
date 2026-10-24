@@ -80,6 +80,13 @@ Not done:
 - **CUDA runner** for ASR (faces has one: native on Linux, first run 2026-10-24).
 - **`perception models pull`.**
 - **Cloud backend in the coordinator.** SkyPilot runs a whole graph on a cloud machine today (`cloud/skypilot/`); placing single nodes there from a local run is not built yet.
+- ~~**Nodes on a lab server.**~~ Done 2026-10-24: `perception hosts add NAME USER@HOST` records a machine reached over SSH
+  (probed once: platform, cores, memory, GPU, uv, ffmpeg), and its places (`ssh-NAME:cuda`) join each node's options.
+  A local driver process per attempt (`remote_driver.py`) sends the node's git-tracked code and its inputs (by content:
+  once per host), starts it detached in its own session, streams its log, and brings out/ and response.json back, so
+  the coordinator's cancel, adoption and publication are unchanged. Sending inputs is an upload: the graph's
+  allow_upload and the run's --allow-uploads apply. Checked with a stand-in ssh (tests/test_remote.py) and the real
+  decode node through it: outputs byte-identical to a local run.
 - **Windows.** Untested.
 
 ### Phase 2 progress (2026-10-23)

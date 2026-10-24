@@ -12,6 +12,7 @@
     perception cancel RUN_ID
     perception artifacts RUN_ID
     perception export RUN_ID --format bundle --output DIR
+    perception hosts add NAME USER@HOST [--root DIR] | list | check NAME | remove NAME | clean NAME
 
 The store (artifacts, run state) lives in $PERCEPTION_HOME (default ~/.hyperstudy-perception). Secrets come from the
 environment and from ~/.config/hyperstudy/*.env; their values are never printed or written to run files.
@@ -33,6 +34,8 @@ from . import export as export_mod
 from .backends.base import Backend
 from .backends.native import NativeBackend, SelfBackend
 from .backends.probe import probe
+from .backends.remote import SshBackend
+from .hosts import HostError, Hosts, ssh_command
 from .ir import GraphError, compile_graph
 from .manifests import Registry
 from .plan import plan as make_plan
@@ -59,7 +62,9 @@ def load_secrets() -> dict[str, str]:
 
 
 def backends() -> list[Backend]:
-    return [NativeBackend(), SelfBackend()]
+    """This machine's, then the hosts `perception hosts add` recorded (their places are only ever chosen, never a
+    default: they receive a node's inputs)."""
+    return [NativeBackend(), SelfBackend(), *(SshBackend(h) for h in Hosts(home()).load().values())]
 
 
 def registry(args) -> Registry:
@@ -148,12 +153,12 @@ def graph_error(args, e: GraphError) -> int:
 def plan_json(p) -> dict:
     nodes = [{"id": n.id, "uses": n.uses, "where": n.where, "why_not": n.why_not, "cached": n.cached,
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
-              "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads,
+              "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
               "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
               "needs": n.needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
               "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
              for n in p.nodes]
-    return {"ok": p.ok, "nodes": nodes, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
+    return {"ok": p.ok, "nodes": nodes, "places": p.places, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
 
 
 # --- commands -----------------------------------------------------------------------------------------------------
@@ -428,6 +433,49 @@ def cmd_artifacts(args):
             print(f"{t['node_id']}.{name:12s} {a['type']:22s} {a['hash'][:12]}  {a['path']}")
 
 
+def cmd_hosts(args):
+    """Lab servers nodes can run on, reached over SSH with your own keys (batch mode: nothing asks for a password)."""
+    hosts = Hosts(home())
+    try:
+        if args.action == "add":
+            if not args.dest:
+                raise HostError("hosts add NAME USER@HOST")
+            hosts.add(args.name, args.dest, args.root)
+        elif args.action in ("check", "remove", "clean") and not args.name:
+            raise HostError(f"hosts {args.action} NAME")
+        elif args.action == "check":
+            hosts.check(args.name)
+        elif args.action == "remove":
+            hosts.remove(args.name)
+        elif args.action == "clean":   # the inputs and code kept on the host between runs (never a running attempt's folder)
+            host = hosts.load().get(args.name)
+            if host is None:
+                raise HostError(f"no host {args.name!r}")
+            import shlex
+            import subprocess
+            q = shlex.quote
+            out = subprocess.run([*ssh_command(), host.dest, f"sh -c {q(f'rm -rf {q(host.root)}/objects {q(host.root)}/code')}"],
+                                 capture_output=True, text=True, timeout=600)
+            if out.returncode:
+                raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")
+    except HostError as e:
+        if args.json:
+            emit("error", problems=[str(e)])
+        else:
+            print(f"perception hosts: {e}", file=sys.stderr)
+        return 1
+    listed = [h.to_json() for h in hosts.load().values()]
+    if args.json:
+        emit("hosts", hosts=listed)
+        return 0
+    for h in listed:
+        c = h["caps"]
+        tools = ", ".join(f"{t} {'yes' if p else 'missing'}" for t, p in c["tools"].items())
+        print(f"{h['name']:12s} {h['dest']:28s} {c['platform']}, {c['cpu_cores']} cores, {c['memory_gb']} GB, "
+              f"{'/'.join(c['accelerators'])}" + (f" ({c['vram_gb']} GB)" if "cuda" in c["accelerators"] else "") + f"; {tools}")
+    return 0
+
+
 def cmd_export(args):
     coord = coordinator(args)
     out = export_mod.bundle(coord, args.run_id, Path(args.output))
@@ -492,6 +540,12 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("--no-cache", action="store_true", help="run the nodes even if the cache has their results")
     rr.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
     rr.set_defaults(fn=cmd_rerun)
+    h = sub.add_parser("hosts", help="lab servers nodes can run on, over SSH")
+    h.add_argument("action", choices=["add", "list", "check", "remove", "clean"])
+    h.add_argument("name", nargs="?")
+    h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias)")
+    h.add_argument("--root", default=".cache/hyperstudy-perception", help="add: where on the host its files go (under its home if relative)")
+    h.set_defaults(fn=cmd_hosts)
     ex = sub.add_parser("export")
     ex.add_argument("run_id")
     ex.add_argument("--format", choices=["bundle"], default="bundle")
