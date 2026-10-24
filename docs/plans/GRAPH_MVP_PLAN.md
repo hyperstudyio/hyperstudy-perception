@@ -99,7 +99,8 @@ Not done:
 SkyPilot on AWS us-east-1 (`cloud/skypilot/`), always through `launch.sh`:
 - **Credentials.** No laptop credentials are copied to the machine, and its only role is `perception-node`, which can end `perception-*` machines and do nothing else (`sky.yaml`, `iam-perception-node.json`). `guard.sh` checks both on the machine and fails the job otherwise.
   - The first runs below used `remote_identity: NO_UPLOAD`. On AWS that only skips copying credential files: SkyPilot still attached its default `skypilot-v1` role, which has EC2 and S3 full access. The guard caught it on 2026-10-24. CloudTrail shows the role was used only for SkyPilot's own autodown (describe and terminate calls).
-- **Uploads.** The workdir is a staged copy of the files git tracks or would track; `.gitignore` keeps out media, run outputs and `.env` files. A clip is sent only when named with `--env CLIP_SRC=...`.
+- **Uploads.** The workdir is a staged copy of the files git tracks, nothing untracked (`.gitignore` does not cover every image, crop or bundle folder a working copy can hold). A clip is sent only when named with `--env CLIP_SRC=...`.
+- **Wall-clock limit.** `MAX_MINUTES` (default 60) deletes the machine whatever the job is doing.
 - **Deletion.** Every machine is deleted after its job: `sky down` when `launch.sh` exits, idle autodown, and a shutdown deadline that terminates the instance (`launch.sh` sets on-demand machines to terminate, not stop, on shutdown).
 
 - **CPU smoke test** (`smoke.yaml`, spot `m6i.large`): decode of a synthetic 2-minute video, 11.8 s. The machine deleted itself 40 s after the job.

@@ -98,6 +98,13 @@ class Manifest(Strict):
     directory: Path = Field(default=Path("."), exclude=True)
 
     @model_validator(mode="after")
+    def _cost_counts_an_input(self):
+        if self.cost and self.cost.per != "run" and self.cost.input not in self.inputs:
+            raise ValueError(f"cost: per {self.cost.per} counts units in an input, but cost.input "
+                             f"{self.cost.input!r} is not one of this node's inputs ({', '.join(self.inputs) or 'none'})")
+        return self
+
+    @model_validator(mode="after")
     def _cost_covers_its_config(self):
         """A price table must price every value the config allows, or a new model would be reserved at nothing."""
         if self.cost is None or not (isinstance(self.cost.usd, dict) or self.cost.by):

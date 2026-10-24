@@ -437,6 +437,15 @@ def test_a_cost_table_must_price_every_value_of_its_config_key():
         Manifest.model_validate(doc)
 
 
+def test_a_cost_per_unit_must_name_the_input_it_counts():
+    from perception.manifests import Manifest
+    doc = {"id": "x", "version": "1.0.0", "inputs": {"shots": "bundle.shots@0.1"}, "outputs": {},
+           "runners": [{"kind": "self", "entry": "node.py"}], "cost": {"usd": 0.1, "per": "shot"}}
+    with pytest.raises(ValueError, match="cost.input None is not one of this node's inputs"):
+        Manifest.model_validate(doc)
+    Manifest.model_validate({**doc, "cost": {"usd": 0.1, "per": "shot", "input": "shots"}})
+
+
 def test_a_failed_attempt_is_charged_what_it_spent(tmp_path):
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"x")
