@@ -64,6 +64,7 @@ esac
 """
 FAKE_AWS = r"""#!/bin/sh
 echo "aws $*" >> "$FAKE_HOST/events"
+case "$*" in *terminate-instances*) [ -e "$FAKE_HOST/terminate-fails" ] && exit 254; exit 0;; esac
 case "$*" in *describe-instances*) echo "i-0abc";; esac
 """
 GUARD_OK = 'echo "guard $1" >> "$FAKE_HOST/events"; echo "guard: ok"\n'
@@ -133,7 +134,7 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     ev = events(machine)
     launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch --async -c {cluster} -y --down -i 15 --env DEADLINE_EPOCH="))
     at = int(ev[launch].split("DEADLINE_EPOCH=")[1].split()[0])
-    assert abs(at - (time.time() + 1800)) < 60                       # the deadline as a moment, from the launch
+    assert -70 < at - (time.time() + 1800) <= -55                    # the deadline as a moment, a minute early (clock skew)
     assert ev[launch].endswith(f"(config {CloudBackend.project_config})")   # no credentials, only perception-node
     guard = ev.index("guard 29")                 # the shutdown deadline: whole minutes left of the 30, counted from the launch
     setup = ev.index("setup")                    # ffmpeg and uv, installed and waited for (SkyPilot's setup is detached)
@@ -269,6 +270,7 @@ def test_a_machine_is_never_charged_past_its_deadline(tmp_path, machine, rec):
 
 def test_a_deletion_that_does_not_answer_is_given_up_and_charged_the_whole_deadline(tmp_path, machine, rec):
     (machine / "down-hangs").touch()
+    (machine / "terminate-fails").touch()                    # nor could EC2 end it
     coord = coordinator(tmp_path, deadline_s=3600, down_s=2)
     started = time.time()
     run_id, status = run(coord, graph(tmp_path, rec))
@@ -277,14 +279,45 @@ def test_a_deletion_that_does_not_answer_is_given_up_and_charged_the_whole_deadl
     assert "sky down: timed out" in log_of(coord, run_id)
 
 
-def test_a_machine_that_could_not_be_deleted_is_charged_its_whole_deadline(tmp_path, machine, rec):
+def test_a_machine_sky_down_could_not_delete_is_terminated_through_ec2(tmp_path, machine, rec):
+    (machine / "launch-hangs").touch()                       # no deadline set on it yet
+    (machine / "down-hangs").touch()
+    coord = coordinator(tmp_path, launch_s=1, down_s=2)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "failed"
+    assert any("ec2 terminate-instances --instance-ids i-0abc" in e for e in events(machine))
+    assert coord._tasks(run_id)["faces"]["error_code"] == "transient"   # it is gone: another attempt may start one
+
+
+def test_a_machine_with_no_deadline_that_could_not_be_deleted_at_all_stops_the_retries(tmp_path, machine, rec):
+    for f in ("launch-hangs", "down-hangs", "terminate-fails"):
+        (machine / f).touch()
+    coord = coordinator(tmp_path, launch_s=1, down_s=2)
+    doc = graph(tmp_path, rec)
+    doc["policy"]["retries"] = 2
+    run_id, status = run(coord, doc)
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1)   # no second machine
+    assert "may still be running" in t["error"] and "AWS console" in t["error"]
+
+
+def test_a_machine_sky_down_and_ec2_could_not_delete_is_charged_its_whole_deadline(tmp_path, machine, rec):
     (machine / "down-fails").touch()
+    (machine / "terminate-fails").touch()
     coord = coordinator(tmp_path, deadline_s=3600)
     run_id, status = run(coord, graph(tmp_path, rec))
-    assert status == "succeeded"                       # the results are good; the warning is in the log
+    assert status == "succeeded"                       # the results are good; its deadline was set; the warning is in the log
     usage = json.loads(coord._tasks(run_id)["faces"]["usage"])
     assert usage["machine_usd"] == CloudBackend.hourly_usd
     assert "could not delete perception-" in log_of(coord, run_id)
+
+
+def test_a_machine_sky_down_could_not_delete_but_ec2_did_is_charged_its_time(tmp_path, machine, rec):
+    (machine / "down-fails").touch()
+    coord = coordinator(tmp_path, deadline_s=3600)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "succeeded" and any("terminate-instances" in e for e in events(machine))
+    assert json.loads(coord._tasks(run_id)["faces"]["usage"])["machine_usd"] < 0.01
 
 
 def test_only_gpu_nodes_are_offered_a_cloud_machine_at_its_price_for_the_deadline(tmp_path, machine):
