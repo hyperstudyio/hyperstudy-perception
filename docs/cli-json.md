@@ -1,7 +1,9 @@
 # `perception --json`
 
 What the annotator app reads when it drives the CLI as a sidecar (`docs/BACKEND_PLAN.md` step 2 in hyperstudy-annotator).
-Put `--json` before the command: `perception --json run graph.yaml --input video=clip.mp4`.
+Put `--json` before the command: `perception --json run graph.yaml --input video=clip.mp4`. `plan` and `run` also take
+`--place NODE=PLACE` (where a node runs; `plan` lists its options) and `--only NODE[,NODE]` (just those nodes and the
+nodes they need).
 
 **The protocol.**
 - Every line on stdout is one JSON object with `"v"` (the protocol version, now 1) and `"type"`. Nothing else is

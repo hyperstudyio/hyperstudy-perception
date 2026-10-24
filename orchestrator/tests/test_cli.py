@@ -164,3 +164,31 @@ def test_place_chooses_where_a_node_runs_and_a_place_it_cannot_run_is_a_plan_pro
     assert cli("plan", str(g), "--place", "zz=self:cpu") == 1
     [err] = lines(capsys)
     assert err["type"] == "error" and "the graph has no node 'zz'" in err["problems"][0]
+
+
+def test_only_keeps_the_chosen_nodes_and_what_they_need_and_drops_the_rest(home, capsys):
+    # a -> b -> c, and d on its own
+    g = graph(home, [work("a", home), work("b", home, a="$nodes.a.out"), work("c", home, a="$nodes.b.out"), work("d", home)])
+    assert cli("plan", str(g), "--only", "b") == 0
+    [plan] = lines(capsys)
+    assert [n["id"] for n in plan["nodes"]] == ["a", "b"]
+    assert cli("plan", str(g), "--only", "c", "--only", "d") == 0
+    [plan] = lines(capsys)
+    assert sorted(n["id"] for n in plan["nodes"]) == ["a", "b", "c", "d"]
+    assert cli("plan", str(g), "--only", "a,d") == 0
+    [plan] = lines(capsys)
+    assert sorted(n["id"] for n in plan["nodes"]) == ["a", "d"]
+    assert cli("plan", str(g), "--only", "zz") == 1
+    [err] = lines(capsys)
+    assert err["type"] == "error" and "the graph has no node 'zz'" in err["problems"][0]
+
+
+def test_a_run_with_only_runs_just_those_nodes_and_keeps_the_choice_for_resume(home, capsys):
+    g = graph(home, [work("a", home), work("b", home, a="$nodes.a.out"), work("d", home)])
+    assert cli("run", str(g), "--only", "b") == 0
+    out = lines(capsys)
+    run = out[0]["run"]
+    assert {e["node"] for e in out if e["type"] == "event" and e["kind"] == "task.succeeded"} == {"a", "b"}
+    assert cli("status", run) == 0
+    [status] = lines(capsys)
+    assert sorted(t["node"] for t in status["tasks"]) == ["a", "b"]   # d is not part of this run at all
