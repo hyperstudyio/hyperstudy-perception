@@ -126,18 +126,30 @@ class Driver:
 
     def send_code(self):
         """The code under code/<its hash>, published in one step (PUBLISH): runs on the host at the same time may send
-        the same code."""
+        the same code. What is sent is a copy taken here and checked against that hash first: a file saved while the
+        code is on its way must not be filed under the hash of the code before it."""
+        import shutil
+        from .backends.native import REPO
+        from .backends.remote import code_hash
         q = shlex.quote
         if self.sh(f"test -e {q(self.code)}/.complete", check=False).returncode == 0:
             return
+        snapshot = self.local / "code"
+        shutil.rmtree(snapshot, ignore_errors=True)
+        for f in self.spec["files"]:
+            (snapshot / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / f, snapshot / f)
+        if code_hash(self.spec["files"], snapshot) != self.spec["code"]:
+            shutil.rmtree(snapshot)
+            raise RuntimeError("the node's code changed since this attempt started: nothing was sent (the next attempt sends the new code)")
         say(f"copying the node's code to {self.spec['host']}")
         incoming = f"{self.root}/code/.incoming-{self.tag}"
         self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
         listing = self.local / "code-files.txt"
         listing.write_text("".join(f + "\n" for f in self.spec["files"]))
-        from .backends.native import REPO
-        self.rsync("--files-from", str(listing), f"{REPO}/", f"{self.dest}:{incoming}/")
+        self.rsync("--files-from", str(listing), f"{snapshot}/", f"{self.dest}:{incoming}/")
         self.sh(f"{PUBLISH}\ntouch {q(incoming)}/.complete && publish {q(incoming)} {q(self.code)}")
+        shutil.rmtree(snapshot)
 
     def send_inputs(self) -> dict[str, dict]:
         """Each input as objects/<sha256>/data on the host, published in one step (PUBLISH): nodes on the host at the
@@ -208,6 +220,8 @@ if command -v setsid >/dev/null 2>&1; then set -- setsid; else set -- perl -MPOS
 PATH={q(path)}${{PATH:+:$PATH}} nohup "$@" {node} --request {q(req)} > {q(self.attempt)}/log.txt 2>&1 < /dev/null &
 pid=$!
 echo $pid > {q(self.attempt)}/pid
+# a cancel that came while this script ran (and found no pid yet) left a stop mark: stop the node now
+if [ -e {q(self.attempt)}/stop ]; then kill -s TERM -- "-$pid" 2>/dev/null || true; fi
 nohup "$@" sh -c {q(WATCHDOG)} watchdog {q(self.attempt)} "$pid" {lost} {every} > /dev/null 2>&1 < /dev/null &
 echo $pid
 """
@@ -316,7 +330,8 @@ echo $pid
         req, pidfile = f"{self.attempt}/request.json", f"{self.attempt}/pid"
         say(f"stopping it on {self.spec['host']}")
         try:
-            self.sh(f'[ -f {q(pidfile)} ] || exit 0; p=$(cat {q(pidfile)}); '
+            # the mark first, then the pid: a start still running on the host sees the one, or this finds the other
+            self.sh(f'mkdir -p {q(self.attempt)} && touch {q(self.attempt)}/stop; [ -f {q(pidfile)} ] || exit 0; p=$(cat {q(pidfile)}); '
                     f'if ps -ww -p "$p" -o command= | grep -qF -- {q(req)}; then kill -s TERM -- "-$p"; fi', check=False)
         except (Unreachable, subprocess.TimeoutExpired) as e:
             say(f"could not reach {self.spec['host']} to stop it ({e}); it ends when the next attempt of this node starts there")

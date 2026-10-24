@@ -461,12 +461,14 @@ def cmd_hosts(args):
             import subprocess
             q = shlex.quote
             root = q(host.root)
-            # not while an attempt's folder (work/RUN/NODE/ATTEMPT) is there: a node running, or its watchdog not done,
-            # still uses them; empty run folders left by a cancel or a lost connection do not count
-            # only perception's own root (hosts.MARKER), and inputs are read-only there (made writable to be removed)
-            script = (f'[ -e {root}/.hyperstudy-perception ] || {{ echo "{host.root} is not marked as perception\'s" >&2; exit 4; }}; '
-                      f'if ls -d {root}/work/*/*/* >/dev/null 2>&1; then echo "a node is running there" >&2; exit 4; fi; '
-                      f"chmod -R u+w {root}/objects 2>/dev/null; rm -rf {root}/objects {root}/code")
+            # not while a node runs there (an attempt's pid that is still that attempt's node); folders a cancel, a lost
+            # connection or a stop mark left are removed with the inputs and code. Only perception's own root
+            # (hosts.MARKER), and inputs are read-only there (made writable to be removed).
+            script = (f'[ -e {root}/.hyperstudy-perception ] || {{ echo "{host.root} is not marked as perception\'s" >&2; exit 4; }}\n'
+                      f'for f in {root}/work/*/*/*/pid; do [ -f "$f" ] || continue; p=$(cat "$f"); '
+                      f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then '
+                      f'echo "a node is running there" >&2; exit 4; fi; done\n'
+                      f"chmod -R u+w {root}/objects 2>/dev/null; rm -rf {root}/objects {root}/code {root}/work")
             out = subprocess.run([*ssh_command(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
             if out.returncode:
                 raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")

@@ -47,11 +47,11 @@ def code_files(manifest: Manifest, runner: Runner) -> list[str]:
     return files
 
 
-def code_hash(files: list[str]) -> str:
+def code_hash(files: list[str], root: Path = REPO) -> str:
     """The code's content, as the name of its folder on the other machine: the same code is sent once."""
     h = hashlib.sha256()
     for f in files:
-        h.update(f.encode() + b"\0" + hashlib.sha256((REPO / f).read_bytes()).digest())
+        h.update(f.encode() + b"\0" + hashlib.sha256((root / f).read_bytes()).digest())
     return h.hexdigest()[:20]
 
 

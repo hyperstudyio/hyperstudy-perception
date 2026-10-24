@@ -406,12 +406,23 @@ def test_a_host_with_a_node_on_it_is_neither_removed_nor_cleaned(tmp_path, host,
     assert main(["hosts", "remove", "lab"]) == 1
     assert "run r1 has faces on lab" in capsys.readouterr().err
     store.db.execute("UPDATE tasks SET state='succeeded'")
-    busy = host / "home" / ".cache" / "hyperstudy-perception" / "work" / "r2" / "a" / "1"
+    work = host / "home" / ".cache" / "hyperstudy-perception" / "work"
+    stale = work / "r1" / "a" / "1"
+    stale.mkdir(parents=True)
+    (stale / "stop").touch()                             # a cancel's mark, from a start that never came: not a node
+    busy = work / "r2" / "a" / "1"
     busy.mkdir(parents=True)
-    assert main(["hosts", "clean", "lab"]) == 1
-    assert "a node is running there" in capsys.readouterr().err
-    busy.rmdir()                                         # empty run folders (a cancel, a lost connection) do not count
+    # its command names the request (a second command, so sh does not replace itself with sleep)
+    node = subprocess.Popen(["sh", "-c", "sleep 30; :", str(busy / "request.json")])
+    (busy / "pid").write_text(str(node.pid))
+    try:
+        assert main(["hosts", "clean", "lab"]) == 1
+        assert "a node is running there" in capsys.readouterr().err
+    finally:
+        node.kill()
+        node.wait()
     assert main(["hosts", "clean", "lab"]) == 0
+    assert not work.exists()                            # the stale folders went with the inputs
     assert main(["hosts", "remove", "lab"]) == 0
 
 
@@ -542,6 +553,17 @@ def test_on_another_machine_every_weight_a_node_uses_counts_as_a_download(tmp_pa
     assert [d.id for d in planned.nodes[0].downloads] == ["w"] and not planned.ok   # the host's cache is not known
     here = make_plan(coord, compile_graph(video_graph(tmp_path), coord.registry), allow_uploads=True)
     assert here.nodes[0].downloads == []
+
+
+def test_code_saved_while_it_is_being_sent_is_not_filed_under_the_old_hash(tmp_path, host, rec, monkeypatch):
+    import perception.backends.remote as remote
+    coord = coordinator(tmp_path, host)
+    # the attempt's spec names one hash; the driver (its own process) finds the files it copies hold something else
+    monkeypatch.setattr(remote, "code_hash", lambda files, root=remote.REPO: "0" * 20)
+    run_id = start(coord, work_graph(tmp_path, rec))
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    assert "the node's code changed since this attempt started" in log_of(coord, run_id, "a")
+    assert not (host / "home" / ".cache" / "hp" / "code").exists() or not any((host / "home" / ".cache" / "hp" / "code").iterdir())
 
 
 def test_prosody_counts_as_transcript_too():
