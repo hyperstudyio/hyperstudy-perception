@@ -36,6 +36,7 @@ class NodePlan:
     estimate_s: float | None = None                    # seconds, from its measured runs here (estimates.py)
     estimate_basis: str = ""
     needs: list[str] = field(default_factory=list)     # the nodes whose outputs it takes (a stage picker's edges)
+    estimates: dict[str, dict] = field(default_factory=dict)   # every option -> {estimate_s, estimate_basis}: to compare places
 
 
 @dataclass
@@ -118,7 +119,11 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
             if m.cost:   # units are known once the input exists (from the cache, or a graph input)
                 np.cost_usd += manifest_cost(m, node.config, inputs) if m.cost.per == "run" or m.cost.input in inputs else 0.0
                 np.cost_note = "" if m.cost.per == "run" or m.cost.input in inputs else f"${m.cost.unit_usd(node.config)} per {m.cost.per}, units known after {node.inputs[m.cost.input].node}"
+        for option in np.options:   # cached or not: moving a node elsewhere runs it again
+            seconds, basis = estimate(coord.store, m.ref, option, video_s)
+            np.estimates[option] = {"estimate_s": seconds, "estimate_basis": basis}
         if placement and not np.cached:
-            np.estimate_s, np.estimate_basis = estimate(coord.store, m.ref, placement.label, video_s)
+            chosen = np.estimates[placement.label]
+            np.estimate_s, np.estimate_basis = chosen["estimate_s"], chosen["estimate_basis"]
         out.append(np)
     return Plan(out, allow_downloads)

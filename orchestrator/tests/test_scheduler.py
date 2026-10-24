@@ -412,6 +412,17 @@ def test_a_plan_estimates_each_node_from_its_measured_runs_here(tmp_path):
     est = planned["captions"]
     assert est.estimate_basis == "median of 2 runs of test.refine@1.0.0 on self:cpu here"
     assert 0.3 <= est.estimate_s < 5                 # about a run's seconds: the same 2 s video each time
+    assert est.estimates == {"self:cpu": {"estimate_s": est.estimate_s, "estimate_basis": est.estimate_basis}}
+
+
+def test_a_plan_estimates_every_place_a_node_could_be_moved_to(tmp_path, rec):
+    from perception.plan import plan as make_plan
+    coord = coordinator(tmp_path, TwoDevices())
+    node = {**work("a", uses="test.two@1.0.0", record_dir=rec), "place": "self:cpu"}
+    planned = make_plan(coord, compile_graph(graph_doc(tmp_path, [node]), coord.registry)).nodes[0]
+    assert planned.place == "self:cpu"
+    assert planned.estimates == {p: {"estimate_s": None, "estimate_basis": f"no runs of test.two@1.0.0 on {p} here yet"}
+                                 for p in ("self:cuda", "self:cpu")}   # the place not chosen too
 
 
 # --- export -----------------------------------------------------------------------------------------------------
