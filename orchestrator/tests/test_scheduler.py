@@ -190,6 +190,37 @@ def test_running_out_of_memory_fails_once_and_names_the_setting_to_change(tmp_pa
     assert len(executions(Path(rec))) == 1                                # the same input would run out again: no retry
 
 
+def test_a_run_canceled_from_another_process_ends_canceled_not_failed(tmp_path, rec):
+    coord = coordinator(tmp_path)
+    run_id = start(coord, graph_doc(tmp_path, [work("a", record_dir=rec, sleep=30)]))
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
+        while coord._tasks(run_id)["a"]["state"] != "running":   # waiting for the node to start
+            assert time.time() < deadline, "the node never started"
+            await asyncio.sleep(0.02)
+        coordinator(tmp_path).cancel(run_id)                     # another process (perception cancel) on the same store
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    assert coord.store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()[0] == "canceled"
+    kinds = [e["kind"] for e in coord.store.events(run_id)]
+    assert "run.canceled" in kinds and "run.failed" not in kinds
+
+
+def test_after_a_cancel_nothing_more_runs_even_a_node_that_looked_ready_or_retryable(tmp_path, rec):
+    """The coordinator works from snapshots: a task it read before the cancel (a killed node's transient failure, a
+    node it found ready) must not be retried or started after it."""
+    coord = coordinator(tmp_path)
+    run_id = start(coord, graph_doc(tmp_path, [work("a", record_dir=rec, sleep=30), work("b", "$nodes.a.out", record_dir=rec)]))
+    coordinator(tmp_path).cancel(run_id)                          # canceled before this coordinator looked at all
+    coord._set(run_id, "a", state="pending")                      # as a stale snapshot's retry would write it
+    assert asyncio.run(coord.run(run_id)) == "canceled"
+    assert executions(Path(rec)) == []
+    assert {t["state"] for t in coord._tasks(run_id).values()} == {"canceled"}
+
+
 def test_retries_stop_at_the_policy_limit(tmp_path, rec):
     coord = coordinator(tmp_path)
     run_id, status = run(coord, graph_doc(tmp_path, [work("a", record_dir=rec, fail="transient", fail_until=9)], retries=1))
@@ -437,6 +468,109 @@ def test_a_billable_node_that_dies_without_a_response_is_charged_its_reservation
     assert status == "failed" and coord._tasks(run_id)["captions"]["error_code"] == "budget"
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent == pytest.approx(0.5)
+
+
+def test_a_billable_node_killed_by_a_cancel_is_charged_its_reservation(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id = start(coord, refine_graph(video, {"sleep": 30}, max_cost_usd=1))   # 1 shot x $0.5 reserved
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
+        while coord._tasks(run_id)["captions"]["state"] != "running":
+            assert time.time() < deadline, "the node never started"
+            await asyncio.sleep(0.02)
+        coordinator(tmp_path).cancel(run_id)
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)   # it may have spent what was reserved before it was killed
+
+
+def test_a_killed_attempt_is_charged_once_even_if_a_stale_snapshot_reports_its_death(tmp_path):
+    """cancel() charges the reservation of what it kills. The coordinator running the loop may have read that task as
+    running just before, then see the dead process and report a crashed attempt: that report must change nothing."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    doc = refine_graph(video, {"sleep": 30}, max_cost_usd=1)
+    run_id = start(coord, doc)
+    graph = compile_graph(doc, coord.registry)
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
+        while coord._tasks(run_id)["captions"]["state"] != "running":
+            assert time.time() < deadline, "the node never started"
+            await asyncio.sleep(0.02)
+        stale = coord._tasks(run_id)["captions"]          # the loop's snapshot, taken before the cancel
+        coordinator(tmp_path).cancel(run_id)
+        coord._attempt_failed(run_id, graph, "captions", stale["attempt"], "transient", "exited without a response", usd=stale["cost_usd"])
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)                     # once, not twice
+    assert coord._tasks(run_id)["captions"]["state"] == "canceled"
+
+
+def test_a_cancel_during_submission_stops_the_node_and_keeps_it_canceled(tmp_path):
+    """The window between deciding to start a node and recording it running: a cancel there must win."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id = start(coord, refine_graph(video, {"sleep": 30}, max_cost_usd=1))
+    backend = coord.backends["self"]
+    real_submit = backend.submit
+
+    def submit_then_cancel(m, runner, attempt_dir, env):
+        handle = real_submit(m, runner, attempt_dir, env)
+        if m.id == "test.refine":
+            coordinator(tmp_path).cancel(run_id)                 # lands after the submit, before "running" is recorded
+        return handle
+    backend.submit = submit_then_cancel
+    assert asyncio.run(coord.run(run_id)) == "canceled"
+    t = coord._tasks(run_id)["captions"]
+    assert t["state"] == "canceled"
+    assert backend.poll(json.loads(t["handle"])) != "running"    # the process it had started was stopped
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)                             # charged its reservation, once
+
+
+def test_a_cancel_while_a_finished_node_is_collected_keeps_it_canceled_and_charged_once(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    doc = refine_graph(video, {"sleep": 1}, max_cost_usd=1)
+    run_id = start(coord, doc)
+    graph = compile_graph(doc, coord.registry)
+    real_check = coord._check_running
+    hold = {"on": True}
+    # the loop does not collect captions for now (shots, upstream, is collected as usual)
+    coord._check_running = lambda run_id, g, t: None if hold["on"] and t["node_id"] == "captions" else real_check(run_id, g, t)
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
+        while coord._tasks(run_id)["captions"]["state"] != "running":
+            assert time.time() < deadline, "the node never started"
+            await asyncio.sleep(0.02)
+        stale = coord._tasks(run_id)["captions"]
+        while coord.backends["self"].poll(json.loads(stale["handle"])) == "running":   # it finishes, with a response
+            assert time.time() < deadline, "the node never finished"
+            await asyncio.sleep(0.05)
+        coordinator(tmp_path).cancel(run_id)                     # charges the reservation
+        real_check(run_id, graph, stale)                         # the loop collects from its earlier snapshot
+        hold["on"] = False
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    assert coord._tasks(run_id)["captions"]["state"] == "canceled"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)                             # the reservation; not also the reported $0.01
 
 
 def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):

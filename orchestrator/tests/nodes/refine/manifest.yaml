@@ -8,6 +8,7 @@ config:
   model: {enum: [cheap, dear], default: cheap}
   fail_until: {type: integer, default: 0, description: "attempts up to this one spend `usd`, then fail (transient)"}
   crash: {type: boolean, default: false, description: "fail by dying without a response instead"}
+  sleep: {type: number, default: 0, description: "seconds to wait first, as a long API call would"}
 runners:
   - {kind: self, entry: node.py}
 privacy: {external_upload: [frames]}
