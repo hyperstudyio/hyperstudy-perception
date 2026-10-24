@@ -25,6 +25,8 @@ FAKE_SSH = r"""#!/bin/sh
 while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -*) shift;; *) break;; esac; done
 echo "ssh $1: $2" | head -c 300 >> "$FAKE_HOST/events"; echo >> "$FAKE_HOST/events"
 shift
+# the machine's clock 10 minutes fast, while $FAKE_HOST/skew exists
+[ -e "$FAKE_HOST/skew" ] && PATH="$FAKE_HOST/skewbin:$PATH" && export PATH
 # a slow link for commands that contain $FAKE_HOST/slow's text
 if [ -e "$FAKE_HOST/slow" ]; then case "$*" in *"$(cat "$FAKE_HOST/slow")"*) sleep 8;; esac; fi
 cd "$FAKE_HOST/home" && HOME="$FAKE_HOST/home" exec /bin/sh -c "$*"
@@ -322,6 +324,27 @@ def test_a_launch_whose_request_could_not_be_read_is_canceled_by_its_cluster_onl
     assert "sky api cancel -y 11111111-2222-3333-4444-555555555555" in ev     # this attempt's launch
     assert "99999999" not in ev.split("sky api cancel")[-1]                  # never another cluster's
     assert events(machine)[-1].startswith("sky down -y perception-")
+
+
+def test_a_machine_whose_clock_disagrees_is_not_used(tmp_path, machine, rec):
+    (machine / "skewbin").mkdir()
+    script(machine / "skewbin" / "date", '#!/bin/sh\n[ "$1" = "+%s" ] && { echo $(( $(/bin/date +%s) + 600 )); exit 0; }\nexec /bin/date "$@"\n')
+    (machine / "skew").touch()
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"]) == ("failed", "internal") and "clock" in t["error"]
+    assert not any("objects" in e or "code/" in e for e in events(machine))   # nothing was sent
+    assert events(machine)[-1].startswith("sky down -y perception-")
+
+
+def test_a_machine_whose_deadline_was_never_set_is_charged_all_its_time(tmp_path, machine, rec):
+    (machine / "launch-hangs").touch()                       # stopped before setup or guard.sh ran
+    (machine / "down-slow").touch()                          # and its deletion takes 3 s, past a 2 s deadline
+    coord = coordinator(tmp_path, deadline_s=2, launch_s=1)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent > round(CloudBackend.hourly_usd * 2 / 3600, 4)   # every second it existed, not capped at the deadline
 
 
 def test_a_machine_that_cannot_be_set_to_terminate_is_not_used(tmp_path, machine, rec):

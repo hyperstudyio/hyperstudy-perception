@@ -125,6 +125,7 @@ class Driver:
         self.started = time.monotonic()
         self.stop_at: float | None = None   # a cloud machine's deadline, less the time to bring results back and delete it
         self.extra_usd = 0.0
+        self.deadline_set = False   # the machine's own OS shutdown is scheduled (guard.sh): it cannot outlive its deadline
         self.at(spec["dest"], spec["root"])
 
     def at(self, dest: str, root: str):
@@ -468,6 +469,11 @@ echo $pid
         self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
         if "cuda" not in caps.accelerators:
             raise Refused("resources", f"{c['cluster']} has no NVIDIA GPU that nvidia-smi can see")
+        # setup schedules the shutdown at the deadline as a moment by this laptop's clock: the machine's must agree
+        skew = int(self.sh("date +%s").stdout.decode().strip()) - time.time()
+        if abs(skew) > 60:
+            raise Refused("internal", f"{c['cluster']}'s clock and this machine's differ by {skew:.0f} s: set this machine's "
+                                      "clock (its deadline is a moment by it)")
         # its OS shuts it down (and so terminates it) at the deadline, counted from the start of the launch
         minutes = max(1, math.floor((c["deadline_s"] - (time.monotonic() - self.started)) / 60))
         guard = Path(c["guard"]).read_bytes()
@@ -475,6 +481,7 @@ echo $pid
         sys.stdout.buffer.write(result.stdout + result.stderr)
         if result.returncode:
             raise GuardRefused(f"guard.sh refused {c['cluster']} (exit {result.returncode}): nothing was sent; see the log")
+        self.deadline_set = True
         # what the node needs, installed now and waited for (SkyPilot's own setup runs detached: node-setup.sh)
         say("installing ffmpeg and uv on the machine")
         try:
@@ -545,8 +552,9 @@ echo $pid
                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, timeout=c.get("down_s", 900)).returncode
         except subprocess.TimeoutExpired:
             code = "timed out"
-        if code == 0:   # its time, never more than its deadline (the most reserved: its OS shuts it down then)
-            self.extra_usd = round(c["hourly_usd"] * min(time.monotonic() - self.started, c["deadline_s"]) / 3600, 4)
+        if code == 0:   # its time; never more than its deadline once its OS shutdown was set (it cannot outlive it then)
+            seconds = time.monotonic() - self.started
+            self.extra_usd = round(c["hourly_usd"] * (min(seconds, c["deadline_s"]) if self.deadline_set else seconds) / 3600, 4)
         else:   # it lives until its deadline at most (guard.sh), and is charged that
             self.extra_usd = round(c["hourly_usd"] * c["deadline_s"] / 3600, 4)
             say(f"WARNING: could not delete {c['cluster']} (sky down: {code}): run `sky down {c['cluster']}`; "
