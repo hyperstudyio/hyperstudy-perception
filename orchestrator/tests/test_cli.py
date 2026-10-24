@@ -119,3 +119,10 @@ def test_every_command_speaks_json(home, capsys):
     assert cli("logs", run) == 0
     out = lines(capsys)
     assert out and all(e["type"] == "event" for e in out) and out[-1]["kind"] == "run.succeeded"
+
+
+@pytest.mark.parametrize("command", [["artifacts"], ["cancel"], ["logs"], ["logs", "--follow"]])
+def test_an_unknown_run_is_an_error_not_an_empty_success(home, capsys, command):
+    assert cli(command[0], "no-such-run", *command[1:]) == 1
+    [err] = lines(capsys)
+    assert err == {"v": 1, "type": "error", "problems": ["no run no-such-run"]}
