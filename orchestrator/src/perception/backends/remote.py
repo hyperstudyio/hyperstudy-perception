@@ -42,9 +42,18 @@ def code_files(manifest: Manifest, runner: Runner) -> list[str]:
     if out.returncode:
         raise RuntimeError(f"{REPO} is not a git checkout: only files git tracks are sent to other machines ({out.stderr.strip()})")
     files = sorted(f for f in out.stdout.split("\0") if f)
+    refuse_links(files)
     if not any(f.startswith(dirs[0] + "/") for f in files):
         raise RuntimeError(f"git tracks no files in {dirs[0]}: commit the node before running it on another machine")
     return files
+
+
+def refuse_links(files: list[str], root: Path = REPO):
+    """A link git tracks would be followed when the code is copied and hashed, and what it points at (anything on this
+    machine) would go to the host: only content git tracks leaves the machine, so a node with one is not sent."""
+    links = [f for f in files if (root / f).is_symlink()]
+    if links:
+        raise RuntimeError(f"git tracks links among the code to send ({', '.join(links[:5])}): links are not sent to other machines")
 
 
 def code_hash(files: list[str], root: Path = REPO) -> str:

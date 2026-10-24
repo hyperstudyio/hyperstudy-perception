@@ -159,10 +159,12 @@ class Driver:
         out = {}
         for name, entry in self.request["inputs"].items():
             # the content, not a link to it: a graph input is often a link (to a video on an external drive), which rsync
-            # would send as a link pointing nowhere there (or somewhere else)
-            local = Path(entry["path"]).resolve()
+            # would send as a link pointing nowhere there (or somewhere else). The node gets it under the name it has
+            # here, the link's own, as a local run gives it (decode records it): the target's name never goes there.
+            given = Path(entry["path"])
+            local = given.resolve()
             folder = f"{self.root}/objects/{entry['sha256']}"
-            out[name] = {**entry, "path": f"{self.attempt}/in/{name}/{local.name}", "object": f"{folder}/data"}
+            out[name] = {**entry, "path": f"{self.attempt}/in/{name}/{given.name}", "object": f"{folder}/data"}
             if self.sh(f"test -e {q(folder)}/.complete", check=False).returncode == 0:
                 continue
             size = sum(p.stat().st_size for p in local.rglob("*") if p.is_file()) if local.is_dir() else local.stat().st_size

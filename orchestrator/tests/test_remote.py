@@ -461,6 +461,8 @@ def test_a_linked_video_is_sent_as_its_content(tmp_path, host):
     assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "shots")
     [stored] = (host / "home" / ".cache" / "hp" / "objects").glob("*/data")
     assert not stored.is_symlink() and stored.read_bytes() == real.read_bytes()
+    media = json.loads(Path(json.loads(coord._tasks(run_id)["shots"]["outputs"])["media"]["path"]).read_text())
+    assert media["filename"] == "linked.mp4"               # the name it has here, as a local run gives it, not the target's
 
 
 def test_an_input_that_changed_since_the_run_read_it_is_not_filed_under_the_old_hash(tmp_path, host):
@@ -564,6 +566,16 @@ def test_code_saved_while_it_is_being_sent_is_not_filed_under_the_old_hash(tmp_p
     assert asyncio.run(coord.run(run_id)) == "failed"
     assert "the node's code changed since this attempt started" in log_of(coord, run_id, "a")
     assert not (host / "home" / ".cache" / "hp" / "code").exists() or not any((host / "home" / ".cache" / "hp" / "code").iterdir())
+
+
+def test_code_with_a_link_git_tracks_is_not_sent(tmp_path):
+    from perception.backends.remote import refuse_links
+    (tmp_path / "node").mkdir()
+    (tmp_path / "node" / "node.py").write_text("print()")
+    (tmp_path / "node" / "sample.mp4").symlink_to(tmp_path / "elsewhere.mp4")   # e.g. a study video outside the repository
+    refuse_links(["node/node.py"], tmp_path)
+    with pytest.raises(RuntimeError, match="links are not sent"):
+        refuse_links(["node/node.py", "node/sample.mp4"], tmp_path)
 
 
 def test_prosody_counts_as_transcript_too():
