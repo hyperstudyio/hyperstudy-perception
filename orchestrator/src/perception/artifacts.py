@@ -100,12 +100,12 @@ MEDIA_SCHEMA = {
     },
 }
 
-# What each layer can hold. Shots carry captions, which describe and name the people on screen; prosody and the waveform
-# are measures of the audio. Every layer is listed: a new one must say what it holds.
+# What each layer can hold. Shots carry captions, which describe and name the people on screen; prosody measures the
+# audio and carries each utterance's words; the waveform is a measure of the audio. Every layer is listed: a new one must say what it holds.
 LAYER_KINDS: dict[str, tuple[str, ...]] = {
     "shots": ("transcript", "faces"), "transcript": ("transcript",), "speakers": ("transcript",), "text": ("transcript",),
     "faces": ("faces", "embeddings"), "bodies": (), "hands": (), "gestures": (), "facing": (), "gaze": (), "objects": (),
-    "sounds": (), "prosody": ("audio",), "waveform": ("audio",),
+    "sounds": (), "prosody": ("audio", "transcript"), "waveform": ("audio",),
 }
 assert set(LAYER_KINDS) == set(BUNDLE_LAYERS)
 

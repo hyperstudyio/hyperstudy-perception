@@ -18,11 +18,13 @@ attempt's log.txt.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -78,6 +80,7 @@ class Driver:
         self.code = f"{self.root}/code/{spec['code']}"
         self.tag = f"{r['run']}-{r['node']}-{r['attempt']}"   # this attempt's own names for what it uploads
         self.pid: int | None = None
+        self.unreachable_since: float | None = None
 
     # --- commands on the host -----------------------------------------------------------------------------------
 
@@ -164,7 +167,11 @@ for f in {q(self.node_runs)}/*/pid; do
   [ -f "$f" ] || continue
   old=$(cat "$f")
   # only if that pid is still that attempt's node (pids are reused on a shared machine)
-  if ps -ww -p "$old" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then kill -s TERM -- "-$old" 2>/dev/null || true; fi
+  if ps -ww -p "$old" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then
+    kill -s TERM -- "-$old" 2>/dev/null || true
+    n=0; while [ $n -lt 10 ] && kill -0 "$old" 2>/dev/null; do sleep 1; n=$((n + 1)); done   # gone before this one starts
+    kill -s KILL -- "-$old" 2>/dev/null || true
+  fi
 done
 mkdir -p {q(self.attempt)}/out
 {links}
@@ -185,10 +192,61 @@ echo $pid
         self.pid = int(out.stdout.decode().split()[-1])
         say(f"started on {s['host']} (pid {self.pid})")
 
+    def unreachable(self, e: Exception):
+        """Wait out a host that cannot be reached, for up to lost_after_s in all since it was last reached; past that,
+        give up (raise)."""
+        now = time.monotonic()
+        if self.unreachable_since is None:
+            self.unreachable_since = now
+            say(f"{self.spec['host']} cannot be reached ({e}); waiting up to {self.spec['lost_after_s']:.0f} s")
+        elif now - self.unreachable_since > self.spec["lost_after_s"]:
+            raise Unreachable(str(e))
+        time.sleep(POLL_S)
+
+    def patiently(self, step, *args):
+        """A step that a dropped connection must not lose (bringing a finished node's results back): repeated while
+        the host cannot be reached, as watching is. A failed rsync is repeated only if the host is unreachable; any
+        other failure is the step's own."""
+        while True:
+            try:
+                result = step(*args)
+                self.unreachable_since = None
+                return result
+            except Unreachable as e:
+                self.unreachable(e)
+            except RuntimeError as e:
+                try:
+                    self.sh("true")
+                except Unreachable:
+                    self.unreachable(e)
+                    continue
+                raise
+
+    @contextlib.contextmanager
+    def heartbeat(self):
+        """Keep writing the heartbeat while something long happens (a large out/ coming back), so the host's watchdog
+        does not take this attempt for one no driver is watching."""
+        done = threading.Event()
+        every = min(POLL_S, max(0.2, self.spec["lost_after_s"] / 2))
+
+        def beat():
+            while not done.wait(every):
+                try:
+                    self.sh(f"date +%s > {shlex.quote(self.attempt)}/alive 2>/dev/null", check=False)
+                except Exception:
+                    pass   # a dropped connection: the step itself waits it out
+        thread = threading.Thread(target=beat, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            done.set()
+            thread.join()
+
     def watch(self):
         q = shlex.quote
         req, log = f"{self.attempt}/request.json", f"{self.attempt}/log.txt"
-        offset, unreachable_since = 0, None
+        offset = 0
         while True:
             # the heartbeat first: the host's watchdog ends a node no driver has asked about for too long
             check = (f"date +%s > {q(self.attempt)}/alive 2>/dev/null; "
@@ -196,15 +254,9 @@ echo $pid
                      f"then echo running; else echo exited; fi; tail -c +{offset + 1} {q(log)} 2>/dev/null || true")
             try:
                 out = self.sh(check).stdout
-                unreachable_since = None
+                self.unreachable_since = None
             except Unreachable as e:
-                now = time.monotonic()
-                if unreachable_since is None:
-                    unreachable_since = now
-                    say(f"{self.spec['host']} cannot be reached ({e}); waiting up to {self.spec['lost_after_s']:.0f} s")
-                elif now - unreachable_since > self.spec["lost_after_s"]:
-                    raise
-                time.sleep(POLL_S)
+                self.unreachable(e)
                 continue
             state, _, text = out.partition(b"\n")
             if text:
@@ -217,18 +269,21 @@ echo $pid
 
     def fetch(self):
         """out/ and response.json, into this attempt's folder. No response there: the node crashed (none is written
-        here either, and the coordinator sees a crash)."""
+        here either, and the coordinator sees a crash). The node has finished: a dropped connection is waited out, and
+        the heartbeat kept up, rather than its results lost."""
         q = shlex.quote
-        # never through a link the node made: rsync would copy what `out/` points at, which publication cannot see
-        listing = self.sh(f"cd {q(self.attempt)} 2>/dev/null || exit 0; [ -d out ] && [ ! -L out ] && echo out; "
-                          f"[ -f response.json ] && [ ! -L response.json ] && echo response.json; true").stdout.decode().split()
-        if "out" in listing:
-            self.rsync(f"{self.dest}:{self.attempt}/out/", f"{self.local}/out/")
+        with self.heartbeat():
+            # never through a link the node made: rsync would copy what `out/` points at, which publication cannot see
+            listing = self.patiently(self.sh, f"cd {q(self.attempt)} 2>/dev/null || exit 0; [ -d out ] && [ ! -L out ] && echo out; "
+                                              f"[ -f response.json ] && [ ! -L response.json ] && echo response.json; true").stdout.decode().split()
+            if "out" in listing:
+                self.patiently(self.rsync, f"{self.dest}:{self.attempt}/out/", f"{self.local}/out/")
+            if "response.json" in listing:
+                self.patiently(self.rsync, f"{self.dest}:{self.attempt}/response.json", f"{self.local}/response.json.part")
         if "response.json" in listing:
-            self.rsync(f"{self.dest}:{self.attempt}/response.json", f"{self.local}/response.json.part")
             (self.local / "response.json.part").replace(self.local / "response.json")
         # the run's folders too once empty (another node of the run may still be using them)
-        self.sh(f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true")
+        self.patiently(self.sh, f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true")
 
     def stop(self):
         """Stop this attempt's node on the host, if it started (by its pid file: the driver may have been canceled

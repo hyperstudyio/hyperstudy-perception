@@ -34,6 +34,8 @@ if [ -e "$FAKE_HOST/unreachable" ]; then
   pattern=$(cat "$FAKE_HOST/unreachable")
   case "$*" in *"$pattern"*) echo "ssh: connect to host lab: Network is unreachable" >&2; exit 255;; esac
 fi
+# a slow link for commands that contain $FAKE_HOST/slow's text
+if [ -e "$FAKE_HOST/slow" ]; then case "$*" in *"$(cat "$FAKE_HOST/slow")"*) sleep 8;; esac; fi
 cd "$FAKE_HOST/home" && HOME="$FAKE_HOST/home" exec /bin/sh -c "$*"
 """
 
@@ -411,6 +413,35 @@ def test_a_host_with_a_node_on_it_is_neither_removed_nor_cleaned(tmp_path, host,
     busy.parent.parent.parent.joinpath("r2").rename(tmp_path / "gone")
     assert main(["hosts", "clean", "lab"]) == 0
     assert main(["hosts", "remove", "lab"]) == 0
+
+
+def test_a_finished_nodes_results_survive_a_connection_dropped_while_they_are_fetched(tmp_path, host, rec):
+    import threading
+    coord = coordinator(tmp_path, host)
+    run_id = start(coord, work_graph(tmp_path, rec, sleep=1))
+
+    async def go():
+        task = asyncio.create_task(coord.run(run_id))
+        await asyncio.to_thread(remote_pid, host, run_id)
+        (host / "unreachable").write_text("! -L out")       # only the fetch's first command, for 5 s
+        threading.Timer(5, (host / "unreachable").unlink).start()
+        return await task
+    assert asyncio.run(go()) == "succeeded", log_of(coord, run_id, "a")
+    assert coord._tasks(run_id)["a"]["attempt"] == 1          # not run a second time
+    assert "cannot be reached" in log_of(coord, run_id, "a")
+
+
+def test_a_slow_fetch_keeps_the_heartbeat_so_the_watchdog_leaves_the_results(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host, lost_after_s=3)       # the watchdog would act after 6 s without a heartbeat
+    (host / "slow").write_text("--sender")                     # rsync bringing out/ back takes 8 s
+    run_id = start(coord, work_graph(tmp_path, rec))
+    assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "a")
+    assert coord._tasks(run_id)["a"]["attempt"] == 1
+
+
+def test_prosody_counts_as_transcript_too():
+    from perception.artifacts import get
+    assert set(get("bundle.prosody@0.1").kinds) == {"audio", "transcript"}   # each utterance's words
 
 
 # --- hosts --------------------------------------------------------------------------------------------------------
