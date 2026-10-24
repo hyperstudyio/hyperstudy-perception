@@ -454,8 +454,7 @@ echo $pid
                 time.sleep(POLL_S)
         finally:
             if not finished:   # a timeout or a cancel: stop the launch on the API server, or sky down could miss it
-                subprocess.run([c["sky"], "api", "cancel", "-y", request], env=self.cloud_env(c), stdout=sys.stdout,
-                               stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+                self.sky_cancel(c, [request])
             logs.terminate()
             logs.wait()
         # again now that it is up: the launch may have replaced the instance it first created (another zone). A machine
@@ -514,8 +513,16 @@ echo $pid
             say(f"WARNING: could not list SkyPilot's requests to cancel a launch of {c['cluster']}; sky down follows")
             return
         if ids:
-            subprocess.run([c["sky"], "api", "cancel", "-y", *ids], env=self.cloud_env(c), stdout=sys.stdout,
-                           stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+            self.sky_cancel(c, ids)
+
+    def sky_cancel(self, c: dict, requests: list[str]):
+        """Cancel launch requests on SkyPilot's API server, within a time limit: a server that hangs must not keep the
+        machine from being deleted (teardown follows whatever happens here)."""
+        try:
+            subprocess.run([c["sky"], "api", "cancel", "-y", *requests], env=self.cloud_env(c), stdout=sys.stdout,
+                           stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, timeout=c.get("aws_s", 120))
+        except (subprocess.TimeoutExpired, OSError) as e:
+            say(f"WARNING: could not cancel the launch on SkyPilot's server ({e}); deleting the machine follows")
 
     def request_status(self, c: dict, request: str) -> str:
         """A request's status on SkyPilot's API server (PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED), or "" when it

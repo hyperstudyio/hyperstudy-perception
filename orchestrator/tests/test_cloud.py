@@ -5,6 +5,7 @@ home on this one, which reports an NVIDIA GPU through a stand-in nvidia-smi)."""
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -51,7 +52,7 @@ case "$1 $2" in
     else st=SUCCEEDED; fi
     printf 'The flag is ignored because the server does not support it yet.\n[{"request_id": "%s", "name": "sky.launch", "status": "%s"}]\n' "$R" "$st"; exit 0;;
   "api logs") echo "launch logs"; exit 0;;
-  "api cancel") touch "$FAKE_HOST/canceled"; exit 0;;
+  "api cancel") [ -e "$FAKE_HOST/cancel-hangs" ] && sleep 60; touch "$FAKE_HOST/canceled"; exit 0;;
 esac
 case "$1" in
   down) [ -e "$FAKE_HOST/down-fails" ] && exit 1
@@ -394,6 +395,31 @@ def test_ec2_not_answering_while_ending_a_machine_with_no_deadline_still_stops_t
     run_id, status = run(coord, doc)
     t = coord._tasks(run_id)["faces"]
     assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1) and "may still be running" in t["error"]
+
+
+def test_a_cancel_that_hangs_on_skypilots_server_does_not_keep_the_machine_from_being_deleted(tmp_path, machine, rec):
+    for f in ("launch-hangs", "cancel-hangs"):
+        (machine / f).touch()
+    coord = coordinator(tmp_path, launch_s=1, aws_s=2)
+    started = time.time()
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "failed" and time.time() - started < 40
+    assert events(machine)[-1].startswith("sky down -y perception-")
+
+
+def test_setups_shutdown_is_the_minutes_left_and_never_later():
+    import re
+    import yaml
+    setup = yaml.safe_load(CloudBackend.task.read_text())["setup"]
+    line = next(l for l in setup.splitlines() if "left=" in l) + "\n" + next(l for l in setup.splitlines() if "shutdown -h" in l)
+
+    def shutdown(epoch):
+        out = subprocess.run(["bash", "-c", "sudo() { echo \"$@\"; }\n" + line], capture_output=True, text=True,
+                             env={**os.environ, **({"DEADLINE_EPOCH": str(epoch)} if epoch is not None else {})})
+        return re.search(r"shutdown -h (\S+)", out.stdout).group(1)
+    assert shutdown(int(time.time()) + 1799) == "+29"         # rounded down: never after the deadline
+    assert shutdown(int(time.time()) - 30) == "+0"            # already past (setup ran late): now, not tomorrow
+    assert shutdown(None) == "+0"                             # no deadline given: now
 
 
 def test_a_machine_that_cannot_be_set_to_terminate_is_not_used(tmp_path, machine, rec):
