@@ -578,6 +578,26 @@ def test_code_with_a_link_git_tracks_is_not_sent(tmp_path):
         refuse_links(["node/node.py", "node/sample.mp4"], tmp_path)
 
 
+def test_a_node_from_outside_the_repository_is_not_offered_a_host(tmp_path, host):
+    import shutil
+    outside = tmp_path / "more-nodes" / "work"
+    shutil.copytree(NODES / "work", outside)
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(tmp_path / "more-nodes"),
+                        [SelfBackend(), SshBackend(lab(host), runner_kind="self", python=sys.executable)])
+    m = coord.registry.get("test.work@1.0.0")
+    placement, why = coord.place(m, choice="ssh-lab:cpu")
+    assert placement is None and "not in the pipeline's repository" in why
+    assert [p.label for p in coord.placements(m)[0]] == ["self:cpu"]
+
+
+def test_a_host_whose_home_is_not_a_plain_path_is_refused(tmp_path, host, monkeypatch):
+    spaced = tmp_path / "Lab Shared"                     # the host's $HOME becomes ".../Lab Shared/home"
+    (spaced / "home").mkdir(parents=True)
+    monkeypatch.setenv("FAKE_HOST", str(spaced))
+    with pytest.raises(HostError, match="not a plain path"):
+        Hosts(tmp_path / "home").add("lab", "lab")
+
+
 def test_prosody_counts_as_transcript_too():
     from perception.artifacts import get
     assert set(get("bundle.prosody@0.1").kinds) == {"audio", "transcript"}   # each utterance's words

@@ -32,6 +32,8 @@ def code_files(manifest: Manifest, runner: Runner) -> list[str]:
     """What a node needs on the other machine, relative to the repository: the files git tracks in its directory, its
     uv project and the node SDK. Only tracked files: a working copy can hold images, crops and bundles that must not
     leave the machine (as launch.sh stages for whole-graph cloud runs)."""
+    if not manifest.directory.resolve().is_relative_to(REPO):
+        raise RuntimeError(f"{manifest.ref} is not in the pipeline's repository ({manifest.directory}): only files it tracks are sent")
     dirs = [manifest.directory.resolve().relative_to(REPO).as_posix(), "sdk"]
     if runner.env:
         dirs.append(runner.env)
@@ -95,6 +97,8 @@ class SshBackend(NativeBackend):
             return f"it sends {', '.join(manifest.privacy.external_upload)} to {manifest.service or 'a service'} itself, so it runs on this machine"
         if manifest.secrets:
             return f"it needs {', '.join(manifest.secrets)}, and secrets are not sent to other machines"
+        if not manifest.directory.resolve().is_relative_to(REPO):
+            return "it is not in the pipeline's repository, and only files the repository tracks are sent to other machines"
         return ""
 
     def identity(self, manifest: Manifest, runner: Runner) -> str:

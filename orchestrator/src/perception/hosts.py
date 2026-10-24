@@ -146,8 +146,11 @@ def probe(dest: str, root: str = DEFAULT_ROOT) -> tuple[Capabilities, str]:
     caps = Capabilities(platform=f"{system}/{arch}", cpu_cores=cores, memory_gb=round(memory, 1), accelerators=accelerators,
                         vram_gb=round(vram, 1), tools={t: facts.get(f"tool_{t}") or None for t in ("uv", "ffmpeg", "ffprobe")})
     home = facts["home"]
-    absolute = root if root.startswith("/") else f"{home}/{root.removeprefix('~/')}"
-    return caps, absolute.rstrip("/")
+    absolute = (root if root.startswith("/") else f"{home}/{root.removeprefix('~/')}").rstrip("/")
+    # plain characters in the whole path, the host's home too: rsync passes remote paths through the host's shell
+    if not ROOT.match(absolute):
+        raise HostError(f"{dest}'s folder for perception would be {absolute!r}, which is not a plain path (spaces?): give --root /a/plain/path")
+    return caps, absolute
 
 
 class Hosts:
