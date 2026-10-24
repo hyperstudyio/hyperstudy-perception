@@ -124,6 +124,11 @@ class Backend(ABC):
     def cleanup(self, attempt_dir: Path) -> None:
         return None
 
+    def recorded_handle(self, attempt_dir: Path) -> dict | None:
+        """The handle `submit` recorded in the attempt's folder as soon as the node started, if it did: a coordinator that
+        died before recording the task running leaves that node to be adopted, not started a second time."""
+        return None
+
 
 # --- the child's environment: no credentials it did not ask for -------------------------------------------------
 

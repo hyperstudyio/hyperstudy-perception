@@ -278,6 +278,28 @@ def test_killing_the_coordinator_mid_run_recovers_without_rerunning_or_corruptin
     assert not list((coord.store.root / "tmp").iterdir())
 
 
+def test_a_coordinator_that_dies_just_after_starting_a_node_leaves_it_to_be_adopted_not_run_twice(tmp_path, rec):
+    """The gap between starting a node's process and recording it running: a coordinator killed there must not leave
+    a task that the next coordinator starts again while the first process is still working (twice the spend for an
+    API node). Seen on Linux CI, where processes start faster than on macOS."""
+    class Crash(BaseException):
+        pass
+    coord = coordinator(tmp_path, lease_s=1.0)
+    run_id = start(coord, graph_doc(tmp_path, [work("a", record_dir=rec, sleep=1.0)]))
+    backend = coord.backends["self"]
+    real_submit = backend.submit
+
+    def submit_then_die(*a):
+        real_submit(*a)
+        raise Crash()                                    # the coordinator is gone before it records "running"
+    backend.submit = submit_then_die
+    with pytest.raises(Crash):
+        asyncio.run(coord.run(run_id))
+    time.sleep(1.1)                                      # its lease runs out
+    assert asyncio.run(coordinator(tmp_path, lease_s=1.0).run(run_id)) == "succeeded"
+    assert len(executions(Path(rec), "a")) == 1          # adopted, not started again
+
+
 # --- export -----------------------------------------------------------------------------------------------------
 
 def test_a_run_exports_as_a_bundle_with_licences_carried_downstream(tmp_path):

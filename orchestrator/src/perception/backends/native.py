@@ -10,6 +10,7 @@ instead of starting a second copy.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import signal
@@ -76,7 +77,17 @@ class NativeBackend(Backend):
                                 start_new_session=True)   # its own process group: cancel stops the whole tree
         log.close()
         self._children[proc.pid] = proc
-        return {"pid": proc.pid, "request": str(request)}
+        handle = {"pid": proc.pid, "request": str(request)}
+        tmp = attempt_dir / "handle.json.tmp"   # at once, before the coordinator records it: see recorded_handle
+        tmp.write_text(json.dumps(handle))
+        os.replace(tmp, attempt_dir / "handle.json")
+        return handle
+
+    def recorded_handle(self, attempt_dir: Path) -> dict | None:
+        path = attempt_dir / "handle.json"
+        if not path.is_file() or path.is_symlink():
+            return None
+        return json.loads(path.read_text())
 
     def poll(self, handle: dict) -> str:
         pid = handle["pid"]

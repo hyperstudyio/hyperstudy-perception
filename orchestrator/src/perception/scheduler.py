@@ -211,9 +211,16 @@ class Coordinator:
                             f"{wait:.0f} s more); if that process is gone, resume after the lease expires")
         self.store.db.execute("UPDATE runs SET status='running', finished_at=NULL WHERE id=? AND status!='canceled'", (run_id,))
         for t in tasks.values():
-            if t["state"] == "leased":   # chosen but never submitted
-                self._set(run_id, t["node_id"], state="pending", lease_owner=None, lease_expires=None)
-            elif t["state"] == "running" and t["lease_owner"] != self.owner:
+            if t["state"] == "leased":
+                # chosen; perhaps started (its process recorded a handle) before the coordinator could record it running
+                handle = self.backends[t["runner"].split(":")[0]].recorded_handle(
+                    self.store.root / "work" / run_id / t["node_id"] / str(t["attempt"])) if t["runner"] else None
+                if handle is None:   # never submitted
+                    self._set(run_id, t["node_id"], state="pending", lease_owner=None, lease_expires=None)
+                    continue
+                self._set(run_id, t["node_id"], state="running", handle=dumps(handle), started_at=time.time())
+                t = self._tasks(run_id)[t["node_id"]]
+            if t["state"] == "running" and t["lease_owner"] != self.owner:
                 backend = self.backends[t["runner"].split(":")[0]]
                 handle = json.loads(t["handle"])
                 still = backend.poll(handle)
