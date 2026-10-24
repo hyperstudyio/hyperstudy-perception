@@ -15,6 +15,7 @@ environment) plus the video's length, at least 30 minutes: a GPU node slower tha
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -44,8 +45,11 @@ class CloudBackend(SshBackend):
     # what placement checks runners against; the driver probes the real machine (its tools come from node-gpu.yaml's setup)
     caps = Capabilities(platform="linux/amd64", cpu_cores=8, memory_gb=32, accelerators={"cpu", "cuda"}, vram_gb=22)
 
-    def __init__(self, deadline_s: float | None = None, runner_kind: str = "native", python: str | None = None, **paths):
-        """`deadline_s` fixes the deadline whatever the video (tests); by default it follows the video's length."""
+    def __init__(self, deadline_s: float | None = None, runner_kind: str = "native", python: str | None = None,
+                 launch_s: float = 25 * 60, **paths):
+        """`deadline_s` fixes the deadline whatever the video (tests); by default it follows the video's length.
+        `launch_s`: how long starting the machine (and installing ffmpeg and uv on it) may take."""
+        self.launch_s = launch_s
         host = Host("cloud", "(started for each node)", "", self.caps, 0)
         super().__init__(host, runner_kind=runner_kind, python=python)
         self.kind = "cloud"
@@ -84,7 +88,7 @@ class CloudBackend(SshBackend):
         return {"host": "the cloud machine", "cloud": {
             "cluster": cluster_name(request["run"], request["node"], request["attempt"]),
             "task": str(self.task), "project_config": str(self.project_config), "guard": str(self.guard),
-            "region": self.region, "hourly_usd": self.hourly_usd,
+            "region": self.region, "hourly_usd": self.hourly_usd, "launch_s": self.launch_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values())),
             "sky": os.environ.get("PERCEPTION_SKY") or shutil.which("sky") or "sky",
             "aws": os.environ.get("PERCEPTION_AWS") or shutil.which("aws") or "aws"}}
@@ -110,10 +114,11 @@ def video_seconds(inputs) -> float | None:
 
 
 def cluster_name(run_id: str, node: str, attempt: int) -> str:
-    """perception-<run>-<node>-<attempt>: the perception-node role can end only perception-* machines, and SkyPilot
-    names are lower-case letters, digits and hyphens."""
-    node = re.sub(r"[^a-z0-9-]", "-", node.lower()).strip("-")[:16] or "node"
-    return f"perception-{run_id.rsplit('-', 1)[-1]}-{node}-{attempt}"
+    """perception-<run>-<node>-<hash>-<attempt>: the perception-node role can end only perception-* machines, and
+    SkyPilot names are lower-case letters, digits and hyphens. The hash of the whole node id keeps two nodes whose
+    shortened names agree (face_track_a, face-track-a) on machines of their own."""
+    short = re.sub(r"[^a-z0-9-]", "-", node.lower()).strip("-")[:10] or "node"
+    return f"perception-{run_id.rsplit('-', 1)[-1]}-{short}-{hashlib.sha256(node.encode()).hexdigest()[:6]}-{attempt}"
 
 
 class Cloud:

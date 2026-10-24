@@ -66,6 +66,10 @@ class GuardRefused(Exception):
     pass
 
 
+class LaunchFailed(Exception):
+    """The cloud machine did not start (no capacity, a setup that failed or hung): worth another attempt."""
+
+
 # Publish a folder in one step: rename $1 to $2 unless $2 exists, in which case $1 is dropped (the same content, by its
 # hash, arrived first). rename(2) onto a folder that is not empty fails, so a published folder is never replaced or
 # nested into: GNU mv -T on Linux, perl's rename on a Mac (BSD mv has no -T and would move $1 into $2).
@@ -395,13 +399,31 @@ echo $pid
         return {**os.environ, "SKYPILOT_PROJECT_CONFIG": c["project_config"]}
 
     def provision(self, c: dict):
+        """Start the machine. Its own deadline is set from the first moment, in case this laptop never comes back: the
+        task's setup schedules the OS shutdown first (DEADLINE_MINUTES), and while the launch runs a watcher makes an OS
+        shutdown terminate the instance (EC2 would only stop it, its disk billing). The launch itself has a time limit
+        (launch_s): a setup that hangs is stopped here and the machine deleted."""
         from .hosts import probe
         say(f"starting a cloud machine, {c['cluster']} (at most {c['deadline_s'] / 60:.0f} min at ${c['hourly_usd']}/h)")
-        out = subprocess.run([c["sky"], "launch", "-c", c["cluster"], "-y", "--down", "-i", "15", c["task"]],
-                             env=self.cloud_env(c), stdout=sys.stdout, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-        if out.returncode:
-            raise RuntimeError(f"sky launch exited {out.returncode}")
-        self.terminate_on_shutdown(c)
+        minutes = max(1, math.floor(c["deadline_s"] / 60))
+        launch = subprocess.Popen([c["sky"], "launch", "-c", c["cluster"], "-y", "--down", "-i", "15", "--env", f"DEADLINE_MINUTES={minutes}", c["task"]],
+                                  env=self.cloud_env(c), stdout=sys.stdout, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        terminating = False
+        try:
+            while launch.poll() is None:
+                if not terminating:
+                    terminating = self.terminate_on_shutdown(c, quiet=True)
+                if time.monotonic() - self.started > c["launch_s"]:
+                    raise LaunchFailed(f"the machine was not ready after {c['launch_s'] / 60:.0f} min (sky launch stopped)")
+                time.sleep(POLL_S)
+        finally:
+            if launch.poll() is None:
+                launch.terminate()
+                launch.wait()
+        if launch.returncode:
+            raise LaunchFailed(f"sky launch exited {launch.returncode}")
+        if not terminating:
+            self.terminate_on_shutdown(c)
         caps, root = probe(c["cluster"])
         self.at(c["cluster"], root)
         self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
@@ -416,21 +438,25 @@ echo $pid
             raise GuardRefused(f"guard.sh refused {c['cluster']} (exit {result.returncode}): nothing was sent; see the log")
         self.stop_at = self.started + c["deadline_s"] - min(300, c["deadline_s"] / 4)
 
-    def terminate_on_shutdown(self, c: dict):
-        """EC2 only stops an on-demand machine on an OS shutdown (its disk keeps billing): make it terminate, so the
-        deadline in guard.sh deletes it (as launch.sh does)."""
+    def terminate_on_shutdown(self, c: dict, quiet: bool = False) -> bool:
+        """EC2 only stops an on-demand machine on an OS shutdown (its disk keeps billing): make it terminate, so its
+        deadline deletes it (as launch.sh does). Whether its instance was found and changed; `quiet` while the launch is
+        still creating it."""
         aws = [c["aws"], "--region", c["region"], "--output", "text"]
         ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
                               "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']}*",
                               "Name=instance-state-name,Values=pending,running"], capture_output=True, text=True)
         found = ids.stdout.split() if ids.returncode == 0 else []
+        done_all = bool(found)
         for instance in found:
             done = subprocess.run([*aws, "ec2", "modify-instance-attribute", "--instance-id", instance,
                                    "--instance-initiated-shutdown-behavior", "terminate"], capture_output=True, text=True)
+            done_all &= done.returncode == 0
             say(f"{instance} terminates on OS shutdown" if done.returncode == 0 else
                 f"WARNING: could not make {instance} terminate on shutdown ({done.stderr.strip()[-200:]}); its deadline only stops it")
-        if not found:
+        if not found and not quiet:
             say(f"WARNING: no instance found for {c['cluster']} ({ids.stderr.strip()[-200:]}); its deadline only stops it")
+        return done_all
 
     def teardown(self, c: dict):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # deleting the machine must not be interrupted
@@ -462,6 +488,11 @@ echo $pid
         except Canceled:
             self.stop()
             return 143
+        except LaunchFailed as e:
+            say(str(e))
+            # retried within the policy, charged what the machine cost until it was deleted (not the whole deadline)
+            self.fail("transient", str(e))
+            return 1
         except GuardRefused as e:
             say(str(e))
             # the machine is not set up as this repository requires (its role, credentials on it): not worth retrying
@@ -482,6 +513,7 @@ echo $pid
             self.fail(e.code, str(e))
             return 1
         finally:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a cancel now must not skip deleting the machine or charging it
             self.discard_incoming()
             if cloud:
                 self.teardown(cloud)

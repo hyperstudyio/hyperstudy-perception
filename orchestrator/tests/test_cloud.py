@@ -30,7 +30,9 @@ cd "$FAKE_HOST/home" && HOME="$FAKE_HOST/home" exec /bin/sh -c "$*"
 FAKE_SKY = r"""#!/bin/sh
 echo "sky $* (config $SKYPILOT_PROJECT_CONFIG)" >> "$FAKE_HOST/events"
 case "$1" in
-  launch) [ -e "$FAKE_HOST/launch-fails" ] && { echo "no capacity"; exit 1; }; echo "launched $3"; exit 0;;
+  launch) [ -e "$FAKE_HOST/launch-fails" ] && { echo "no capacity"; exit 1; }
+          [ -e "$FAKE_HOST/launch-hangs" ] && { sleep 60; exit 0; }   # a setup stuck on an apt lock
+          echo "launched $3"; exit 0;;
   down) [ -e "$FAKE_HOST/down-fails" ] && exit 1; exit 0;;
   check) printf '\033[32m  AWS: enabled [compute, storage]\033[0m\n'; exit 0;;
 esac
@@ -65,8 +67,8 @@ def events(fake: Path) -> list[str]:
     return (fake / "events").read_text().splitlines() if (fake / "events").exists() else []
 
 
-def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800) -> Coordinator:
-    cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable,
+def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60) -> Coordinator:
+    cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=launch_s,
                          guard=script(tmp_path / "guard.sh", guard), task=tmp_path / "node-gpu.yaml")
     return Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), cloud], tick_s=0.02, backoff_s=0.01)
 
@@ -102,7 +104,7 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     cluster = cluster_name(run_id, "faces", 1)
     assert cluster.startswith("perception-")   # the only machines the perception-node role can end
     ev = events(machine)
-    launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch -c {cluster} -y --down -i 15"))
+    launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch -c {cluster} -y --down -i 15 --env DEADLINE_MINUTES=30"))
     assert ev[launch].endswith(f"(config {CloudBackend.project_config})")   # no credentials, only perception-node
     guard = ev.index("guard 29")                 # the shutdown deadline: whole minutes left of the 30, counted from the launch
     first_send = next(i for i, e in enumerate(ev) if "objects" in e or "code/" in e)
@@ -128,7 +130,7 @@ def test_a_machine_the_guard_refuses_gets_nothing_and_is_deleted(tmp_path, machi
     assert "not perception-node" in log_of(coord, run_id)
 
 
-def test_a_machine_that_could_not_start_is_deleted_and_the_attempt_is_a_crash(tmp_path, machine, rec):
+def test_a_machine_that_could_not_start_is_deleted_retried_and_charged_only_its_time(tmp_path, machine, rec):
     (machine / "launch-fails").touch()
     coord = coordinator(tmp_path)
     run_id, status = run(coord, graph(tmp_path, rec))
@@ -136,6 +138,21 @@ def test_a_machine_that_could_not_start_is_deleted_and_the_attempt_is_a_crash(tm
     t = coord._tasks(run_id)["faces"]
     assert t["error_code"] == "transient"            # no capacity now may be capacity later: the policy's retries apply
     assert events(machine)[-1].startswith("sky down -y perception-")   # a half-started machine too
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent < 0.01                              # seconds of machine, not the 30 min reserved
+
+
+def test_a_launch_that_hangs_is_stopped_and_the_machine_set_to_terminate_while_it_was_starting(tmp_path, machine, rec):
+    (machine / "launch-hangs").touch()
+    coord = coordinator(tmp_path, launch_s=4)
+    started = time.time()
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "failed" and time.time() - started < 30
+    t = coord._tasks(run_id)["faces"]
+    assert t["error_code"] == "transient" and "not ready after" in t["error"]
+    ev = events(machine)
+    assert any("--instance-initiated-shutdown-behavior terminate" in e for e in ev)   # set during the launch
+    assert ev[-1].startswith("sky down -y perception-")
 
 
 def test_cancel_stops_the_node_and_deletes_the_machine(tmp_path, machine, rec):
@@ -201,6 +218,12 @@ def test_a_run_whose_cap_cannot_cover_the_machine_never_starts_it(tmp_path, mach
     run_id, status = run(coord, graph(tmp_path, rec, max_cost=0.10))
     assert status == "failed" and coord._tasks(run_id)["faces"]["error_code"] == "budget"
     assert events(machine) == []
+
+
+def test_nodes_whose_shortened_ids_agree_get_machines_of_their_own():
+    assert cluster_name("20261024-1-abc123", "face_track_a", 1) != cluster_name("20261024-1-abc123", "face-track-a", 1)
+    assert cluster_name("r-abc123", "face_track_aaaaaaaaaaa1", 1) != cluster_name("r-abc123", "face_track_aaaaaaaaaaa2", 1)
+    assert cluster_name("r-abc123", "faces", 2).startswith("perception-abc123-faces-")
 
 
 def test_the_deadline_follows_the_videos_length():
