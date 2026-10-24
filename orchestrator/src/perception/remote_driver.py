@@ -542,7 +542,7 @@ echo $pid
         # its own session: a cancel signals the driver's whole process group, and must not stop the deletion
         try:   # a limit too: a SkyPilot server that hangs must not hold the run (the machine's deadline still ends it)
             code = subprocess.run([c["sky"], "down", "-y", c["cluster"]], env=self.cloud_env(c), stdout=sys.stdout,
-                                  stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, timeout=900).returncode
+                                  stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, timeout=c.get("down_s", 900)).returncode
         except subprocess.TimeoutExpired:
             code = "timed out"
         if code == 0:   # its time, never more than its deadline (the most reserved: its OS shuts it down then)

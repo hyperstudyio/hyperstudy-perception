@@ -18,5 +18,8 @@ setup: |
   # the machine shuts itself down (terminating: the driver sets that while it launches) at the deadline, even if the
   # laptop that started it never comes back. guard.sh later sets it again, to what is left. What the node needs (ffmpeg,
   # uv) the driver installs itself and waits for: node-setup.sh.
-  # A moment, not a delay: this runs detached, perhaps after guard.sh, and must not move the deadline later.
-  sudo shutdown -h "$(date -d "@${DEADLINE_EPOCH}" +%H:%M)"
+  # Up to the moment, not a fixed delay: this runs detached, perhaps after guard.sh, and must not move the deadline later.
+  # Whole minutes left, rounded down; none (shut down now) once it has passed. (`shutdown HH:MM` would take a time
+  # already gone as tomorrow's.)
+  left=$(( (DEADLINE_EPOCH - $(date +%s)) / 60 )); [ "$left" -gt 0 ] || left=0
+  sudo shutdown -h "+$left"

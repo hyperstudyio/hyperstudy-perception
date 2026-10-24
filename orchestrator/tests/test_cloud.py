@@ -53,6 +53,7 @@ case "$1 $2" in
 esac
 case "$1" in
   down) [ -e "$FAKE_HOST/down-fails" ] && exit 1
+        [ -e "$FAKE_HOST/down-hangs" ] && { sleep 60; exit 0; }   # a SkyPilot server that does not answer
         # like SkyPilot, a program with its own signal handling: an ignored SIGTERM inherited from the driver does not protect it
         [ -e "$FAKE_HOST/down-slow" ] && { python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_DFL); time.sleep(3)' || exit 1
                                            echo "sky down finished" >> "$FAKE_HOST/events"; }; exit 0;;
@@ -90,8 +91,8 @@ def events(fake: Path) -> list[str]:
     return (fake / "events").read_text().splitlines() if (fake / "events").exists() else []
 
 
-def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60, setup=SETUP_OK) -> Coordinator:
-    cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=launch_s,
+def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60, setup=SETUP_OK, down_s=900) -> Coordinator:
+    cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=launch_s, down_s=down_s,
                          guard=script(tmp_path / "guard.sh", guard), setup=script(tmp_path / "node-setup.sh", setup),
                          task=tmp_path / "node-gpu.yaml")
     return Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), cloud], tick_s=0.02, backoff_s=0.01)
@@ -262,6 +263,16 @@ def test_a_machine_is_never_charged_past_its_deadline(tmp_path, machine, rec):
     run_id, status = run(coord, graph(tmp_path, rec))
     usage = json.loads(coord._tasks(run_id)["faces"]["usage"])
     assert usage["machine_usd"] <= round(CloudBackend.hourly_usd * 4 / 3600, 4)
+
+
+def test_a_deletion_that_does_not_answer_is_given_up_and_charged_the_whole_deadline(tmp_path, machine, rec):
+    (machine / "down-hangs").touch()
+    coord = coordinator(tmp_path, deadline_s=3600, down_s=2)
+    started = time.time()
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "succeeded" and time.time() - started < 40      # not held by the deletion
+    assert json.loads(coord._tasks(run_id)["faces"]["usage"])["machine_usd"] == CloudBackend.hourly_usd
+    assert "sky down: timed out" in log_of(coord, run_id)
 
 
 def test_a_machine_that_could_not_be_deleted_is_charged_its_whole_deadline(tmp_path, machine, rec):
