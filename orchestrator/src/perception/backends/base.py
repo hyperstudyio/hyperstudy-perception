@@ -1,6 +1,6 @@
 """What every execution backend provides. The graph never names a provider; placement picks a backend whose runner
 fits the node, and the backend turns the file protocol (request.json in, out/ + response.json back) into a process,
-a container, a remote job or an API call.
+a remote job or an API call.
 
     probe_capabilities()   what this backend can run here (platform, accelerators, memory, tools)
     runner_for(manifest)   the manifest runner this backend would use, or why none fits

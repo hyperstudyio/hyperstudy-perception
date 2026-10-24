@@ -14,7 +14,7 @@ Put `--json` before the command: `perception --json run graph.yaml --input video
 | type | from | fields |
 |---|---|---|
 | `doctor` | `doctor` | `platform`, `cpu_cores`, `memory_gb`, `accelerators`, `vram_gb`, `tools` (name → path or null), `store`, `nodes` [{`ref`, `stage`, `description`, `where` (or null), `why_not`}] |
-| `plan` | `plan`; `run` when it cannot start | `ok`, `estimated_usd`, `nodes` [{`id`, `uses`, `where`, `why_not`, `cached`, `downloads` [{`id`, `source`, `size_gb`, `gated`, `licence_mode`}], `missing_secrets`, `cost_usd`, `cost_note`}] |
+| `plan` | `plan`; `run` when it cannot start | `ok`, `estimated_usd`, `nodes` [{`id`, `uses`, `where`, `why_not`, `cached`, `downloads` [{`id`, `source`, `size_gb`, `gated`, `licence_mode`}], `missing_secrets`, `cost_usd`, `cost_note`, `uploads` (data kinds it sends off the machine: `video`, `audio`, `frames`, `faces`, `transcript`, `embeddings`)}] |
 | `run.created` | `run`, `resume`, `rerun` | `run`, `store` |
 | `event` | the same, as they happen (`resume` and `rerun` stream only their own, not the run's history) | `run`, `node` (or null for the run), `kind` (`task.started`, `task.cached`, `task.retry`, `task.succeeded`, `task.failed`, `run.succeeded`, `run.failed`, ...), `message`, `at` |
 | `run.finished` | the same, last | `run`, `status` (`succeeded`, `failed`, `canceled`) |

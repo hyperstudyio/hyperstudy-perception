@@ -35,7 +35,7 @@ video ──► PIPELINE (this repo: Python package + CLI) ──► TRACK BUNDL
 
 | Repo | Contents | Consumers |
 |---|---|---|
-| **hyperstudy-perception** (this one) | Stage code, one environment per stage group, the graph runner and CLI, container images, the cloud backend, evaluation scripts and labels, **the bundle JSON Schema** (the producer owns it) | The lab, HyperStudy's backend |
+| **hyperstudy-perception** (this one) | Stage code, one environment per stage group, the graph runner and CLI, the cloud backend, evaluation scripts and labels, **the bundle JSON Schema** (the producer owns it) | The lab, HyperStudy's backend |
 | **hyperstudy-annotator** (new) | Tauri 2 + Svelte 5 desktop app; the annotator as a Svelte 5 package with a data adapter; a pinned copy of the bundle schema with fixture tests | Researchers; HyperStudy imports the annotator package |
 
 A third repo for the schema alone is not worth it yet. If HyperStudy, the app and the pipeline start drifting, move
@@ -176,7 +176,7 @@ HyperStudy integrates the bundles and the annotator through interfaces of its ow
 | 2 | Annotator app skeleton: Tauri + Svelte 5 + SQLite, import a bundle, locate video, play with overlays, signing CI | 1 |
 | 3 | Annotator ported into the app as a package; corrections in SQLite; export | 2 |
 | 4 | Pipeline refactor to the graph, stage contract and stage catalogue; `ptrack` CLI; shared decode and person boxes; environments merged where locks agree | 1 |
-| 5 | Containers; first NVIDIA timing through SkyPilot (10-minute clip); price the timings across providers; pick; full film | 4 |
+| 5 | First NVIDIA timing through SkyPilot in uv environments (done on an L4, 2026-10-24); a 10-minute clip; price the timings across providers; pick; full film | 4 |
 | 5b | App "Extract…": install the CLI with bundled uv, stage picker, local and cloud runs, auto-import | 3, 4 |
 | 6 | HyperStudy: trigger, storage, annotator embed, agent read API | 3, 5 |
 | ∥ | Evaluation set grown through the app (identities, speakers, gaze, prosody ratings) | 3 |

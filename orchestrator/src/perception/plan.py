@@ -29,6 +29,7 @@ class NodePlan:
     missing_secrets: list[str] = field(default_factory=list)
     cost_usd: float = 0.0
     cost_note: str = ""
+    uploads: list[str] = field(default_factory=list)   # data kinds the node sends off the machine (its manifest's privacy)
 
 
 @dataclass
@@ -82,6 +83,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
         np = NodePlan(node.id, m.ref, f"{placement.backend.kind} ({placement.runner.accelerator})" if placement else None, why)
         np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://") and not hf_cached(x.source)]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
+        np.uploads = list(m.privacy.external_upload)
         if placement:
             inputs = {}
             for name, ref in node.inputs.items():

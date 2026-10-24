@@ -126,3 +126,17 @@ def test_an_unknown_run_is_an_error_not_an_empty_success(home, capsys, command):
     assert cli(command[0], "no-such-run", *command[1:]) == 1
     [err] = lines(capsys)
     assert err == {"v": 1, "type": "error", "problems": ["no run no-such-run"]}
+
+
+def test_the_plan_says_what_each_node_sends_off_this_machine(home, capsys, tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    doc = {"schema_version": 1, "pipeline": "t", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "policy": {"privacy": "local-preferred", "allow_upload": ["frames"], "max_cost_usd": 1},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                     {"id": "captions", "uses": "test.refine@1.0.0", "inputs": {"shots": "$nodes.shots.shots"}}]}
+    g = tmp_path / "g.yaml"
+    g.write_text(yaml.safe_dump(doc))
+    assert cli("plan", str(g)) == 0
+    [plan] = lines(capsys)
+    assert {n["id"]: n["uploads"] for n in plan["nodes"]} == {"shots": [], "captions": ["frames"]}

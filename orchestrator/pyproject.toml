@@ -1,7 +1,7 @@
 [project]
 name = "hyperstudy-perception"
 version = "0.1.0"
-description = "Perception graph orchestrator: runs video perception nodes locally, in containers, on cloud GPUs and model APIs, and publishes track bundles"
+description = "Perception graph orchestrator: runs video perception nodes locally, on cloud GPUs and lab servers (uv environments) and through model APIs, and publishes track bundles"
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.8",
