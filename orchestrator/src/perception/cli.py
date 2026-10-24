@@ -262,11 +262,25 @@ def cmd_rerun(args):
 
 
 def cmd_cancel(args):
-    coordinator(args).cancel(args.run_id)
+    coord = coordinator(args)
+    if not known_run(args, coord.store):
+        return 1
+    coord.cancel(args.run_id)
     if args.json:
         emit("canceled", run=args.run_id)
     else:
         print(f"run {args.run_id}: canceled")
+
+
+def known_run(args, store: Store) -> bool:
+    """Whether the run exists; if not, says so (as an error object under --json) for the caller to return 1."""
+    if store.db.execute("SELECT 1 FROM runs WHERE id=?", (args.run_id,)).fetchone():
+        return True
+    if args.json:
+        emit("error", problems=[f"no run {args.run_id}"])
+    else:
+        print(f"no run {args.run_id}")
+    return False
 
 
 def run_json(store: Store, run) -> dict:
@@ -310,6 +324,8 @@ def cmd_status(args):
 
 def cmd_logs(args):
     store = Store(home())
+    if not known_run(args, store):   # --follow would otherwise wait forever for a run that never ends
+        return 1
     seen = 0
     while True:
         for e in store.events(args.run_id, seen):
@@ -334,6 +350,8 @@ def cmd_logs(args):
 
 def cmd_artifacts(args):
     store = Store(home())
+    if not known_run(args, store):
+        return 1
     if args.json:
         emit("artifacts", run=args.run_id, artifacts=[
             {"node": t["node_id"], "name": name, "type": a["type"], "hash": a["hash"], "path": a["path"]}
