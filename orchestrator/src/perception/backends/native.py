@@ -90,10 +90,11 @@ class NativeBackend(Backend):
         if not path.is_file() or path.is_symlink():
             return None
         try:
-            h = json.loads(path.read_text())
-        except json.JSONDecodeError:
+            h = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return None
-        ok = (isinstance(h, dict) and set(h) == {"pid", "request"} and type(h["pid"]) is int and h["pid"] > 1
+        # a pid in the range any OS gives (Linux's PID_MAX_LIMIT is 2^22): larger ones would overflow os.kill
+        ok = (isinstance(h, dict) and set(h) == {"pid", "request"} and type(h["pid"]) is int and 1 < h["pid"] <= 2 ** 22
               and h["request"] == str(attempt_dir / "request.json"))
         return h if ok else None
 

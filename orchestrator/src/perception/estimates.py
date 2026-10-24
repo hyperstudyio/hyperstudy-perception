@@ -51,13 +51,16 @@ def probe_seconds(video: Path) -> float | None:
 def estimate(store: Store, ref: str, place: str, video_seconds: float | None) -> tuple[float | None, str]:
     """Seconds this node should take here on a video this long, and what that rests on."""
     rows = store.db.execute(
-        """SELECT t.run_id, t.started_at, t.finished_at FROM tasks t JOIN cache c ON c.key = t.cache_key
-           WHERE t.state = 'succeeded' AND c.node = ? AND t.runner = ? AND t.started_at IS NOT NULL""", (ref, place)).fetchall()
+        """SELECT t.run_id, t.usage FROM tasks t JOIN cache c ON c.key = t.cache_key
+           WHERE t.state = 'succeeded' AND c.node = ? AND t.runner = ?""", (ref, place)).fetchall()
     rates = []
     for r in rows:
+        # the seconds the node itself ran (the SDK reports them), not the coordinator's clock: a node that finished
+        # while no coordinator watched would otherwise count that time too
+        ran = json.loads(r["usage"] or "{}").get("seconds")
         seconds = run_seconds(store, r["run_id"])
-        if seconds:
-            rates.append((r["finished_at"] - r["started_at"]) / (seconds / 60))
+        if ran and seconds:
+            rates.append(ran / (seconds / 60))
     if not rates:
         return None, f"no runs of {ref} on {place} here yet"
     if not video_seconds:
