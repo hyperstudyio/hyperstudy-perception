@@ -78,13 +78,30 @@ class Artifact:
         return cls(d["hash"], d["shape"], d["type"], Path(d["path"]))
 
 
+def _staged_by_live_process(name: str) -> bool:
+    """Whether a tmp/ entry is being staged by a process that is still running (its name starts with that pid). Any
+    command opens the store (status, plan, nodes, which the app polls), and must not remove a running coordinator's
+    publication under it."""
+    pid = name.split("-", 1)[0]
+    if not pid.isdigit():
+        return False   # named before staging carried a pid: a leftover
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError):
+        return True    # another user's live process (or a pid we cannot check): left alone
+    return True
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = root.resolve()
         for sub in ("objects", "trees", "work", "tmp"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
-        for leftover in (self.root / "tmp").iterdir():   # staging from a crashed publication
-            shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink()
+        for leftover in (self.root / "tmp").iterdir():   # staging from a crashed publication, never a live one
+            if not _staged_by_live_process(leftover.name):
+                shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink()
         self.db = sqlite3.connect(self.root / "perception.db", isolation_level=None, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -128,7 +145,7 @@ class Store:
         if bad:   # never follow a link out of a node's output: it would publish a host file
             raise ValueError(f"refusing to publish {path.name}: contains a symlink or special file: {', '.join(bad[:5])}")
         shape = "tree" if path.is_dir() else "file"
-        staged = self.root / "tmp" / uuid.uuid4().hex
+        staged = self.root / "tmp" / f"{os.getpid()}-{uuid.uuid4().hex}"   # named for its process: see Store.__init__
         if shape == "tree":
             shutil.copytree(path, staged, symlinks=True)
             h = artifacts.sha256_tree(staged)

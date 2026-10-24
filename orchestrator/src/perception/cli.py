@@ -71,8 +71,15 @@ def coordinator(args) -> Coordinator:
     return Coordinator(Store(home()), registry(args), backends(), load_secrets())
 
 
-def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs: list[str] | None = None):
+def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs: list[str] | None = None,
+               places: list[str] | None = None):
     doc = yaml.safe_load(path.read_text())
+    for item in places or []:   # --place node=backend:accelerator chooses where a node runs (plan lists the options)
+        name, _, place = item.partition("=")
+        node = next((n for n in doc.get("nodes", []) if n.get("id") == name), None)
+        if node is None:
+            raise GraphError([f"--place {name}: the graph has no node {name!r}"])
+        node["place"] = place
     for item in inputs or []:   # --input name=path overrides a graph input's location
         name, _, value = item.partition("=")
         if name not in doc.get("inputs", {}):
@@ -111,7 +118,8 @@ def graph_error(args, e: GraphError) -> int:
 def plan_json(p) -> dict:
     nodes = [{"id": n.id, "uses": n.uses, "where": n.where, "why_not": n.why_not, "cached": n.cached,
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
-              "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads}
+              "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads,
+              "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis}
              for n in p.nodes]
     return {"ok": p.ok, "nodes": nodes, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
 
@@ -148,6 +156,27 @@ def cmd_doctor(args):
         print(f"  {m.ref:32s} {where}")
 
 
+def cmd_nodes(args):
+    """Every node the app can offer: what it takes and makes, where it can run here, what it costs and sends, its models."""
+    reg = registry(args)
+    coord = Coordinator(Store(home()), reg, backends())
+    nodes = []
+    for m in reg:
+        options, why = coord.placements(m)
+        nodes.append({
+            "ref": m.ref, "id": m.id, "version": m.version, "stage": m.stage or m.id, "description": m.description,
+            "inputs": m.inputs, "outputs": m.outputs, "config": m.config, "places": [p.label for p in options], "why_not": why,
+            "cost": m.cost.model_dump() if m.cost else None, "uploads": list(m.privacy.external_upload), "secrets": m.secrets,
+            "models": [x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for x in m.models],
+            "gpu": m.resources.gpu})
+    if args.json:
+        emit("nodes", nodes=nodes)
+    else:
+        for n in nodes:
+            print(f"{n['ref']:32s} {', '.join(n['places']) or 'cannot run here: ' + n['why_not']}")
+    return 0
+
+
 def cmd_models(args):
     reg = registry(args)
     if args.json:
@@ -181,7 +210,7 @@ def cmd_validate(args):
 def cmd_plan(args):
     reg = registry(args)
     try:
-        graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input)
+        graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input, args.place)
     except GraphError as e:
         return graph_error(args, e)
     p = make_plan(coordinator(args), graph)
@@ -236,7 +265,7 @@ def _run(coord: Coordinator, run_id: str, as_json: bool = False, after: int = 0)
 def cmd_run(args):
     coord = coordinator(args)
     try:
-        graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input)
+        graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input, args.place)
     except GraphError as e:
         return graph_error(args, e)
     p = make_plan(coord, graph, allow_downloads=args.allow_downloads)
@@ -379,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="machine-readable output: one JSON object per line, each with a protocol version (for the annotator app)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    sub.add_parser("nodes", help="every node, with where it can run here").set_defaults(fn=cmd_nodes)
     models = sub.add_parser("models")
     models.add_argument("action", choices=["list"])
     models.set_defaults(fn=cmd_models)
@@ -392,12 +422,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--estimate-cost", action="store_true", help="(always shown)")
     p.add_argument("--max-cost-usd", type=float)
     p.add_argument("--input", action="append", metavar="NAME=PATH", help="set a graph input's file")
+    p.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (plan lists its options)")
     p.set_defaults(fn=cmd_plan)
     r = sub.add_parser("run")
     r.add_argument("graph")
     r.add_argument("--max-cost-usd", type=float)
     r.add_argument("--input", action="append", metavar="NAME=PATH", help="set a graph input's file")
     r.add_argument("--allow-downloads", action="store_true", help="let nodes fetch model weights that are not on this machine yet")
+    r.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (plan lists its options)")
     r.set_defaults(fn=cmd_run)
     for name, fn in (("resume", cmd_resume), ("cancel", cmd_cancel), ("artifacts", cmd_artifacts)):
         x = sub.add_parser(name)

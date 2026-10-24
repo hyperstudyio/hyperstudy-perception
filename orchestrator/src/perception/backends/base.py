@@ -61,11 +61,16 @@ class Backend(ABC):
 
     def runner_for(self, manifest: Manifest) -> tuple[Runner | None, str]:
         """The first of the manifest's runners this backend can use here, preferring an accelerated one."""
+        runners, why = self.runners_for(manifest)
+        return (runners[0], "") if runners else (None, why)
+
+    def runners_for(self, manifest: Manifest) -> tuple[list[Runner], str]:
+        """Every runner of the manifest this backend can use here, accelerated ones first; why none, when none."""
         caps = self.probe_capabilities()
-        reasons = []
+        reasons, usable = [], []
         mine = [r for r in manifest.runners if r.kind == self.kind]
         if not mine:
-            return None, f"no {self.kind} runner"
+            return [], f"no {self.kind} runner"
         for r in sorted(mine, key=lambda r: r.accelerator == "cpu"):
             if caps.platform not in r.platforms:
                 reasons.append(f"{r.accelerator} runner is for {', '.join(r.platforms)}, not {caps.platform}")
@@ -78,8 +83,8 @@ class Backend(ABC):
                 if missing:
                     reasons.append(f"{', '.join(missing)} not installed")
                 else:
-                    return r, ""
-        return None, "; ".join(reasons)
+                    usable.append(r)
+        return usable, "" if usable else "; ".join(reasons)
 
     def missing_tools(self, runner: Runner) -> list[str]:
         return []

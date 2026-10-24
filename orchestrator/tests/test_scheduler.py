@@ -313,6 +313,22 @@ def test_a_live_node_is_recognised_however_long_its_request_path(tmp_path):
         proc.wait()
 
 
+def test_a_recorded_handle_is_trusted_only_for_its_own_attempt(tmp_path):
+    """The node can write in its attempt folder: a handle naming another request or a strange pid steers nothing."""
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    own = str(attempt / "request.json")
+    backend = SelfBackend()
+    for forged in [{"pid": 1, "request": "/etc/other/request.json"}, {"pid": 1, "request": ""}, {"pid": -5, "request": own},
+                   {"pid": "1", "request": own}, ["not", "a", "handle"], {"pid": 2 ** 70, "request": own}]:
+        (attempt / "handle.json").write_text(json.dumps(forged))
+        assert backend.recorded_handle(attempt) is None, forged
+    (attempt / "handle.json").write_bytes(b"\xff\xfe not text")
+    assert backend.recorded_handle(attempt) is None
+    (attempt / "handle.json").write_text(json.dumps({"pid": 4242, "request": own}))
+    assert backend.recorded_handle(attempt) == {"pid": 4242, "request": own}
+
+
 def _crash_after_submit(tmp_path, doc):
     """Start a run whose coordinator dies just after starting its first billable node, before recording it running."""
     class Crash(BaseException):
@@ -347,6 +363,55 @@ def test_a_node_left_leased_by_a_dead_coordinator_keeps_its_reservation_and_canc
         time.sleep(0.05)
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent == pytest.approx(0.5)
+
+
+class TwoDevices(SelfBackend):
+    """A machine with a CUDA GPU as well as a CPU, as far as placement can tell (the test node runs on the CPU)."""
+    def probe_capabilities(self):
+        import dataclasses
+        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=24)
+
+
+def test_a_node_runs_where_it_is_placed_among_the_places_it_can_run_here(tmp_path, rec):
+    coord = coordinator(tmp_path, TwoDevices())
+    m = coord.registry.get("test.two@1.0.0")
+    assert [p.label for p in coord.placements(m)[0]] == ["self:cuda", "self:cpu"]     # accelerated first
+    node = lambda place=None: {**work("a", uses="test.two@1.0.0", record_dir=rec), **({"place": place} if place else {})}
+    run_id, _ = run(coord, graph_doc(tmp_path, [node()]))
+    assert coord._tasks(run_id)["a"]["runner"] == "self:cuda"
+    run_id, _ = run(coord, graph_doc(tmp_path, [node("self:cpu")]))   # same config: another place is another result
+    assert coord._tasks(run_id)["a"]["runner"] == "self:cpu"
+    placement, why = coord.place(m, "auto", "self:mps")
+    assert placement is None and why == "self:mps is not one of the places it can run here (self:cuda, self:cpu)"
+
+
+def test_an_estimate_counts_the_seconds_a_node_ran_not_time_no_coordinator_watched(tmp_path):
+    from perception.estimates import estimate
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id, _ = run(coord, refine_graph(video, {"sleep": 0.2}, max_cost_usd=5))
+    # as if the coordinator had been down for an hour before it collected the node: its own seconds are what count
+    coord.store.db.execute("UPDATE tasks SET started_at = started_at - 3600 WHERE run_id=? AND node_id='captions'", (run_id,))
+    seconds, basis = estimate(coord.store, "test.refine@1.0.0", "self:cpu", 2.0)
+    assert seconds is not None and seconds < 10, basis
+
+
+def test_a_plan_estimates_each_node_from_its_measured_runs_here(tmp_path):
+    from perception.plan import plan as make_plan
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    doc = refine_graph(video, {"sleep": 0.3}, max_cost_usd=5)
+    fresh = {n.id: n for n in make_plan(coord, compile_graph(doc, coord.registry)).nodes}
+    assert fresh["captions"].estimate_s is None
+    assert fresh["captions"].estimate_basis == "no runs of test.refine@1.0.0 on self:cpu here yet"
+    for _ in range(2):
+        run(coord, refine_graph(video, {"sleep": 0.3, "usd": 0.01 + _ / 100}, max_cost_usd=5))   # a new config: runs again
+    planned = {n.id: n for n in make_plan(coord, compile_graph(refine_graph(video, {"sleep": 0.3, "usd": 0.05}, max_cost_usd=5), coord.registry)).nodes}
+    est = planned["captions"]
+    assert est.estimate_basis == "median of 2 runs of test.refine@1.0.0 on self:cpu here"
+    assert 0.3 <= est.estimate_s < 5                 # about a run's seconds: the same 2 s video each time
 
 
 # --- export -----------------------------------------------------------------------------------------------------
@@ -606,7 +671,10 @@ def test_a_cancel_during_submission_stops_the_node_and_keeps_it_canceled(tmp_pat
     assert asyncio.run(coord.run(run_id)) == "canceled"
     t = coord._tasks(run_id)["captions"]
     assert t["state"] == "canceled"
-    assert backend.poll(json.loads(t["handle"])) != "running"    # the process it had started was stopped
+    deadline = time.time() + 10                                     # the process it had started was stopped (SIGTERM
+    while backend.poll(json.loads(t["handle"])) == "running":       # lands asynchronously: a few ms on Linux CI)
+        assert time.time() < deadline, "the process it had started is still running"
+        time.sleep(0.05)
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent == pytest.approx(0.5)                             # charged its reservation, once
 

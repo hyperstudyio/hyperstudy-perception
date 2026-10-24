@@ -84,10 +84,19 @@ class NativeBackend(Backend):
         return handle
 
     def recorded_handle(self, attempt_dir: Path) -> dict | None:
+        """Trusted only as a handle for this attempt: the node can write in its folder, so a handle naming another request,
+        or a pid that is not one, steers no kill or adoption."""
         path = attempt_dir / "handle.json"
         if not path.is_file() or path.is_symlink():
             return None
-        return json.loads(path.read_text())
+        try:
+            h = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        # a pid in the range any OS gives (Linux's PID_MAX_LIMIT is 2^22): larger ones would overflow os.kill
+        ok = (isinstance(h, dict) and set(h) == {"pid", "request"} and type(h["pid"]) is int and 1 < h["pid"] <= 2 ** 22
+              and h["request"] == str(attempt_dir / "request.json"))
+        return h if ok else None
 
     def poll(self, handle: dict) -> str:
         pid = handle["pid"]
@@ -112,7 +121,8 @@ class SelfBackend(NativeBackend):
         return []
 
     def identity(self, manifest: Manifest, runner: Runner) -> str:
-        return f"self:{hashlib.sha256((manifest.code_hash() + sdk_hash()).encode()).hexdigest()[:16]}"
+        # the accelerator too: a place is a choice, and another place's result must not be served from the cache
+        return f"self:{hashlib.sha256((manifest.code_hash() + sdk_hash() + runner.accelerator).encode()).hexdigest()[:16]}"
 
 
 def _alive(pid: int, request: str) -> bool:

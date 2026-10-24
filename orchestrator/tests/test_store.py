@@ -62,3 +62,22 @@ def test_a_symlink_is_never_published(tmp_path):
         store.publish(link, "json.v1")
     assert not [p for p in (store.root / "objects").rglob("*") if p.is_file()]
     assert not [p for p in (store.root / "trees").rglob("*") if p.is_file()]
+
+
+
+def test_opening_the_store_never_removes_a_publication_a_live_process_is_staging(tmp_path):
+    """A coordinator stages each output in tmp/ before renaming it into place. Any command opening the store (status,
+    plan, nodes, which the app polls) used to clear tmp/, under a running coordinator's feet."""
+    import os
+    import subprocess
+    import sys
+    from perception.store import Store
+    store = Store(tmp_path / "store")
+    live = store.root / "tmp" / f"{os.getpid()}-abc"
+    live.write_text("being published")
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    dead = store.root / "tmp" / f"{gone.pid}-def"
+    dead.write_text("left by a crash")
+    Store(tmp_path / "store")
+    assert live.exists() and not dead.exists()
