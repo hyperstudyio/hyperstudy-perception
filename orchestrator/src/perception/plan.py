@@ -50,6 +50,7 @@ class NodePlan:
 class Plan:
     nodes: list[NodePlan]
     places: dict[str, dict] = field(default_factory=dict)   # every place a node could go -> {title, remote, accelerator}
+    max_cost_usd: float = 0.0                               # the run's cap, as the graph sets it (--max-cost-usd replaces it)
     allow_downloads: bool = False
     allow_uploads: bool = False   # the run's consent; the graph's policy.allow_upload is the most it may ever send
 
@@ -166,4 +167,4 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
             chosen = np.estimates[placement.label]
             np.estimate_s, np.estimate_basis = chosen["estimate_s"], chosen["estimate_basis"]
         out.append(np)
-    return Plan(out, places, allow_downloads, allow_uploads)
+    return Plan(out, places, graph.spec.policy.max_cost_usd, allow_downloads, allow_uploads)

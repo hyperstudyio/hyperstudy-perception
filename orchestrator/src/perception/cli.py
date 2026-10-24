@@ -161,7 +161,7 @@ def plan_json(p) -> dict:
               "needs": n.needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
               "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
              for n in p.nodes]
-    return {"ok": p.ok, "nodes": nodes, "places": p.places, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
+    return {"ok": p.ok, "nodes": nodes, "places": p.places, "max_cost_usd": p.max_cost_usd, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
 
 
 # --- commands -----------------------------------------------------------------------------------------------------
