@@ -512,7 +512,12 @@ def cmd_cloud(args):
         if problem is None:
             cloud.set(True)
     elif args.action == "off":
-        cloud.set(False)
+        # a node on a cloud machine could no longer be stopped (cancel finds its place by `cloud`), nor its machine deleted
+        busy = Store(home()).db.execute("SELECT run_id, node_id FROM tasks WHERE state IN ('running', 'leased') AND runner LIKE 'cloud:%'").fetchone()
+        if busy:
+            problem = f"run {busy['run_id']} has {busy['node_id']} on a cloud machine: cancel or finish it first (perception cancel {busy['run_id']})"
+        else:
+            cloud.set(False)
     if problem:
         if args.json:
             emit("error", problems=[problem])

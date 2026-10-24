@@ -275,8 +275,10 @@ echo $pid
 
     def unreachable(self, e: Exception):
         """Wait out a host that cannot be reached, for up to lost_after_s in all since it was last reached; past that,
-        give up (raise)."""
+        give up (raise). Not past a cloud machine's deadline: that is a failure of its own (Deadline)."""
         now = time.monotonic()
+        if self.stop_at is not None and now > self.stop_at:
+            raise Deadline()
         if self.unreachable_since is None:
             self.unreachable_since = now
             say(f"{self.spec['host']} cannot be reached ({e}); waiting up to {self.spec['lost_after_s']:.0f} s")
@@ -289,6 +291,8 @@ echo $pid
         must not cost an attempt, nor a finished node's results. A failed rsync is repeated only if the host is
         unreachable; any other failure is the step's own."""
         while True:
+            if self.stop_at is not None and time.monotonic() > self.stop_at:
+                raise Deadline()   # an upload or a fetch that ran into a cloud machine's deadline
             try:
                 result = step(*args)
                 self.unreachable_since = None
@@ -461,8 +465,9 @@ echo $pid
     def teardown(self, c: dict):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # deleting the machine must not be interrupted
         say(f"deleting {c['cluster']}")
+        # its own session: a cancel signals the driver's whole process group, and must not stop the deletion
         out = subprocess.run([c["sky"], "down", "-y", c["cluster"]], env=self.cloud_env(c), stdout=sys.stdout,
-                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
         if out.returncode == 0:
             self.extra_usd = round(c["hourly_usd"] * (time.monotonic() - self.started) / 3600, 4)
         else:   # it lives until its deadline at most (guard.sh), and is charged that

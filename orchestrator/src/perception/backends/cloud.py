@@ -46,9 +46,10 @@ class CloudBackend(SshBackend):
     caps = Capabilities(platform="linux/amd64", cpu_cores=8, memory_gb=32, accelerators={"cpu", "cuda"}, vram_gb=22)
 
     def __init__(self, deadline_s: float | None = None, runner_kind: str = "native", python: str | None = None,
-                 launch_s: float = 25 * 60, **paths):
+                 launch_s: float = 15 * 60, **paths):
         """`deadline_s` fixes the deadline whatever the video (tests); by default it follows the video's length.
-        `launch_s`: how long starting the machine (and installing ffmpeg and uv on it) may take."""
+        `launch_s`: how long starting the machine (and installing ffmpeg and uv on it) may take: within the deadline's
+        20 minutes for starting, which also cover installing the node's environment."""
         self.launch_s = launch_s
         host = Host("cloud", "(started for each node)", "", self.caps, 0)
         super().__init__(host, runner_kind=runner_kind, python=python)

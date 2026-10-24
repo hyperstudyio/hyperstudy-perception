@@ -33,7 +33,10 @@ case "$1" in
   launch) [ -e "$FAKE_HOST/launch-fails" ] && { echo "no capacity"; exit 1; }
           [ -e "$FAKE_HOST/launch-hangs" ] && { sleep 60; exit 0; }   # a setup stuck on an apt lock
           echo "launched $3"; exit 0;;
-  down) [ -e "$FAKE_HOST/down-fails" ] && exit 1; exit 0;;
+  down) [ -e "$FAKE_HOST/down-fails" ] && exit 1
+        # like SkyPilot, a program with its own signal handling: an ignored SIGTERM inherited from the driver does not protect it
+        [ -e "$FAKE_HOST/down-slow" ] && { python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_DFL); time.sleep(3)' || exit 1
+                                           echo "sky down finished" >> "$FAKE_HOST/events"; }; exit 0;;
   check) printf '\033[32m  AWS: enabled [compute, storage]\033[0m\n'; exit 0;;
 esac
 """
@@ -175,6 +178,28 @@ def test_cancel_stops_the_node_and_deletes_the_machine(tmp_path, machine, rec):
     assert "[remote] stopping it on the cloud machine" in log_of(coord, run_id)
 
 
+def test_a_cancel_during_the_deletion_does_not_stop_it(tmp_path, machine, rec):
+    import signal
+    (machine / "down-slow").touch()
+    coord = coordinator(tmp_path)
+    doc = graph(tmp_path, rec)
+    run_id = coord.create_run(compile_graph(doc, coord.registry), doc, allow_uploads=True)
+
+    async def go():
+        task = asyncio.create_task(coord.run(run_id))
+        while not any(e.startswith("sky down") for e in events(machine)):
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(1)                                # sky down is under way, with its own signal handling
+        driver = json.loads(coord._tasks(run_id)["faces"]["handle"])["pid"]
+        os.killpg(driver, signal.SIGTERM)                     # what a cancel sends: the driver's whole group
+        return await task
+    asyncio.run(go())
+    deadline = time.time() + 15
+    while "sky down finished" not in events(machine):
+        assert time.time() < deadline, "the deletion was stopped"
+        time.sleep(0.1)
+
+
 def test_a_node_still_running_near_the_deadline_is_stopped_and_fails_without_a_retry(tmp_path, machine, rec):
     coord = coordinator(tmp_path, deadline_s=8)       # stopped 2 s before: a quarter of the deadline, under 5 minutes
     doc = graph(tmp_path, rec, sleep=60)
@@ -242,5 +267,13 @@ def test_the_cli_turns_cloud_places_on_after_checking_aws(tmp_path, machine, mon
     [event] = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
     assert event["enabled"] is True and event["hourly_usd"] == CloudBackend.hourly_usd
     assert any(b.kind == "cloud" for b in backends())
+    capsys.readouterr()
+    from perception.store import Store
+    store = Store(tmp_path / "home")
+    store.db.execute("INSERT INTO runs (id, pipeline, graph, inputs, status, created_at, max_cost_usd) VALUES ('r1', 't', '{}', '{}', 'running', 0, 1)")
+    store.db.execute("INSERT INTO tasks (run_id, node_id, state, runner) VALUES ('r1', 'faces', 'running', 'cloud:cuda')")
+    assert main(["--json", "cloud", "off"]) == 1                 # it could no longer be stopped, nor its machine deleted
+    assert "run r1 has faces on a cloud machine" in capsys.readouterr().out
+    store.db.execute("UPDATE tasks SET state='succeeded'")
     assert main(["--json", "cloud", "off"]) == 0
     assert not any(b.kind == "cloud" for b in backends())
