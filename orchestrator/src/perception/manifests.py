@@ -74,6 +74,7 @@ class ModelRef(Strict):
 class Manifest(Strict):
     id: str
     version: str
+    title: str = ""                          # what it gives, in a few words: the app's feature list ("Face tracks")
     description: str = ""
     stage: str | None = None                 # the bundle producer's stage name (default: the node id)
     inputs: dict[str, str] = Field(default_factory=dict)      # name -> artifact type

@@ -1,6 +1,7 @@
 id: vision.face-track
 version: 1.0.0
 stage: faces
+title: Face tracks
 description: Face tracks within shots, identity clusters across the video (py-feat + ArcFace), crops
 inputs: {video: video.v1, media: media.v1, shots: bundle.shots@0.1}
 outputs: {faces: bundle.faces@0.1, crops: assets.v1}

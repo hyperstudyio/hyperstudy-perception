@@ -1,6 +1,7 @@
 id: audio.asr
 version: 1.0.0
 stage: transcribe
+title: Speech transcript
 description: Word-timed transcript and utterances (Parakeet TDT v3); voices come from diarization
 inputs: {audio: audio.wav.v1, shots: bundle.shots@0.1}
 outputs: {transcript: bundle.transcript@0.1}

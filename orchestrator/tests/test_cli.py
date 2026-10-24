@@ -137,9 +137,59 @@ def test_the_plan_says_what_each_node_sends_off_this_machine(home, capsys, tmp_p
                      {"id": "captions", "uses": "test.refine@1.0.0", "inputs": {"shots": "$nodes.shots.shots"}}]}
     g = tmp_path / "g.yaml"
     g.write_text(yaml.safe_dump(doc))
-    assert cli("plan", str(g)) == 0
+    assert cli("plan", str(g)) == 1                      # cannot run as it stands: the upload is not allowed yet
     [plan] = lines(capsys)
     assert {n["id"]: n["uploads"] for n in plan["nodes"]} == {"shots": [], "captions": ["frames"]}
+    assert plan["ok"] is False
+
+
+def uploading_graph(tmp_path) -> Path:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    doc = {"schema_version": 1, "pipeline": "t", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "policy": {"privacy": "local-preferred", "allow_upload": ["frames"], "max_cost_usd": 30},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                     {"id": "captions", "uses": "test.refine@1.0.0", "inputs": {"shots": "$nodes.shots.shots"}}]}
+    g = tmp_path / "g.yaml"
+    g.write_text(yaml.safe_dump(doc))
+    return g
+
+
+def test_nothing_leaves_the_machine_on_a_run_without_allow_uploads(home, capsys, tmp_path):
+    g = uploading_graph(tmp_path)
+    assert cli("run", str(g)) == 1                       # the graph may send frames; this run did not say it may
+    [plan] = lines(capsys)
+    assert plan["type"] == "plan" and plan["ok"] is False
+    assert cli("run", str(g), "--only", "shots") == 0    # leaving the uploading node out needs no consent
+    capsys.readouterr()
+    assert cli("run", str(g), "--allow-uploads") == 0
+    last = lines(capsys)[-1]
+    assert last["type"] == "run.finished" and last["status"] == "succeeded"
+
+
+def test_a_setting_is_chosen_per_run_from_the_choices_the_plan_lists(home, capsys, tmp_path):
+    g = uploading_graph(tmp_path)
+    cli("plan", str(g))
+    [plan] = lines(capsys)
+    captions = next(n for n in plan["nodes"] if n["id"] == "captions")
+    assert captions["settings"] == [{"key": "model", "description": "", "value": "cheap", "choices": ["cheap", "dear"],
+                                     "prices": {"cheap": 0.5, "dear": 20.0}, "per": "shot"}]
+    cli("plan", str(g), "--set", "captions.model=dear")
+    [plan] = lines(capsys)
+    assert next(n for n in plan["nodes"] if n["id"] == "captions")["settings"][0]["value"] == "dear"
+    assert cli("plan", str(g), "--set", "captions.model=free") == 1      # not one of the choices
+    [err] = lines(capsys)
+    assert err["type"] == "error" and any("config model" in p for p in err["problems"])
+    assert cli("plan", str(g), "--set", "captions=dear") == 1
+    [err] = lines(capsys)
+    assert err["problems"] == ["--set captions=dear: expected NODE.KEY=VALUE"]
+
+
+def test_the_full_graph_is_valid_with_the_real_nodes_and_every_node_has_a_title(capsys):
+    root = Path(__file__).parents[2]
+    assert main(["graph", "validate", str(root / "graphs" / "full.yaml")]) == 0
+    for m in (root / "nodes").glob("*/*/manifest.yaml"):
+        assert yaml.safe_load(m.read_text()).get("title"), f"{m} has no title (the app's feature list shows it)"
 
 
 def test_nodes_lists_what_each_node_takes_makes_costs_sends_and_where_it_can_run(home, capsys):
