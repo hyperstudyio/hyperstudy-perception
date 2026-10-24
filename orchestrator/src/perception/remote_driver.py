@@ -114,6 +114,7 @@ class Driver:
         self.local = request_path.parent
         self.request = json.loads(request_path.read_text())
         self.pid: int | None = None
+        self.uploading = False   # an upload to the host began: discard_incoming has something to look for
         self.unreachable_since: float | None = None
         self.started = time.monotonic()
         self.stop_at: float | None = None   # a cloud machine's deadline, less the time to bring results back and delete it
@@ -179,6 +180,7 @@ class Driver:
             raise RuntimeError("the node's code changed since this attempt started: nothing was sent (the next attempt sends the new code)")
         say(f"copying the node's code to {self.spec['host']}")
         incoming = f"{self.root}/code/.incoming-{self.tag}"
+        self.uploading = True
         self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
         listing = self.local / "code-files.txt"
         listing.write_text("".join(f + "\n" for f in self.spec["files"]))
@@ -205,6 +207,7 @@ class Driver:
             size = sum(p.stat().st_size for p in local.rglob("*") if p.is_file()) if local.is_dir() else local.stat().st_size
             say(f"copying {name} ({size / 1e6:.1f} MB) to {self.spec['host']}")
             incoming = f"{self.root}/objects/.incoming-{self.tag}-{name}"
+            self.uploading = True
             self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
             self.rsync(f"{local}/" if local.is_dir() else str(local), f"{self.dest}:{incoming}/data" + ("/" if local.is_dir() else ""))
             # filed under its sha256 only if that is what arrived (a file changed since the run hashed it is refused);
@@ -487,8 +490,8 @@ echo $pid
     def discard_incoming(self):
         """This attempt's own uploads that never finished (a cancel, a failure): a partial copy of an input must not stay
         on the host. One that finished was renamed into place, so nothing published is touched."""
-        if not self.root:
-            return   # a cloud machine that never started
+        if not self.uploading:
+            return   # nothing was sent (a machine the guard refused gets nothing, not even this)
         q = shlex.quote
         try:
             self.sh(f"chmod -R u+w {q(self.root)}/objects/.incoming-{q(self.tag)}-* 2>/dev/null; "
