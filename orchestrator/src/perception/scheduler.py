@@ -335,12 +335,14 @@ class Coordinator:
         return chosen, ""
 
     def uploads(self, manifest: Manifest, placement: Placement) -> tuple[list[str], str | None]:
-        """The kinds of data that leave this machine when the node runs at `placement`, and where they go: to the API it
-        calls (its manifest's privacy), or with its inputs to the other machine it runs on."""
+        """The kinds of data that leave this machine when the node runs at `placement`, and where they go (None: nothing
+        leaves): to the API it calls (its manifest's privacy), or with its inputs to the other machine it runs on. Running
+        on another machine always sends something there, even inputs that hold none of the kinds."""
         if manifest.privacy.external_upload:
-            return list(manifest.privacy.external_upload), manifest.service
-        sent = placement.backend.sends(manifest)
-        return sent, placement.backend.title if sent else None
+            return list(manifest.privacy.external_upload), manifest.service or "an API"
+        if placement.backend.remote:
+            return placement.backend.sends(manifest), placement.backend.title
+        return [], None
 
     def cache_key(self, node: CompiledNode, placement: Placement, inputs: dict[str, Artifact]) -> str:
         m = node.manifest
@@ -376,8 +378,8 @@ class Coordinator:
         # consent to send data off is the run's (--allow-uploads), checked when the node is about to run: a resume or a
         # rerun, or a cache that is gone, cannot make a node upload in a run that was not allowed to
         sent, to = self.uploads(m, placement)
-        if sent and not self.store.db.execute("SELECT allow_uploads FROM runs WHERE id=?", (run_id,)).fetchone()[0]:
-            self._fail(run_id, node.id, "policy", f"{m.ref} sends {', '.join(sent)} off this machine (to {to}), "
+        if to and not self.store.db.execute("SELECT allow_uploads FROM runs WHERE id=?", (run_id,)).fetchone()[0]:
+            self._fail(run_id, node.id, "policy", f"{m.ref} sends {', '.join(sent) or 'its inputs'} off this machine (to {to}), "
                                                   "and this run may not (--allow-uploads)")
             return
         if not self._fits(run_id, graph, m, placement, tasks):

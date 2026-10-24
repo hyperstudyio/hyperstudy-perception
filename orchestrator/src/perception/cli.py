@@ -446,6 +446,12 @@ def cmd_hosts(args):
         elif args.action == "check":
             hosts.check(args.name)
         elif args.action == "remove":
+            # a node running there could no longer be stopped (cancel finds its place by the host's name)
+            busy = Store(home()).db.execute("SELECT run_id, node_id FROM tasks WHERE state IN ('running', 'leased') AND runner LIKE ?",
+                                            (f"ssh-{args.name}:%",)).fetchone()
+            if busy:
+                raise HostError(f"run {busy['run_id']} has {busy['node_id']} on {args.name}: cancel or finish it first "
+                                f"(perception cancel {busy['run_id']})")
             hosts.remove(args.name)
         elif args.action == "clean":   # the inputs and code kept on the host between runs (never a running attempt's folder)
             host = hosts.load().get(args.name)
@@ -454,8 +460,11 @@ def cmd_hosts(args):
             import shlex
             import subprocess
             q = shlex.quote
-            out = subprocess.run([*ssh_command(), host.dest, f"sh -c {q(f'rm -rf {q(host.root)}/objects {q(host.root)}/code')}"],
-                                 capture_output=True, text=True, timeout=600)
+            root = q(host.root)
+            # not while an attempt's folder is there: a node running (or its watchdog not done) still uses them
+            script = (f'if [ -n "$(ls -A {root}/work 2>/dev/null)" ]; then echo "a node is running there" >&2; exit 4; fi; '
+                      f"rm -rf {root}/objects {root}/code")
+            out = subprocess.run([*ssh_command(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
             if out.returncode:
                 raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")
     except HostError as e:

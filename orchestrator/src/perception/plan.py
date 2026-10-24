@@ -56,7 +56,7 @@ class Plan:
     @property
     def ok(self) -> bool:
         return all(n.where and not n.missing_secrets and (self.allow_downloads or not n.downloads)
-                   and (self.allow_uploads or n.cached or not n.uploads) for n in self.nodes)
+                   and (self.allow_uploads or n.cached or not n.upload_to) for n in self.nodes)
 
     def render(self, explain: bool = False) -> str:
         lines = []
@@ -68,8 +68,8 @@ class Plan:
             for m in n.downloads:
                 size = f"{m.size_gb:.1f} GB" if m.size_gb else "size unknown"
                 lines.append(f"{'':16s}   needs download: {m.id} ({size}{', gated' if m.gated else ''}, {m.licence_mode}) from {m.source}")
-            if n.uploads and not n.cached:
-                lines.append(f"{'':16s}   sends {', '.join(n.uploads)} to {n.upload_to or 'another machine'}")
+            if n.upload_to and not n.cached:
+                lines.append(f"{'':16s}   sends {', '.join(n.uploads) or 'its inputs'} to {n.upload_to}")
             for s in n.missing_secrets:
                 lines.append(f"{'':16s}   missing secret: {s}")
             if n.cost_usd or n.cost_note:
@@ -79,10 +79,10 @@ class Plan:
         downloads = [m for n in self.nodes for m in n.downloads]
         if downloads and not self.allow_downloads:
             lines.append("weights are missing: fetch them first (perception models pull) or run with --allow-downloads")
-        uploading = [n for n in self.nodes if n.uploads and not n.cached]
+        uploading = [n for n in self.nodes if n.upload_to and not n.cached]
         if uploading and not self.allow_uploads:
             kinds = sorted({k for n in uploading for k in n.uploads})
-            lines.append(f"{', '.join(n.id for n in uploading)} send {', '.join(kinds)} off this machine: run with --allow-uploads, or leave them out (--only)")
+            lines.append(f"{', '.join(n.id for n in uploading)} send {', '.join(kinds) or 'their inputs'} off this machine: run with --allow-uploads, or leave them out (--only)")
         return "\n".join(lines)
 
 

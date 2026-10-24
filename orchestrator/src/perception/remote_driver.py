@@ -4,10 +4,11 @@
 
 1. Copies the node's code (by content: once per version) and its inputs (by sha256: once per host) to the host.
 2. Writes the request there, with the host's paths, and starts the node in its own session (setsid), detached,
-   so a dropped connection does not end it. A previous attempt of the same node still running there is stopped first.
+   so a dropped connection does not end it, with a watchdog beside it (WATCHDOG) that stops it and removes its folder
+   if no driver asks about it for a while. A previous attempt of the same node still running there is stopped first.
 3. Watches it every few seconds, appending its log to this attempt's log.txt. A host that cannot be reached is waited
    for (a laptop changes networks) for up to lost_after_s; after that the attempt ends without a response, which the
-   coordinator treats as a crash (retried within the run's policy).
+   coordinator treats as a crash (retried within the run's policy), and the host's watchdog ends the node.
 4. Brings out/ and response.json back into this attempt's folder, then removes the attempt's folder on the host.
 
 SIGTERM (the coordinator's cancel) stops the node on the host before the driver exits. Its output (stdout) is the
@@ -36,6 +37,31 @@ class Unreachable(Exception):
     pass
 
 
+# Publish a folder in one step: rename $1 to $2 unless $2 exists, in which case $1 is dropped (the same content, by its
+# hash, arrived first). rename(2) onto a folder that is not empty fails, so a published folder is never replaced or
+# nested into: GNU mv -T on Linux, perl's rename on a Mac (BSD mv has no -T and would move $1 into $2).
+PUBLISH = r"""publish() {
+  mv -T "$1" "$2" 2>/dev/null || perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$1" "$2" 2>/dev/null || { rm -rf "$1"; [ -e "$2/.complete" ]; }
+}"""
+
+# The host's backstop for a node its driver lost (the laptop gone, a cancel that could not reach the host): every
+# `every` seconds, while the attempt's folder exists, if no driver has written the heartbeat (alive) for `lost` seconds,
+# stop the node's process group (if that pid is still this attempt's node) and remove the folder, outputs and all.
+WATCHDOG = r"""w=$1 pid=$2 lost=$3 every=$4
+while [ -d "$w" ]; do
+  sleep "$every"
+  [ -d "$w" ] || exit 0
+  last=$(cat "$w/alive" 2>/dev/null || echo 0)
+  if [ $(( $(date +%s) - last )) -gt "$lost" ]; then
+    if ps -ww -p "$pid" -o command= 2>/dev/null | grep -qF -- "$w/request.json"; then
+      kill -s TERM -- "-$pid" 2>/dev/null; sleep 5; kill -s KILL -- "-$pid" 2>/dev/null
+    fi
+    rm -rf "$w"
+    exit 0
+  fi
+done"""
+
+
 def say(msg: str):
     print(f"[remote] {msg}", flush=True)
 
@@ -50,6 +76,7 @@ class Driver:
         self.attempt = f"{self.root}/work/{r['run']}/{r['node']}/{r['attempt']}"
         self.node_runs = f"{self.root}/work/{r['run']}/{r['node']}"
         self.code = f"{self.root}/code/{spec['code']}"
+        self.tag = f"{r['run']}-{r['node']}-{r['attempt']}"   # this attempt's own names for what it uploads
         self.pid: int | None = None
 
     # --- commands on the host -----------------------------------------------------------------------------------
@@ -82,48 +109,54 @@ class Driver:
         self.sh(private_root_script(self.root))
 
     def send_code(self):
+        """The code under code/<its hash>, published in one step (PUBLISH): runs on the host at the same time may send
+        the same code."""
         q = shlex.quote
         if self.sh(f"test -e {q(self.code)}/.complete", check=False).returncode == 0:
             return
         say(f"copying the node's code to {self.spec['host']}")
-        self.sh(f"mkdir -p {q(self.code)}")
+        incoming = f"{self.root}/code/.incoming-{self.tag}"
+        self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
         listing = self.local / "code-files.txt"
         listing.write_text("".join(f + "\n" for f in self.spec["files"]))
         from .backends.native import REPO
-        self.rsync("--files-from", str(listing), f"{REPO}/", f"{self.dest}:{self.code}/")
-        self.sh(f"touch {q(self.code)}/.complete")
+        self.rsync("--files-from", str(listing), f"{REPO}/", f"{self.dest}:{incoming}/")
+        self.sh(f"{PUBLISH}\ntouch {q(incoming)}/.complete && publish {q(incoming)} {q(self.code)}")
 
     def send_inputs(self) -> dict[str, dict]:
-        """Each input under objects/<sha256>/<its name> on the host (uploaded under a fixed name, then renamed: a file
-        name can hold anything a shell would split)."""
+        """Each input as objects/<sha256>/data on the host, published in one step (PUBLISH): nodes on the host at the
+        same time may send the same input. The node gets it under its own name, a link in its attempt's in/ (the same
+        bytes can arrive under another name: the video renamed)."""
         q = shlex.quote
         out = {}
         for name, entry in self.request["inputs"].items():
             local = Path(entry["path"])
             folder = f"{self.root}/objects/{entry['sha256']}"
-            there = f"{folder}/{local.name}"
-            out[name] = {**entry, "path": there}
+            out[name] = {**entry, "path": f"{self.attempt}/in/{name}/{local.name}", "object": f"{folder}/data"}
             if self.sh(f"test -e {q(folder)}/.complete", check=False).returncode == 0:
                 continue
             size = sum(p.stat().st_size for p in local.rglob("*") if p.is_file()) if local.is_dir() else local.stat().st_size
             say(f"copying {name} ({size / 1e6:.1f} MB) to {self.spec['host']}")
-            self.sh(f"rm -rf {q(folder)} && mkdir -p {q(folder)}")
-            if local.is_dir():
-                self.rsync(f"{local}/", f"{self.dest}:{folder}/upload/")
-            else:
-                self.rsync(str(local), f"{self.dest}:{folder}/upload")
-            self.sh(f"mv {q(folder)}/upload {q(there)} && touch {q(folder)}/.complete")
+            incoming = f"{self.root}/objects/.incoming-{self.tag}-{name}"
+            self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
+            self.rsync(f"{local}/" if local.is_dir() else str(local), f"{self.dest}:{incoming}/data" + ("/" if local.is_dir() else ""))
+            self.sh(f"{PUBLISH}\ntouch {q(incoming)}/.complete && publish {q(incoming)} {q(folder)}")
         return out
 
     def start(self, inputs: dict[str, dict]):
         q, s = shlex.quote, self.spec
-        request = {**self.request, "inputs": inputs, "out_dir": f"{self.attempt}/out"}
+        request = {**self.request, "inputs": {k: {x: y for x, y in v.items() if x != "object"} for k, v in inputs.items()},
+                   "out_dir": f"{self.attempt}/out"}
         if s["runner_kind"] == "self":
             node = f"{q(s['python'])} {q(s['entry'])}"
         else:
             node = f"{q(s['uv'])} run --project {q(self.code + '/' + s['env'])} --frozen --no-dev python {q(s['entry'])}"
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
+        links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -s {q(v['object'])} {q(v['path'])}"
+                          for name, v in inputs.items())
+        lost = int(s["lost_after_s"] + min(60, s["lost_after_s"]))   # after the driver has given up
+        every = max(1, min(30, lost // 4))
         # an earlier attempt of this node that a lost connection left running would hold the GPU: stop it first
         script = f"""
 set -e
@@ -134,15 +167,19 @@ for f in {q(self.node_runs)}/*/pid; do
   if ps -ww -p "$old" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then kill -s TERM -- "-$old" 2>/dev/null || true; fi
 done
 mkdir -p {q(self.attempt)}/out
+{links}
 cat > {q(req)}
+date +%s > {q(self.attempt)}/alive
 cd {q(self.code + '/' + s['node_dir'])}
 # its own session, so its whole process tree can be stopped (kill -s TERM -- -PID) and a closed connection does not
 # reach it: setsid on Linux, perl's on a Mac (no setsid command there). Not a group leader in the background, so
 # neither forks: $! stays the node's pid.
 if command -v setsid >/dev/null 2>&1; then set -- setsid; else set -- perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die'; fi
 PATH={q(path)}${{PATH:+:$PATH}} nohup "$@" {node} --request {q(req)} > {q(self.attempt)}/log.txt 2>&1 < /dev/null &
-echo $! > {q(self.attempt)}/pid
-echo $!
+pid=$!
+echo $pid > {q(self.attempt)}/pid
+nohup "$@" sh -c {q(WATCHDOG)} watchdog {q(self.attempt)} "$pid" {lost} {every} > /dev/null 2>&1 < /dev/null &
+echo $pid
 """
         out = self.sh(script, data=json.dumps(request, indent=1).encode())
         self.pid = int(out.stdout.decode().split()[-1])
@@ -153,7 +190,9 @@ echo $!
         req, log = f"{self.attempt}/request.json", f"{self.attempt}/log.txt"
         offset, unreachable_since = 0, None
         while True:
-            check = (f"if kill -0 {self.pid} 2>/dev/null && ps -ww -p {self.pid} -o command= | grep -qF -- {q(req)}; "
+            # the heartbeat first: the host's watchdog ends a node no driver has asked about for too long
+            check = (f"date +%s > {q(self.attempt)}/alive 2>/dev/null; "
+                     f"if kill -0 {self.pid} 2>/dev/null && ps -ww -p {self.pid} -o command= | grep -qF -- {q(req)}; "
                      f"then echo running; else echo exited; fi; tail -c +{offset + 1} {q(log)} 2>/dev/null || true")
             try:
                 out = self.sh(check).stdout
@@ -180,7 +219,9 @@ echo $!
         """out/ and response.json, into this attempt's folder. No response there: the node crashed (none is written
         here either, and the coordinator sees a crash)."""
         q = shlex.quote
-        listing = self.sh(f"cd {q(self.attempt)} && ls -A").stdout.decode().split()
+        # never through a link the node made: rsync would copy what `out/` points at, which publication cannot see
+        listing = self.sh(f"cd {q(self.attempt)} 2>/dev/null || exit 0; [ -d out ] && [ ! -L out ] && echo out; "
+                          f"[ -f response.json ] && [ ! -L response.json ] && echo response.json; true").stdout.decode().split()
         if "out" in listing:
             self.rsync(f"{self.dest}:{self.attempt}/out/", f"{self.local}/out/")
         if "response.json" in listing:

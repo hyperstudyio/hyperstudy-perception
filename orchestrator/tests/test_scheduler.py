@@ -426,7 +426,7 @@ def test_a_plan_estimates_each_node_from_its_measured_runs_here(tmp_path):
     assert est.estimate_basis == "median of 2 runs of test.refine@1.0.0 on self:cpu here"
     assert 0.3 <= est.estimate_s < 5                 # about a run's seconds: the same 2 s video each time
     assert est.estimates == {"self:cpu": {"estimate_s": est.estimate_s, "estimate_basis": est.estimate_basis, "cost_usd": 0.0,
-                                          "uploads": ["frames"], "upload_to": None}}   # test.refine declares frames for an API
+                                          "uploads": ["frames"], "upload_to": "an API"}}   # test.refine declares frames, names no service
 
 
 def test_a_plan_estimates_every_place_a_node_could_be_moved_to(tmp_path, rec):

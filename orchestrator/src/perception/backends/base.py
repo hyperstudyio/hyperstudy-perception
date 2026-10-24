@@ -66,11 +66,14 @@ class Backend(ABC):
         return "local"
 
     def sends(self, manifest: Manifest) -> list[str]:
-        """The kinds of data that leave this machine when the node runs here: its inputs', for a remote machine."""
+        """The kinds of data that leave this machine when the node runs here: its inputs', for a remote machine (every
+        kind, for an input that could hold anything)."""
         if not self.remote:
             return []
         from ..artifacts import get
-        return sorted({k for t in manifest.inputs.values() for k in get(t).kinds})
+        from ..ir import UPLOAD_KINDS
+        kinds = [get(t).kinds for t in manifest.inputs.values()]
+        return sorted(UPLOAD_KINDS) if None in kinds else sorted({k for ks in kinds for k in ks})
 
     def remote_refusal(self, manifest: Manifest) -> str:
         """Why a node may not run on this remote machine at all, or "" (local backends: never)."""

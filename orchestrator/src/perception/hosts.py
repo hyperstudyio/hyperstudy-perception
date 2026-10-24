@@ -8,9 +8,11 @@ commands a remote node needs cost one handshake.
 On the host everything lives under its root (default ~/.cache/hyperstudy-perception), which is private: created 0700, and
 refused if someone else owns it, so the code, inputs and markers kept there can be trusted and are not readable by others:
     code/<hash>/         the files git tracks for the node, its uv project and the node SDK, by content
-    objects/<sha256>/    inputs, by content, under their own file names: the video is sent once per host
-    work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt (removed after)
-`perception hosts clean NAME` removes the root's inputs and code (what stays on the host between runs).
+    objects/<sha256>/data   inputs, by content: the video is sent once per host (each attempt links it under its name)
+    work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
+                         or by the host's watchdog when no driver has asked about it for a while
+`perception hosts clean NAME` removes the root's inputs and code (what stays on the host between runs), unless a node
+is running there. A host with a node running there is not removed either: that node could no longer be stopped.
 """
 
 from __future__ import annotations

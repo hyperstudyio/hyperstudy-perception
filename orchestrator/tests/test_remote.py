@@ -71,6 +71,7 @@ def coordinator(tmp_path, fake, lost_after_s=600) -> Coordinator:
                        tick_s=0.02, backoff_s=0.01)
 
 
+ALL_KINDS = ["video", "audio", "frames", "faces", "transcript", "embeddings"]   # a json.v1 input could hold any of them
 VIDEO_POLICY = {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ["video"]}
 
 
@@ -88,7 +89,7 @@ def work_graph(tmp_path, rec, place="ssh-lab:cpu", **config) -> dict:
     seed = tmp_path / "seed.json"
     seed.write_text('{"value": 0}')
     return {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
-            "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred"},
+            "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
             "nodes": [{"id": "a", "uses": "test.work@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": place,
                        "config": {"record_dir": rec, **config}}]}
 
@@ -113,7 +114,7 @@ def test_a_node_placed_on_a_host_runs_there_and_its_outputs_come_back(tmp_path, 
     assert shots["layer"] == "shots"
     root = host / "home" / ".cache" / "hp"
     sent = [p for p in (root / "objects").rglob("*") if p.is_file() and not p.name.startswith(".")]
-    assert [p.name for p in sent] == ["my clip (final).mp4"]   # the input, under its own name
+    assert [p.name for p in sent] == ["data"]                   # by content; the node got it under its own name
     assert not any((root / "work").iterdir())                     # the attempt's folder there is gone, and the run's
     code = [p.relative_to(root / "code").parts[1:] for p in (root / "code").rglob("*.py")]
     assert ("orchestrator", "tests", "nodes", "layer", "node.py") in code
@@ -210,7 +211,7 @@ def test_a_remote_node_does_not_take_this_machines_gpu(tmp_path, host, rec):
     gpu = lambda id, place: {"id": id, "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": place,
                              "config": {"record_dir": rec, "sleep": 1.5}}
     doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
-           "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred"},
+           "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
            "nodes": [gpu("here", "self:cpu"), gpu("there", "ssh-lab:cpu")]}
     run_id = start(coord, doc)
     assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
@@ -258,23 +259,25 @@ def test_cancel_stops_the_node_on_the_host(tmp_path, host, rec):
     assert "[remote] stopping it on lab" in log_of(coord, run_id, "a")
 
 
-def test_a_host_lost_for_too_long_ends_the_attempt_as_a_crash(tmp_path, host, rec):
+def test_a_host_lost_for_too_long_ends_the_attempt_as_a_crash_and_its_watchdog_ends_the_node(tmp_path, host, rec):
     coord = coordinator(tmp_path, host, lost_after_s=1)
     run_id = start(coord, work_graph(tmp_path, rec, sleep=60))
 
     async def go():
         task = asyncio.create_task(coord.run(run_id))
         pid = await asyncio.to_thread(remote_pid, host, run_id)
-        (host / "unreachable").touch()
+        (host / "unreachable").write_text("echo running")   # the driver's checks fail; the host itself carries on
         return pid, await task
     pid, status = asyncio.run(go())
-    try:
-        assert status == "failed"
-        t = coord._tasks(run_id)["a"]
-        assert t["error_code"] == "transient" and "without a response" in t["error"]
-        assert "could not be reached for 1 s" in log_of(coord, run_id, "a")
-    finally:
-        os.killpg(pid, signal.SIGTERM)   # still running "there": nothing could reach it
+    assert status == "failed"
+    t = coord._tasks(run_id)["a"]
+    assert t["error_code"] == "transient" and "without a response" in t["error"]
+    assert "could not be reached for 1 s" in log_of(coord, run_id, "a")
+    attempt = host / "home" / ".cache" / "hp" / "work" / run_id / "a" / "1"
+    deadline = time.time() + 20
+    while alive(pid) or attempt.exists():   # no driver asked about it for 2 s: stopped, and its folder (outputs) gone
+        assert time.time() < deadline, "the node was left running on the host"
+        time.sleep(0.2)
 
 
 def test_a_new_attempt_stops_one_a_lost_connection_left_running_there(tmp_path, host, rec):
@@ -299,6 +302,115 @@ def test_a_new_attempt_stops_one_a_lost_connection_left_running_there(tmp_path, 
     while alive(first) or alive(second):
         assert time.time() < deadline, "an attempt is still running on the host"
         time.sleep(0.1)
+
+
+def test_running_on_a_host_always_needs_the_runs_consent_and_unknown_inputs_count_as_every_kind(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host)
+    doc = work_graph(tmp_path, rec)
+    graph = compile_graph({**doc, "policy": {**doc["policy"], "allow_upload": ["video"]}}, coord.registry)
+    placement, why = coord.place(graph.nodes["a"].manifest, choice="ssh-lab:cpu", policy=graph.spec.policy)
+    assert placement is None and "audio, embeddings, faces, frames, transcript" in why   # a json.v1 input could hold any
+    run_id = start(coord, doc, allow_uploads=False)
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    t = coord._tasks(run_id)["a"]
+    assert t["error_code"] == "policy" and t["attempt"] == 0
+
+
+def test_a_node_whose_inputs_hold_none_of_the_kinds_still_needs_consent_to_run_on_a_host(tmp_path, host):
+    coord = coordinator(tmp_path, host)
+    media = tmp_path / "media.json"
+    media.write_text(json.dumps({"sha256": "0" * 64, "duration": 2.0, "width": 4, "height": 4, "fps": 25.0,
+                                 "time_base": "1/12800", "variable_frame_rate": False}))
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"m": {"type": "media.v1", "uri": str(media)}},
+           "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred"},   # no kinds allowed: none needed
+           "nodes": [{"id": "a", "uses": "test.meta@1.0.0", "inputs": {"m": "$inputs.m"}, "place": "ssh-lab:cpu"}]}
+    planned = make_plan(coord, compile_graph(doc, coord.registry)).nodes[0]
+    assert (planned.uploads, planned.upload_to) == ([], "lab (SSH)")
+    run_id = start(coord, doc, allow_uploads=False)
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    t = coord._tasks(run_id)["a"]
+    assert t["error_code"] == "policy" and "sends its inputs off this machine (to lab (SSH))" in t["error"]
+
+
+def test_the_same_video_under_another_name_is_not_sent_again_and_the_node_gets_its_new_name(tmp_path, host):
+    coord = coordinator(tmp_path, host)
+    run_id = start(coord, video_graph(tmp_path, place="ssh-lab:cpu"))
+    assert asyncio.run(coord.run(run_id)) == "succeeded"
+    coord.store.db.execute("DELETE FROM cache")          # the same content would be a cache hit
+    doc = video_graph(tmp_path, place="ssh-lab:cpu")
+    renamed = tmp_path / "renamed.mp4"
+    renamed.write_bytes(b"not really a video")
+    doc["inputs"]["video"]["uri"] = str(renamed)
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "shots")
+    assert "copying video" not in log_of(coord, run_id, "shots")
+
+
+@pytest.mark.parametrize("shell", ["/bin/sh", "/bin/dash"])
+def test_publishing_on_a_host_never_replaces_or_nests_into_what_is_there(tmp_path, shell):
+    from perception.remote_driver import PUBLISH
+    if not Path(shell).exists():
+        pytest.skip(f"no {shell}")
+    first, second, target = tmp_path / "a", tmp_path / "b", tmp_path / "objects" / "x"
+    for d, text in ((first, "first"), (second, "second")):
+        d.mkdir()
+        (d / "data").write_text(text)
+        (d / ".complete").touch()
+    target.parent.mkdir()
+    sh = lambda a, b: subprocess.run([shell, "-c", f'{PUBLISH}\npublish "$1" "$2"', "sh", str(a), str(b)]).returncode
+    assert sh(first, target) == 0 and (target / "data").read_text() == "first"
+    assert sh(second, target) == 0                       # another upload of the same content: dropped, not nested
+    assert sorted(p.name for p in target.iterdir()) == [".complete", "data"] and (target / "data").read_text() == "first"
+    assert not second.exists()
+
+
+def test_two_nodes_sending_the_same_input_to_a_host_at_once_both_run(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host)
+    doc = work_graph(tmp_path, rec)
+    doc["nodes"] += [{**doc["nodes"][0], "id": f"n{i}"} for i in range(3)]
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    objects = host / "home" / ".cache" / "hp" / "objects"
+    stored = [p for p in objects.iterdir() if not p.name.startswith(".incoming")]
+    assert len(stored) == 1 and sorted(x.name for x in stored[0].iterdir()) == [".complete", "data"]
+
+
+def test_a_node_that_replaces_its_out_folder_with_a_link_there_has_nothing_fetched(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host)
+    run_id = start(coord, work_graph(tmp_path, rec, sleep=2))
+    elsewhere = host / "home" / "elsewhere"
+
+    async def go():
+        task = asyncio.create_task(coord.run(run_id))
+        await asyncio.to_thread(remote_pid, host, run_id)
+        out = host / "home" / ".cache" / "hp" / "work" / run_id / "a" / "1" / "out"
+        elsewhere.mkdir()
+        out.rmdir()
+        out.symlink_to(elsewhere)                        # the node then writes its outputs through the link
+        return await task
+    assert asyncio.run(go()) == "failed"
+    t = coord._tasks(run_id)["a"]
+    assert t["error_code"] == "schema" and "out.json is missing" in t["error"]
+    assert (elsewhere / "out.json").exists()             # written there; never fetched through the link
+
+
+def test_a_host_with_a_node_on_it_is_neither_removed_nor_cleaned(tmp_path, host, monkeypatch, capsys, rec):
+    from perception.cli import main
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    assert main(["hosts", "add", "lab", "lab"]) == 0
+    store = Store(tmp_path / "home")
+    store.db.execute("INSERT INTO runs (id, pipeline, graph, inputs, status, created_at, max_cost_usd) VALUES ('r1', 't', '{}', '{}', 'running', 0, 0)")
+    store.db.execute("INSERT INTO tasks (run_id, node_id, state, runner) VALUES ('r1', 'faces', 'running', 'ssh-lab:cuda')")
+    assert main(["hosts", "remove", "lab"]) == 1
+    assert "run r1 has faces on lab" in capsys.readouterr().err
+    store.db.execute("UPDATE tasks SET state='succeeded'")
+    busy = host / "home" / ".cache" / "hyperstudy-perception" / "work" / "r2" / "a" / "1"
+    busy.mkdir(parents=True)
+    assert main(["hosts", "clean", "lab"]) == 1
+    assert "a node is running there" in capsys.readouterr().err
+    busy.parent.parent.parent.joinpath("r2").rename(tmp_path / "gone")
+    assert main(["hosts", "clean", "lab"]) == 0
+    assert main(["hosts", "remove", "lab"]) == 0
 
 
 # --- hosts --------------------------------------------------------------------------------------------------------
