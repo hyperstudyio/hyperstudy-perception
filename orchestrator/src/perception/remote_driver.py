@@ -119,6 +119,7 @@ class Driver:
         self.request = json.loads(request_path.read_text())
         self.pid: int | None = None
         self.uploading = False   # an upload to the host began: discard_incoming has something to look for
+        self.fetching = False    # the node finished and its results are coming back: within the deadline's margin
         self.unreachable_since: float | None = None
         self.started = time.monotonic()
         self.stop_at: float | None = None   # a cloud machine's deadline, less the time to bring results back and delete it
@@ -277,7 +278,7 @@ echo $pid
         """Wait out a host that cannot be reached, for up to lost_after_s in all since it was last reached; past that,
         give up (raise). Not past a cloud machine's deadline: that is a failure of its own (Deadline)."""
         now = time.monotonic()
-        if self.stop_at is not None and now > self.stop_at:
+        if self.stop_at is not None and not self.fetching and now > self.stop_at:
             raise Deadline()
         if self.unreachable_since is None:
             self.unreachable_since = now
@@ -291,8 +292,9 @@ echo $pid
         must not cost an attempt, nor a finished node's results. A failed rsync is repeated only if the host is
         unreachable; any other failure is the step's own."""
         while True:
-            if self.stop_at is not None and time.monotonic() > self.stop_at:
-                raise Deadline()   # an upload or a fetch that ran into a cloud machine's deadline
+            # an upload that ran into a cloud machine's deadline; never a fetch, which the deadline keeps a margin for
+            if self.stop_at is not None and not self.fetching and time.monotonic() > self.stop_at:
+                raise Deadline()
             try:
                 result = step(*args)
                 self.unreachable_since = None
@@ -359,6 +361,7 @@ echo $pid
         here either, and the coordinator sees a crash). The node has finished: a dropped connection is waited out, and
         the heartbeat kept up, rather than its results lost."""
         q = shlex.quote
+        self.fetching = True
         with self.heartbeat():
             # never through a link the node made: rsync would copy what `out/` points at, which publication cannot see
             listing = self.patiently(self.sh, f"cd {q(self.attempt)} 2>/dev/null || exit 0; [ -d out ] && [ ! -L out ] && echo out; "
@@ -426,13 +429,15 @@ echo $pid
                 launch.wait()
         if launch.returncode:
             raise LaunchFailed(f"sky launch exited {launch.returncode}")
-        if not terminating:
-            self.terminate_on_shutdown(c)
+        # again now that it is up: the launch may have replaced the instance it first created (another zone)
+        self.terminate_on_shutdown(c)
         caps, root = probe(c["cluster"])
         self.at(c["cluster"], root)
         self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
         if "cuda" not in caps.accelerators:
             raise RuntimeError(f"{c['cluster']} has no NVIDIA GPU that nvidia-smi can see")
+        if not caps.tools.get("uv"):   # its setup installs uv: a download that failed
+            raise LaunchFailed(f"{c['cluster']} has no uv: the machine's setup did not install it")
         # its OS shuts it down (and so terminates it) at the deadline, counted from the start of the launch
         minutes = max(1, math.floor((c["deadline_s"] - (time.monotonic() - self.started)) / 60))
         guard = Path(c["guard"]).read_bytes()
@@ -508,7 +513,8 @@ echo $pid
             say(f"stopping it: the machine's deadline ({minutes:.0f} min) is near")
             self.stop()
             # a failure of its own, not a crash: another attempt would only reach the same deadline, at the same cost
-            self.fail("resources", f"stopped at the cloud machine's deadline ({minutes:.0f} min); a longer video needs a longer deadline")
+            if not (self.local / "response.json.part").exists():   # never over results already brought back
+                self.fail("resources", f"stopped at the cloud machine's deadline ({minutes:.0f} min); a longer video needs a longer deadline")
             return 124
         except Unreachable as e:
             say(f"{self.spec['host']} could not be reached for {self.spec['lost_after_s']:.0f} s ({e}): giving up on this attempt")

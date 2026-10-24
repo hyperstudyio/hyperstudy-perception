@@ -14,7 +14,7 @@ envs:
   DEADLINE_MINUTES: null   # required: the driver passes the node's deadline
 
 setup: |
-  set -e
+  set -eo pipefail   # a failed download in `curl | sh` fails the setup, not a machine without uv
   # first, before anything can hang: the machine shuts itself down (terminating: the driver sets that while it launches)
   # at the deadline, even if the laptop that started it never comes back. guard.sh later sets it again, to what is left.
   sudo shutdown -h "+${DEADLINE_MINUTES}"

@@ -25,6 +25,8 @@ FAKE_SSH = r"""#!/bin/sh
 while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -*) shift;; *) break;; esac; done
 echo "ssh $1: $2" | head -c 300 >> "$FAKE_HOST/events"; echo >> "$FAKE_HOST/events"
 shift
+# a slow link for commands that contain $FAKE_HOST/slow's text
+if [ -e "$FAKE_HOST/slow" ]; then case "$*" in *"$(cat "$FAKE_HOST/slow")"*) sleep 8;; esac; fi
 cd "$FAKE_HOST/home" && HOME="$FAKE_HOST/home" exec /bin/sh -c "$*"
 """
 FAKE_SKY = r"""#!/bin/sh
@@ -32,6 +34,7 @@ echo "sky $* (config $SKYPILOT_PROJECT_CONFIG)" >> "$FAKE_HOST/events"
 case "$1" in
   launch) [ -e "$FAKE_HOST/launch-fails" ] && { echo "no capacity"; exit 1; }
           [ -e "$FAKE_HOST/launch-hangs" ] && { sleep 60; exit 0; }   # a setup stuck on an apt lock
+          [ -e "$FAKE_HOST/launch-slow" ] && sleep 5
           echo "launched $3"; exit 0;;
   down) [ -e "$FAKE_HOST/down-fails" ] && exit 1
         # like SkyPilot, a program with its own signal handling: an ignored SIGTERM inherited from the driver does not protect it
@@ -211,6 +214,24 @@ def test_a_node_still_running_near_the_deadline_is_stopped_and_fails_without_a_r
     assert "deadline" in t["error"] and events(machine)[-1].startswith("sky down")
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent > 0                                   # the machine's time is charged on a failure too
+
+
+def test_results_that_take_the_deadlines_margin_to_come_back_are_kept(tmp_path, machine, rec):
+    coord = coordinator(tmp_path, deadline_s=12)          # stops nodes after 9 s; the last 3 s are for results
+    (machine / "slow").write_text("--sender")              # bringing out/ back takes 8 s, past that
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "succeeded", log_of(coord, run_id)
+
+
+def test_the_machine_is_set_to_terminate_again_once_the_launch_is_done(tmp_path, machine, rec):
+    (machine / "launch-slow").touch()                      # long enough for the watcher to see it while it starts
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "succeeded"
+    ev = events(machine)
+    terminate = [i for i, e in enumerate(ev) if "--instance-initiated-shutdown-behavior terminate" in e]
+    done = next(i for i, e in enumerate(ev) if e.startswith("ssh "))   # the first command on the started machine
+    assert len(terminate) >= 2 and terminate[-1] < done   # during the launch, and after it (a replaced instance too)
 
 
 def test_a_machine_that_could_not_be_deleted_is_charged_its_whole_deadline(tmp_path, machine, rec):
