@@ -5,7 +5,10 @@ Put `--json` before the command: `perception --json run graph.yaml --input video
 `--place NODE=PLACE` (where a node runs; `plan` lists its options), `--only NODE[,NODE]` (just those nodes and the
 nodes they need) and `--set NODE.KEY=VALUE` (a node's setting; `plan` lists the fixed choices). `run` sends nothing off
 the machine without `--allow-uploads` (and then only what the graph's `policy.allow_upload` names), as it downloads no
-weights without `--allow-downloads`. The app runs `graphs/full.yaml` and picks features with `--only`.
+weights without `--allow-downloads`. The consent is kept with the run: `resume` and `rerun` keep to it (they take
+`--allow-uploads` to give it), and a node that would upload in a run without it fails before it starts (`policy`).
+`--place` and `--set` may name a node `--only` leaves out. On Apple silicon a node that runs on the GPU has no CPU
+place (CPU and GPU share memory), so `--place NODE=native:cpu` is refused for it there. The app runs `graphs/full.yaml` and picks features with `--only`.
 
 **The protocol.**
 - Every line on stdout is one JSON object with `"v"` (the protocol version, now 1) and `"type"`. Nothing else is

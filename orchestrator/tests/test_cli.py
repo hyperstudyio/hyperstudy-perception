@@ -180,6 +180,8 @@ def test_a_setting_is_chosen_per_run_from_the_choices_the_plan_lists(home, capsy
     assert cli("plan", str(g), "--set", "captions.model=free") == 1      # not one of the choices
     [err] = lines(capsys)
     assert err["type"] == "error" and any("config model" in p for p in err["problems"])
+    assert cli("plan", str(g), "--only", "shots", "--set", "captions.model=dear") == 0   # a setting for a node left out goes with it
+    lines(capsys)
     assert cli("plan", str(g), "--set", "captions=dear") == 1
     [err] = lines(capsys)
     assert err["problems"] == ["--set captions=dear: expected NODE.KEY=VALUE"]

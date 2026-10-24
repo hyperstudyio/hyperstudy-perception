@@ -61,6 +61,11 @@ MIGRATIONS = [
     """
     ALTER TABLE tasks ADD COLUMN first_attempt INTEGER NOT NULL DEFAULT 1;
     """,
+    # 3: whether the run may send data off the machine (--allow-uploads), held with the run so that resume and rerun
+    # keep to it; runs from before it was recorded may not (rerun --allow-uploads gives it)
+    """
+    ALTER TABLE runs ADD COLUMN allow_uploads INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

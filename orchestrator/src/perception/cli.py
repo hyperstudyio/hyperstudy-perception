@@ -93,8 +93,6 @@ def only(doc: dict, chosen: list[str]) -> dict:
 def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs: list[str] | None = None,
                places: list[str] | None = None, chosen: list[str] | None = None, sets: list[str] | None = None):
     doc = yaml.safe_load(path.read_text())
-    if chosen:
-        doc = only(doc, chosen)
     for item in sets or []:   # --set node.key=value: a node's setting for this run (compile checks it against the manifest)
         target, eq, value = item.partition("=")
         name, dot, key = target.partition(".")
@@ -110,6 +108,8 @@ def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs:
         if node is None:
             raise GraphError([f"--place {name}: the graph has no node {name!r}"])
         node["place"] = place
+    if chosen:   # after --place and --set: they may name a node --only leaves out (it goes, with them)
+        doc = only(doc, chosen)
     for item in inputs or []:   # --input name=path overrides a graph input's location
         name, _, value = item.partition("=")
         if name not in doc.get("inputs", {}):
@@ -307,16 +307,20 @@ def cmd_run(args):
         else:
             print(p.render(explain=True))
         return 1
-    return _run(coord, coord.create_run(graph, doc), args.json)
+    return _run(coord, coord.create_run(graph, doc, allow_uploads=args.allow_uploads), args.json)
 
 
 def cmd_resume(args):
     coord = coordinator(args)
+    if args.allow_uploads:
+        coord.allow_uploads(args.run_id)
     return _run(coord, args.run_id, args.json, after=last_event(coord.store, args.run_id))
 
 
 def cmd_rerun(args):
     coord = coordinator(args)
+    if args.allow_uploads:
+        coord.allow_uploads(args.run_id)
     after = last_event(coord.store, args.run_id)   # before the rerun writes its own run.rerun event
     coord.rerun(args.run_id, args.from_node, use_cache=not args.no_cache)
     return _run(coord, args.run_id, args.json, after=after)
@@ -471,6 +475,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, fn in (("resume", cmd_resume), ("cancel", cmd_cancel), ("artifacts", cmd_artifacts)):
         x = sub.add_parser(name)
         x.add_argument("run_id")
+        if name == "resume":
+            x.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
         x.set_defaults(fn=fn)
     s = sub.add_parser("status")
     s.add_argument("run_id", nargs="?")
@@ -484,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("run_id")
     rr.add_argument("--from", dest="from_node", required=True)
     rr.add_argument("--no-cache", action="store_true", help="run the nodes even if the cache has their results")
+    rr.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
     rr.set_defaults(fn=cmd_rerun)
     ex = sub.add_parser("export")
     ex.add_argument("run_id")
