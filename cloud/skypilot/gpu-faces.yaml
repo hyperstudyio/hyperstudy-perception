@@ -1,8 +1,8 @@
-# First NVIDIA run: decode + face tracks on one clip, on an L4 spot machine. The clip is copied to the machine only
-# (file mount from the laptop) and deleted with it. Results are exported to ~/out for the laptop to fetch, then the
-# cluster is taken down (sky down; autostop -i ... --down and the shutdown deadline below are the backstops).
-#   sky launch -c perception-gpu -i 15 --down -y cloud/skypilot/gpu-faces.yaml --workdir <staged repo> \
-#     --env CLIP=/data/clip.mp4
+# First NVIDIA run: decode + face tracks on one clip, on an L4 or A10G machine. The clip is copied to the machine only
+# (file mount from the laptop) and deleted with it. Results are exported to ~/out for the laptop to fetch before the
+# cluster is deleted. Sending a study's stimulus to a cloud machine needs that study's approval: a whole graph run
+# off the laptop is not checked by the graph's privacy policy.
+#   cloud/skypilot/launch.sh cloud/skypilot/gpu-faces.yaml perception-gpu --env CLIP_SRC=/path/to/clip.mp4
 resources:
   cloud: aws
   region: us-east-1
@@ -12,14 +12,15 @@ resources:
   use_spot: true
   disk_size: 60
 
+envs:
+  CLIP_SRC: null      # required: the clip on the laptop
+
 file_mounts:
-  /data/clip.mp4: ~/Github/hyperstudy/.claude/worktrees/video-perception-bakeoff/tools/perception-bakeoff/data/ooo-genz-clip2.mp4
+  /data/clip.mp4: ${CLIP_SRC}
 
 setup: |
   set -e
-  # Dead man's switch: no AWS credentials on the machine (remote_identity: NO_UPLOAD), so it powers itself off
-  # if the laptop never comes back to delete it. A one-time spot instance ends on OS shutdown.
-  sudo shutdown -h +90
+  bash cloud/skypilot/guard.sh 90
   sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
   command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH=$HOME/.local/bin:$PATH

@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FindTheCluster",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeInstances", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EndPerceptionMachinesOnly",
+      "Effect": "Allow",
+      "Action": "ec2:TerminateInstances",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {"StringLike": {"aws:ResourceTag/skypilot-cluster-name": "perception-*"}}
+    }
+  ]
+}

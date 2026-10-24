@@ -1,7 +1,7 @@
 # Smoke test of a cloud machine: install the orchestrator, run the decode graph on a synthetic video (ffmpeg test
-# pattern and tone, so no stimulus leaves the laptop), print timings, then the cluster is deleted (launch with --down).
-#   sky launch -c perception-smoke --down -y cloud/skypilot/smoke.yaml --workdir <staged copy of the repo>
-# --cpus/--gpus on the command line pick the machine; the defaults are the cheapest spot CPU machine.
+# pattern and tone, so no stimulus leaves the laptop), print timings, then the cluster is deleted.
+#   cloud/skypilot/launch.sh cloud/skypilot/smoke.yaml perception-smoke
+# --cpus/--gpus after the cluster name pick the machine; the defaults are the cheapest spot CPU machine.
 resources:
   cloud: aws
   region: us-east-1
@@ -10,9 +10,7 @@ resources:
 
 setup: |
   set -e
-  # Dead man's switch: the machine has no AWS credentials (remote_identity: NO_UPLOAD), so if the laptop never
-  # comes back to delete it, it powers itself off at a deadline. A one-time spot instance ends on OS shutdown.
-  sudo shutdown -h +45
+  bash cloud/skypilot/guard.sh 45
   sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
   command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH=$HOME/.local/bin:$PATH

@@ -19,7 +19,7 @@ the bake-off stages). Search the code for `TODO: [PERCEPTION-GRAPH]` for unfinis
 | GPU budget on a Mac | One `gpu: exclusive` node at a time; `gpu: shared` nodes up to the free unified memory. | Measured: SAM 3 overlapping Sapiens2 pushed a 128 GB Mac into 45 GB of swap. |
 | Weights | Nodes declare their weights (`hf://repo@revision`, size, gated, licence). `perception doctor`/`plan` report what is missing; `perception models pull` fetches. A run never downloads silently: a missing weight fails the plan. | Spec: never silently download large weights. |
 | Secrets | Names only in YAML and requests (`secrets: [HF_TOKEN]`); values from the environment or `~/.config/hyperstudy/*.env`, passed in the child's environment, never written to disk or logs. | Spec security section. |
-| Privacy | `privacy.external_upload` per node and per data kind (video, audio, face crops, transcripts, embeddings). A graph's `policy.privacy: local-only` makes any node that needs upload a plan error. | Copyrighted stimuli: only Anthropic/OpenAI were approved for the bake-off clips. |
+| Privacy | `privacy.external_upload` per node and per data kind (video, audio, face crops, transcripts, embeddings). A graph's `policy.privacy: local-only` makes any node that needs upload a plan error. A whole graph run on a cloud machine (`cloud/skypilot/`) is outside this check: the clip is sent only when named at launch. | Copyrighted stimuli: Anthropic and OpenAI were approved for the bake-off clips, and OOO clip 2 for our own temporary AWS machines (2026-10-23). |
 | CLI name | `perception` (the spec's sketch); package `hyperstudy-perception`. Replaces the `ptrack` placeholder. | Final name is still an open decision. |
 
 ## Phase 0 — contracts
@@ -96,7 +96,11 @@ Not done:
 
 ### First cloud runs (2026-10-24)
 
-SkyPilot on AWS us-east-1 (`cloud/skypilot/`). The machine gets no AWS credentials (`remote_identity: NO_UPLOAD`), uploads are a staged copy of the repository's tracked files (no media, no `.env`), and every machine is deleted after its job (`sky launch --down` or `sky down`, with a shutdown deadline in setup as a backstop).
+SkyPilot on AWS us-east-1 (`cloud/skypilot/`), always through `launch.sh`:
+- **Credentials.** No laptop credentials are copied to the machine, and its only role is `perception-node`, which can end `perception-*` machines and do nothing else (`sky.yaml`, `iam-perception-node.json`). `guard.sh` checks both on the machine and fails the job otherwise.
+  - The first runs below used `remote_identity: NO_UPLOAD`. On AWS that only skips copying credential files: SkyPilot still attached its default `skypilot-v1` role, which has EC2 and S3 full access. The guard caught it on 2026-10-24. CloudTrail shows the role was used only for SkyPilot's own autodown (describe and terminate calls).
+- **Uploads.** The workdir is a staged copy of the files git tracks or would track; `.gitignore` keeps out media, run outputs and `.env` files. A clip is sent only when named with `--env CLIP_SRC=...`.
+- **Deletion.** Every machine is deleted after its job: `sky down` when `launch.sh` exits, idle autodown, and a shutdown deadline that terminates the instance (`launch.sh` sets on-demand machines to terminate, not stop, on shutdown).
 
 - **CPU smoke test** (`smoke.yaml`, spot `m6i.large`): decode of a synthetic 2-minute video, 11.8 s. The machine deleted itself 40 s after the job.
 - **First NVIDIA run** (`gpu-faces.yaml`, `graphs/faces.yaml`, OOO clip 2): on-demand `g6.xlarge` (L4, 4 vCPUs, driver 580, torch 2.14.1+cu130). There was no L4 or A10G spot capacity in any us-east-1 zone, and the account's G spot quota is 0 in other regions. About $0.12.

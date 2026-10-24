@@ -1,0 +1,7 @@
+# SkyPilot project config for this repo's tasks; launch.sh points SKYPILOT_PROJECT_CONFIG here. A task YAML cannot set
+# this for AWS (SkyPilot only lets tasks override remote_identity on Kubernetes and Azure).
+aws:
+  # An instance profile that can only end perception-* machines (iam-perception-node.json). Naming one does two
+  # things: no laptop credentials are copied to the machine, and SkyPilot does not attach its default skypilot-v1
+  # role (EC2 and S3 full access), which it does even with NO_UPLOAD. guard.sh checks both on the machine.
+  remote_identity: perception-node

@@ -1,0 +1,48 @@
+# What limits the face node on an L4: one machine, one decode, then the face node at several batch sizes and numbers
+# of frame-decoding workers, with GPU utilisation logged every second. g6.2xlarge (8 vCPUs), so batch 32 with no
+# workers compares directly with the first run on a g6.xlarge (4 vCPUs). Results go to ~/out for the laptop to fetch.
+# Copies the clip to the machine, like gpu-faces.yaml (see there on approval).
+#   cloud/skypilot/launch.sh cloud/skypilot/gpu-tune.yaml perception-tune --env CLIP_SRC=/path/to/clip.mp4
+resources:
+  cloud: aws
+  region: us-east-1
+  accelerators: L4:1
+  cpus: 8
+  use_spot: false     # no L4 spot capacity in us-east-1 on 2026-10-23
+  disk_size: 60
+
+envs:
+  CLIP_SRC: null      # required: the clip on the laptop
+  SWEEP: "32:0 64:0 128:0 32:4 64:4 128:4 64:7"   # batch_size:num_workers
+
+file_mounts:
+  /data/clip.mp4: ${CLIP_SRC}
+
+setup: |
+  set -e
+  bash cloud/skypilot/guard.sh 90
+  sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+  command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH=$HOME/.local/bin:$PATH
+  (cd orchestrator && uv sync -q) && (cd envs/core && uv sync -q) && (cd envs/faces && uv sync -q)
+
+run: |
+  set -e
+  export PATH=$HOME/.local/bin:$PATH
+  mkdir -p ~/out
+  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv | tee ~/out/gpu.txt
+  nproc | tee -a ~/out/gpu.txt
+  nvidia-smi dmon -s um -o T > ~/out/dmon.txt &
+  cd orchestrator
+  uv run perception run ../graphs/decode.yaml --input video=/data/clip.mp4
+  for point in $SWEEP; do
+    b=${point%:*}; w=${point#*:}
+    sed "s/uses: vision.face-track@1.0.0/&\n    config: {batch_size: $b, num_workers: $w}/" ../graphs/faces.yaml > ../graphs/tune-$b-$w.yaml
+    echo "=== batch $b workers $w $(date +%T)" | tee -a ~/out/sweep.txt
+    SECONDS=0
+    uv run perception run ../graphs/tune-$b-$w.yaml --input video=/data/clip.mp4 --allow-downloads
+    echo "wall ${SECONDS}s end $(date +%T)" | tee -a ~/out/sweep.txt
+    run=$(uv run perception status | awk 'NR==1{print $1}')
+    cp -r ~/.hyperstudy-perception/work/"$run" ~/out/work-$b-$w
+  done
+  kill %1
