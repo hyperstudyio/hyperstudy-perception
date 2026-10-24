@@ -13,6 +13,7 @@
     perception artifacts RUN_ID
     perception export RUN_ID --format bundle --output DIR
     perception hosts add NAME USER@HOST [--root DIR] | list | check NAME | remove NAME | clean NAME
+    perception cloud on | off | status
 
 The store (artifacts, run state) lives in $PERCEPTION_HOME (default ~/.hyperstudy-perception). Secrets come from the
 environment and from ~/.config/hyperstudy/*.env; their values are never printed or written to run files.
@@ -34,6 +35,7 @@ from . import export as export_mod
 from .backends.base import Backend
 from .backends.native import NativeBackend, SelfBackend
 from .backends.probe import probe
+from .backends.cloud import Cloud, CloudBackend
 from .backends.remote import SshBackend
 from .hosts import HostError, Hosts, ssh_command
 from .ir import GraphError, compile_graph
@@ -64,7 +66,8 @@ def load_secrets() -> dict[str, str]:
 def backends() -> list[Backend]:
     """This machine's, then the hosts `perception hosts add` recorded (their places are only ever chosen, never a
     default: they receive a node's inputs)."""
-    return [NativeBackend(), SelfBackend(), *(SshBackend(h) for h in Hosts(home()).load().values())]
+    cloud = [CloudBackend()] if Cloud(home()).enabled else []
+    return [NativeBackend(), SelfBackend(), *(SshBackend(h) for h in Hosts(home()).load().values()), *cloud]
 
 
 def registry(args) -> Registry:
@@ -490,6 +493,40 @@ def cmd_hosts(args):
     return 0
 
 
+def cmd_cloud(args):
+    """Whether nodes with a CUDA runner are offered a cloud GPU machine (started for the node, deleted after it). `on`
+    checks that SkyPilot can reach AWS with your credentials first."""
+    import shutil
+    import subprocess
+    cloud = Cloud(home())
+    problem = None
+    if args.action == "on":
+        sky = os.environ.get("PERCEPTION_SKY") or shutil.which("sky")
+        if not sky:
+            problem = "SkyPilot is not installed (uv tool install 'skypilot[aws]')"
+        else:
+            check = subprocess.run([sky, "check", "aws"], capture_output=True, text=True, timeout=300)
+            import re
+            if check.returncode or not re.search(r"\bAWS: enabled", re.sub(r"\x1b\[[0-9;]*m", "", check.stdout)):
+                problem = f"SkyPilot cannot use AWS with your credentials yet (sky check aws): {(check.stdout + check.stderr).strip()[-400:]}"
+        if problem is None:
+            cloud.set(True)
+    elif args.action == "off":
+        cloud.set(False)
+    if problem:
+        if args.json:
+            emit("error", problems=[problem])
+        else:
+            print(f"perception cloud: {problem}", file=sys.stderr)
+        return 1
+    b = CloudBackend()
+    if args.json:
+        emit("cloud", enabled=cloud.enabled, machine=b.machine_title, region=b.region, hourly_usd=b.hourly_usd)
+    else:
+        print(f"cloud {'on' if cloud.enabled else 'off'}: {b.machine_title}, {b.region}, ${b.hourly_usd}/h")
+    return 0
+
+
 def cmd_export(args):
     coord = coordinator(args)
     out = export_mod.bundle(coord, args.run_id, Path(args.output))
@@ -560,6 +597,9 @@ def main(argv: list[str] | None = None) -> int:
     h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias)")
     h.add_argument("--root", default=".cache/hyperstudy-perception", help="add: where on the host its files go (under its home if relative)")
     h.set_defaults(fn=cmd_hosts)
+    c = sub.add_parser("cloud", help="offer a cloud GPU machine to nodes that can use one")
+    c.add_argument("action", choices=["on", "off", "status"])
+    c.set_defaults(fn=cmd_cloud)
     ex = sub.add_parser("export")
     ex.add_argument("run_id")
     ex.add_argument("--format", choices=["bundle"], default="bundle")

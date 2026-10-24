@@ -118,7 +118,8 @@ class Backend(ABC):
     @abstractmethod
     def identity(self, manifest: Manifest, runner: Runner) -> str: ...
 
-    def estimate(self, manifest: Manifest, runner: Runner, inputs: dict[str, Artifact]) -> Estimate:
+    def estimate(self, manifest: Manifest, runner: Runner, inputs: dict[str, Artifact], video_s: float | None = None) -> Estimate:
+        """`video_s`: the video's length when the caller knows it (a plan, before decode has run)."""
         return Estimate(0.0)
 
     @abstractmethod
