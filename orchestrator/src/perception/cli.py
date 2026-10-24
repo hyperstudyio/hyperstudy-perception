@@ -86,10 +86,52 @@ def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs:
     return graph, doc
 
 
+# --- machine-readable output (--json): what the annotator app reads when it drives this CLI -------------------------
+
+JSON_PROTOCOL = 1   # bump when a field changes meaning or goes away; adding fields is compatible
+
+
+def emit(type_: str, /, **fields):
+    """One JSON object per line, flushed at once: the app reads events as they happen. Positional-only, so a field may be
+    called `kind` (events have one)."""
+    print(json.dumps({"v": JSON_PROTOCOL, "type": type_, **fields}), flush=True)
+
+
+def iso(t: float | None) -> str | None:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if t else None
+
+
+def graph_error(args, e: GraphError) -> int:
+    if args.json:
+        emit("error", problems=e.problems)
+    else:
+        print("invalid graph:\n" + "\n".join(f"  - {p}" for p in e.problems))
+    return 1
+
+
+def plan_json(p) -> dict:
+    nodes = [{"id": n.id, "uses": n.uses, "where": n.where, "why_not": n.why_not, "cached": n.cached,
+              "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
+              "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note} for n in p.nodes]
+    return {"ok": p.ok, "nodes": nodes, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
+
+
 # --- commands -----------------------------------------------------------------------------------------------------
 
 def cmd_doctor(args):
     caps = probe()
+    if args.json:
+        reg = registry(args)
+        coord = Coordinator(Store(home()), reg, backends())
+        nodes = []
+        for m in reg:
+            placement, why = coord.place(m)
+            nodes.append({"ref": m.ref, "stage": m.stage or m.id, "description": m.description,
+                          "where": f"{placement.backend.kind} ({placement.runner.accelerator})" if placement else None,
+                          "why_not": "" if placement else why})
+        emit("doctor", platform=caps.platform, cpu_cores=caps.cpu_cores, memory_gb=caps.memory_gb,
+             accelerators=sorted(caps.accelerators), vram_gb=caps.vram_gb, tools=caps.tools, store=str(home()), nodes=nodes)
+        return 0
     print(f"platform     {caps.platform}")
     print(f"cpu          {caps.cpu_cores} cores")
     print(f"memory       {caps.memory_gb} GB")
@@ -108,6 +150,10 @@ def cmd_doctor(args):
 
 def cmd_models(args):
     reg = registry(args)
+    if args.json:
+        emit("models", models=[{"node": m.ref, **x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"})}
+                               for m in reg for x in m.models])
+        return 0
     for m in reg:
         for x in m.models:
             size = f"{x.size_gb:.1f} GB" if x.size_gb else "?"
@@ -118,10 +164,16 @@ def cmd_validate(args):
     try:
         graph, _ = read_graph(Path(args.graph), registry(args))
     except GraphError as e:
+        if args.json:
+            emit("graph", valid=False, nodes=[], problems=e.problems)
+            return 1
         print(f"{args.graph}: invalid")
         for p in e.problems:
             print(f"  - {p}")
         return 1
+    if args.json:
+        emit("graph", valid=True, nodes=list(graph.nodes), problems=[])
+        return 0
     print(f"{args.graph}: valid ({len(graph.nodes)} nodes: {' -> '.join(graph.nodes)})")
     return 0
 
@@ -131,34 +183,53 @@ def cmd_plan(args):
     try:
         graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input)
     except GraphError as e:
-        print("invalid graph:\n" + "\n".join(f"  - {p}" for p in e.problems))
-        return 1
+        return graph_error(args, e)
     p = make_plan(coordinator(args), graph)
-    print(p.render(explain=args.explain))
+    if args.json:
+        emit("plan", **plan_json(p))
+    else:
+        print(p.render(explain=args.explain))
     return 0 if p.ok else 1
 
 
-def _run(coord: Coordinator, run_id: str) -> int:
-    print(f"run {run_id}  (store {coord.store.root})")
-    seen = 0
+def last_event(store: Store, run_id: str) -> int:
+    return store.db.execute("SELECT COALESCE(MAX(id), 0) FROM events WHERE run_id=?", (run_id,)).fetchone()[0]
+
+
+def _run(coord: Coordinator, run_id: str, as_json: bool = False, after: int = 0) -> int:
+    """Run and stream events; `after` skips the run's earlier history (resume and rerun show only what they do)."""
+    if as_json:
+        emit("run.created", run=run_id, store=str(coord.store.root))
+    else:
+        print(f"run {run_id}  (store {coord.store.root})")
+    seen = after
+
+    def flush():
+        nonlocal seen
+        for e in coord.store.events(run_id, seen):
+            seen = e["id"]
+            if as_json:
+                emit("event", run=run_id, node=e["node_id"], kind=e["kind"], message=e["message"] or "", at=iso(e["at"]))
+            else:
+                print(f"  {time.strftime('%H:%M:%S', time.localtime(e['at']))} {e['node_id'] or '':14s} {e['kind']:16s} {e['message'] or ''}")
 
     async def watch():
-        nonlocal seen
         while True:
-            for e in coord.store.events(run_id, seen):
-                seen = e["id"]
-                print(f"  {time.strftime('%H:%M:%S', time.localtime(e['at']))} {e['node_id'] or '':14s} {e['kind']:16s} {e['message'] or ''}")
+            flush()
             await asyncio.sleep(0.3)
 
     async def main():
         w = asyncio.create_task(watch())
         status = await coord.run(run_id)
-        await asyncio.sleep(0.4)
-        w.cancel()
+        w.cancel()   # flush() below prints what it had not seen yet
         return status
 
     status = asyncio.run(main())
-    print(f"run {run_id}: {status}")
+    flush()   # events written after the watcher's last look
+    if as_json:
+        emit("run.finished", run=run_id, status=status)
+    else:
+        print(f"run {run_id}: {status}")
     return 0 if status == "succeeded" else 1
 
 
@@ -167,32 +238,60 @@ def cmd_run(args):
     try:
         graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input)
     except GraphError as e:
-        print("invalid graph:\n" + "\n".join(f"  - {p}" for p in e.problems))
-        return 1
+        return graph_error(args, e)
     p = make_plan(coord, graph, allow_downloads=args.allow_downloads)
     if not p.ok:
-        print(p.render(explain=True))
+        if args.json:
+            emit("plan", **plan_json(p))
+        else:
+            print(p.render(explain=True))
         return 1
-    return _run(coord, coord.create_run(graph, doc))
+    return _run(coord, coord.create_run(graph, doc), args.json)
 
 
 def cmd_resume(args):
-    return _run(coordinator(args), args.run_id)
+    coord = coordinator(args)
+    return _run(coord, args.run_id, args.json, after=last_event(coord.store, args.run_id))
 
 
 def cmd_rerun(args):
     coord = coordinator(args)
+    after = last_event(coord.store, args.run_id)   # before the rerun writes its own run.rerun event
     coord.rerun(args.run_id, args.from_node, use_cache=not args.no_cache)
-    return _run(coord, args.run_id)
+    return _run(coord, args.run_id, args.json, after=after)
 
 
 def cmd_cancel(args):
     coordinator(args).cancel(args.run_id)
-    print(f"run {args.run_id}: canceled")
+    if args.json:
+        emit("canceled", run=args.run_id)
+    else:
+        print(f"run {args.run_id}: canceled")
+
+
+def run_json(store: Store, run) -> dict:
+    tasks = [{"node": t["node_id"], "state": t["state"], "attempt": t["attempt"], "runner": t["runner"],
+              "started_at": iso(t["started_at"]), "finished_at": iso(t["finished_at"]),
+              "seconds": round(t["finished_at"] - t["started_at"], 1) if t["finished_at"] and t["started_at"] else None,
+              "cost_usd": t["cost_usd"], "error_code": t["error_code"], "error": t["error"]}
+             for t in store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run["id"],))]
+    return {"run": run["id"], "pipeline": run["pipeline"], "status": run["status"], "created_at": iso(run["created_at"]),
+            "spent_usd": run["spent_usd"], "max_cost_usd": run["max_cost_usd"], "tasks": tasks}
 
 
 def cmd_status(args):
     store = Store(home())
+    if args.json:
+        if not args.run_id:
+            emit("runs", runs=[{"run": r["id"], "pipeline": r["pipeline"], "status": r["status"], "created_at": iso(r["created_at"])}
+                               for r in store.db.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT 20")])
+            return 0
+        run = store.db.execute("SELECT * FROM runs WHERE id=?", (args.run_id,)).fetchone()
+        if not run:
+            emit("error", problems=[f"no run {args.run_id}"])
+            return 1
+        emit("status", **run_json(store, run))
+        return 0
     if not args.run_id:
         for r in store.db.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT 20"):
             print(f"{r['id']}  {r['pipeline']:20s} {r['status']:10s} {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['created_at']))}")
@@ -217,8 +316,11 @@ def cmd_logs(args):
             seen = e["id"]
             if args.node and e["node_id"] != args.node:
                 continue
-            print(f"{time.strftime('%H:%M:%S', time.localtime(e['at']))} {e['node_id'] or '':14s} {e['kind']:16s} {e['message'] or ''}")
-        if args.node:
+            if args.json:
+                emit("event", run=args.run_id, node=e["node_id"], kind=e["kind"], message=e["message"] or "", at=iso(e["at"]))
+            else:
+                print(f"{time.strftime('%H:%M:%S', time.localtime(e['at']))} {e['node_id'] or '':14s} {e['kind']:16s} {e['message'] or ''}")
+        if args.node and not args.json:   # the node's own log is text for people; as JSON, logs streams events only
             t = store.db.execute("SELECT attempt FROM tasks WHERE run_id=? AND node_id=?", (args.run_id, args.node)).fetchone()
             if t and t["attempt"]:
                 log = store.root / "work" / args.run_id / args.node / str(t["attempt"]) / "log.txt"
@@ -232,6 +334,12 @@ def cmd_logs(args):
 
 def cmd_artifacts(args):
     store = Store(home())
+    if args.json:
+        emit("artifacts", run=args.run_id, artifacts=[
+            {"node": t["node_id"], "name": name, "type": a["type"], "hash": a["hash"], "path": a["path"]}
+            for t in store.db.execute("SELECT node_id, outputs FROM tasks WHERE run_id=?", (args.run_id,))
+            for name, a in json.loads(t["outputs"] or "{}").items()])
+        return 0
     for t in store.db.execute("SELECT node_id, state, outputs FROM tasks WHERE run_id=?", (args.run_id,)):
         for name, a in json.loads(t["outputs"] or "{}").items():
             print(f"{t['node_id']}.{name:12s} {a['type']:22s} {a['hash'][:12]}  {a['path']}")
@@ -240,12 +348,17 @@ def cmd_artifacts(args):
 def cmd_export(args):
     coord = coordinator(args)
     out = export_mod.bundle(coord, args.run_id, Path(args.output))
-    print(f"wrote {out}")
+    if args.json:
+        emit("exported", run=args.run_id, path=str(out))
+    else:
+        print(f"wrote {out}")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="perception", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--nodes", action="append", help="another directory of node manifests")
+    ap.add_argument("--json", action="store_true",
+                    help="machine-readable output: one JSON object per line, each with a protocol version (for the annotator app)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     models = sub.add_parser("models")
@@ -291,7 +404,13 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--output", required=True)
     ex.set_defaults(fn=cmd_export)
     args = ap.parse_args(argv)
-    return args.fn(args) or 0
+    if not args.json:
+        return args.fn(args) or 0
+    try:
+        return args.fn(args) or 0
+    except Exception as e:   # the app reads one error object, not a traceback meant for people
+        emit("error", problems=[f"{type(e).__name__}: {e}"])
+        return 1
 
 
 if __name__ == "__main__":
