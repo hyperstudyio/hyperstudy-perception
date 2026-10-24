@@ -13,6 +13,10 @@
 #   doing: a hang of any kind (a stray process holding the job open, a stuck download) costs at most that long.
 set -euo pipefail
 task=$(cd "$(dirname "$1")" && pwd)/$(basename "$1"); cluster=$2; shift 2
+case "$cluster" in
+  perception-*) ;;
+  *) echo "launch.sh: cluster names start with perception- (the machine's role can only end those machines)" >&2; exit 2 ;;
+esac
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 region=us-east-1
 export SKYPILOT_PROJECT_CONFIG=$repo/cloud/skypilot/sky.yaml

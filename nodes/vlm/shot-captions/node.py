@@ -83,8 +83,12 @@ def labelled_keyframes(shot, keyframes_dir, faces, width) -> list[bytes]:
     people = [p["id"] for p in faces["people"]]
     colour = {p: BOX_COLOURS[i % len(BOX_COLOURS)] for i, p in enumerate(people)}
     out = []
+    root = keyframes_dir.resolve()
     for kf in shot["keyframes"]:
-        image = Image.open(keyframes_dir / kf["file"].removeprefix("assets/")).convert("RGB")
+        path = (keyframes_dir / kf["file"].removeprefix("assets/")).resolve()   # follows links: one out is caught too
+        if not path.is_relative_to(root):
+            raise NodeError("input", f"keyframe {kf['file']} is outside the keyframes input; only those images are sent")
+        image = Image.open(path).convert("RGB")
         scale = image.width / width
         draw = ImageDraw.Draw(image)
         for track in faces["tracks"]:
@@ -105,7 +109,7 @@ def labelled_keyframes(shot, keyframes_dir, faces, width) -> list[bytes]:
     return out
 
 
-def caption(client, model, effort, prompt, images):
+def caption(client, model, effort, prompt, images, spend):
     import anthropic
 
     content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.standard_b64encode(b).decode()}}
@@ -117,12 +121,13 @@ def caption(client, model, effort, prompt, images):
         raise NodeError("transient", f"{type(e).__name__}: {e}") from None   # the SDK already retried twice
     except anthropic.AuthenticationError:
         raise NodeError("input", "the Anthropic API rejected the key (ANTHROPIC_API_KEY)") from None
+    spend(response.usage.input_tokens, response.usage.output_tokens)   # billed even if the reply is then rejected
     if response.stop_reason == "refusal":
         raise NodeError("input", f"refusal: {response.stop_details}")
     text = next((b.text for b in response.content if b.type == "text"), None)
     if text is None:
         raise NodeError("internal", f"no text block in the response (stop_reason {response.stop_reason})")
-    return json.loads(text), response.usage.input_tokens, response.usage.output_tokens
+    return json.loads(text)
 
 
 def spent(model, tokens_in, tokens_out):
@@ -143,8 +148,14 @@ with Node() as node:
     keyframes_dir = node.input("keyframes")
     first_seen = {p["id"]: p["first_seen"] for p in faces["people"]}
 
-    roster, previous, tokens_in, tokens_out, t0 = {}, None, 0, 0, time.time()
-    shots, texts = [], []
+    roster, previous, t0 = {}, None, time.time()
+    shots, texts, totals = [], [], {"in": 0, "out": 0, "calls": 0}
+
+    def spend(n_in, n_out):
+        """The running total after every billed call: if a later shot fails, the response still reports it."""
+        totals.update({"in": totals["in"] + n_in, "out": totals["out"] + n_out, "calls": totals["calls"] + 1})
+        node.usage(usd=spent(model, totals["in"], totals["out"]), tokens_in=totals["in"], tokens_out=totals["out"], calls=totals["calls"])
+
     for shot in shots_doc["shots"]:
         seen = [label(p) for p, t in first_seen.items() if t is not None and t < shot["end"]]   # never people who appear later
         roster_text = "\n".join(f"- {k}: {v}" for k, v in roster.items()) or "(nobody yet)"
@@ -153,10 +164,7 @@ with Node() as node:
                   f"Speech during this shot:\n{shot_speech(shot, words)}\n\nPeople seen in earlier shots:\n{roster_text}\n\n"
                   f"Previous shot: {previous or '(this is the first shot)'}\n\n{FACES_INSTRUCTIONS}\n\nFace roster so far:\n"
                   + ("\n".join(f"- {s}" for s in seen) or "(nobody yet)"))
-        cap, n_in, n_out = caption(client, model, effort, prompt, labelled_keyframes(shot, keyframes_dir, faces, width))
-        tokens_in, tokens_out = tokens_in + n_in, tokens_out + n_out
-        # The running total after every call: if a later shot fails, the response still reports what was spent.
-        node.usage(usd=spent(model, tokens_in, tokens_out), tokens_in=tokens_in, tokens_out=tokens_out, calls=len(shots) + 1)
+        cap = caption(client, model, effort, prompt, labelled_keyframes(shot, keyframes_dir, faces, width), spend)
         for person in cap["people"]:
             roster.setdefault(person["label"], person["appearance"])
         previous = cap["description"]
