@@ -633,6 +633,25 @@ def test_the_watchdog_stops_a_running_node_no_driver_watches(tmp_path):
         node.kill()
 
 
+def test_a_cancel_during_an_upload_leaves_no_partial_copy_on_the_host(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host)
+    (host / "slow").write_text("--server")                 # rsync sending to the host: 8 s before it starts
+    run_id = start(coord, work_graph(tmp_path, rec))
+    objects = host / "home" / ".cache" / "hp" / "objects"
+
+    async def go():
+        task = asyncio.create_task(coord.run(run_id))
+        while not (objects.exists() and any(p.name.startswith(".incoming") for p in objects.iterdir())):
+            await asyncio.sleep(0.05)                     # the upload's folder exists: the copy is on its way
+        coord.cancel(run_id)
+        return await task
+    assert asyncio.run(go()) == "canceled"
+    deadline = time.time() + 20
+    while any(p.name.startswith(".incoming") for p in objects.iterdir()):
+        assert time.time() < deadline, "a partial upload stayed on the host"
+        time.sleep(0.1)
+
+
 def test_prosody_counts_as_transcript_too():
     from perception.artifacts import get
     assert set(get("bundle.prosody@0.1").kinds) == {"audio", "transcript"}   # each utterance's words

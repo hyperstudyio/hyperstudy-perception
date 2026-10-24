@@ -50,6 +50,7 @@ class NodePlan:
 class Plan:
     nodes: list[NodePlan]
     places: dict[str, dict] = field(default_factory=dict)   # every place a node could go -> {title, remote, accelerator}
+    max_cost_usd: float = 0.0                               # the run's cap, as the graph sets it (--max-cost-usd replaces it)
     allow_downloads: bool = False
     allow_uploads: bool = False   # the run's consent; the graph's policy.allow_upload is the most it may ever send
 
@@ -153,7 +154,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
                         np.downloads = []
                         known[node.id] = outs
                         video_s = media_seconds(json.loads(hit["outputs"])) or video_s
-            np.cost_usd = placement.backend.estimate(m, placement.runner, {}).cost_usd
+            np.cost_usd = placement.backend.estimate(m, placement.runner, {}, video_s).cost_usd
             if m.cost:   # units are known once the input exists (from the cache, or a graph input)
                 np.cost_usd += manifest_cost(m, node.config, inputs) if m.cost.per == "run" or m.cost.input in inputs else 0.0
                 np.cost_note = "" if m.cost.per == "run" or m.cost.input in inputs else f"${m.cost.unit_usd(node.config)} per {m.cost.per}, units known after {node.inputs[m.cost.input].node}"
@@ -161,9 +162,9 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
             seconds, basis = estimate(coord.store, m.ref, p.label, video_s)
             sent, to = coord.uploads(m, p)
             np.estimates[p.label] = {"estimate_s": seconds, "estimate_basis": basis,
-                                     "cost_usd": p.backend.estimate(m, p.runner, {}).cost_usd, "uploads": sent, "upload_to": to}
+                                     "cost_usd": p.backend.estimate(m, p.runner, {}, video_s).cost_usd, "uploads": sent, "upload_to": to}
         if placement and not np.cached:
             chosen = np.estimates[placement.label]
             np.estimate_s, np.estimate_basis = chosen["estimate_s"], chosen["estimate_basis"]
         out.append(np)
-    return Plan(out, places, allow_downloads, allow_uploads)
+    return Plan(out, places, graph.spec.policy.max_cost_usd, allow_downloads, allow_uploads)

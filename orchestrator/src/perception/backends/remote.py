@@ -111,6 +111,10 @@ class SshBackend(NativeBackend):
         h = hashlib.sha256(f"{code} {runner.accelerator} {self.host.caps.platform}".encode())
         return f"{self.kind}:{h.hexdigest()[:16]}"
 
+    def driver_spec(self, attempt_dir: Path) -> dict:
+        """What else the driver needs (a cloud machine to start first)."""
+        return {}
+
     def command(self, manifest: Manifest, runner: Runner, request: Path) -> list[str]:
         # the request path on the command line: how a restarted coordinator recognises the driver (native._alive)
         return [sys.executable, "-m", "perception.remote_driver", "--request", str(request)]
@@ -126,6 +130,7 @@ class SshBackend(NativeBackend):
             # the folders of the tools it found: ssh commands get a minimal PATH (ffmpeg in /opt/homebrew/bin on a Mac)
             "path": sorted({str(Path(p).parent) for p in caps.tools.values() if p}),
             "lost_after_s": self.lost_after_s,
+            **self.driver_spec(attempt_dir),
         }
         (attempt_dir / "remote.json").write_text(json.dumps(spec, indent=1))
         return super().submit(manifest, runner, attempt_dir, env)

@@ -13,6 +13,12 @@
 
 SIGTERM (the coordinator's cancel) stops the node on the host before the driver exits. Its output (stdout) is the
 attempt's log.txt.
+
+On a cloud machine (spec "cloud", backends/cloud.py) the driver first starts the machine (sky launch, with the
+repository's project config), makes an OS shutdown terminate it, probes it like a host, and runs guard.sh there (the
+perception-node role, no AWS credentials, a shutdown at the deadline) before anything is sent. The node is stopped
+when the deadline nears. Whatever happens, the machine is deleted (sky down) before the driver exits, and the time it
+existed is added to the response's usage.usd (all of the deadline if it could not be deleted).
 """
 
 from __future__ import annotations
@@ -20,6 +26,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
+import os
+import re
 import shlex
 import signal
 import subprocess
@@ -48,6 +57,18 @@ class Refused(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+class Deadline(Exception):
+    pass
+
+
+class GuardRefused(Exception):
+    pass
+
+
+class LaunchFailed(Exception):
+    """The cloud machine did not start (no capacity, a setup that failed or hung): worth another attempt."""
 
 
 # Publish a folder in one step: rename $1 to $2 unless $2 exists, in which case $1 is dropped (the same content, by its
@@ -97,14 +118,22 @@ class Driver:
         self.request_path, self.spec = request_path, spec
         self.local = request_path.parent
         self.request = json.loads(request_path.read_text())
-        self.dest, self.root = spec["dest"], spec["root"]
-        r = self.request
-        self.attempt = f"{self.root}/work/{r['run']}/{r['node']}/{r['attempt']}"
-        self.node_runs = f"{self.root}/work/{r['run']}/{r['node']}"
-        self.code = f"{self.root}/code/{spec['code']}"
-        self.tag = f"{r['run']}-{r['node']}-{r['attempt']}"   # this attempt's own names for what it uploads
         self.pid: int | None = None
+        self.uploading = False   # an upload to the host began: discard_incoming has something to look for
+        self.fetching = False    # the node finished and its results are coming back: within the deadline's margin
         self.unreachable_since: float | None = None
+        self.started = time.monotonic()
+        self.stop_at: float | None = None   # a cloud machine's deadline, less the time to bring results back and delete it
+        self.extra_usd = 0.0
+        self.at(spec["dest"], spec["root"])
+
+    def at(self, dest: str, root: str):
+        self.dest, self.root = dest, root
+        r = self.request
+        self.attempt = f"{root}/work/{r['run']}/{r['node']}/{r['attempt']}"
+        self.node_runs = f"{root}/work/{r['run']}/{r['node']}"
+        self.code = f"{root}/code/{self.spec['code']}"
+        self.tag = f"{r['run']}-{r['node']}-{r['attempt']}"   # this attempt's own names for what it uploads
 
     # --- commands on the host -----------------------------------------------------------------------------------
 
@@ -157,6 +186,7 @@ class Driver:
             raise RuntimeError("the node's code changed since this attempt started: nothing was sent (the next attempt sends the new code)")
         say(f"copying the node's code to {self.spec['host']}")
         incoming = f"{self.root}/code/.incoming-{self.tag}"
+        self.uploading = True
         self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
         listing = self.local / "code-files.txt"
         listing.write_text("".join(f + "\n" for f in self.spec["files"]))
@@ -183,6 +213,7 @@ class Driver:
             size = sum(p.stat().st_size for p in local.rglob("*") if p.is_file()) if local.is_dir() else local.stat().st_size
             say(f"copying {name} ({size / 1e6:.1f} MB) to {self.spec['host']}")
             incoming = f"{self.root}/objects/.incoming-{self.tag}-{name}"
+            self.uploading = True
             self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
             self.rsync(f"{local}/" if local.is_dir() else str(local), f"{self.dest}:{incoming}/data" + ("/" if local.is_dir() else ""))
             # filed under its sha256 only if that is what arrived (a file changed since the run hashed it is refused);
@@ -246,8 +277,10 @@ echo $pid
 
     def unreachable(self, e: Exception):
         """Wait out a host that cannot be reached, for up to lost_after_s in all since it was last reached; past that,
-        give up (raise)."""
+        give up (raise). Not past a cloud machine's deadline: that is a failure of its own (Deadline)."""
         now = time.monotonic()
+        if self.stop_at is not None and not self.fetching and now > self.stop_at:
+            raise Deadline()
         if self.unreachable_since is None:
             self.unreachable_since = now
             say(f"{self.spec['host']} cannot be reached ({e}); waiting up to {self.spec['lost_after_s']:.0f} s")
@@ -260,6 +293,9 @@ echo $pid
         must not cost an attempt, nor a finished node's results. A failed rsync is repeated only if the host is
         unreachable; any other failure is the step's own."""
         while True:
+            # an upload that ran into a cloud machine's deadline; never a fetch, which the deadline keeps a margin for
+            if self.stop_at is not None and not self.fetching and time.monotonic() > self.stop_at:
+                raise Deadline()
             try:
                 result = step(*args)
                 self.unreachable_since = None
@@ -317,6 +353,8 @@ echo $pid
                 offset += len(text)
             if state.strip() == b"exited":
                 return
+            if self.stop_at is not None and time.monotonic() > self.stop_at:
+                raise Deadline()
             time.sleep(POLL_S)
 
     def fetch(self):
@@ -324,6 +362,7 @@ echo $pid
         here either, and the coordinator sees a crash). The node has finished: a dropped connection is waited out, and
         the heartbeat kept up, rather than its results lost."""
         q = shlex.quote
+        self.fetching = True
         with self.heartbeat():
             # never through a link the node made: rsync would copy what `out/` points at, which publication cannot see
             listing = self.patiently(self.sh, f"cd {q(self.attempt)} 2>/dev/null || exit 0; [ -d out ] && [ ! -L out ] && echo out; "
@@ -332,8 +371,6 @@ echo $pid
                 self.patiently(self.rsync, f"{self.dest}:{self.attempt}/out/", f"{self.local}/out/")
             if "response.json" in listing:
                 self.patiently(self.rsync, f"{self.dest}:{self.attempt}/response.json", f"{self.local}/response.json.part")
-        if "response.json" in listing:
-            (self.local / "response.json.part").replace(self.local / "response.json")
         # the run's folders too once empty (another node of the run may still be using them)
         self.patiently(self.sh, f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true")
 
@@ -351,8 +388,172 @@ echo $pid
         except (Unreachable, subprocess.TimeoutExpired) as e:
             say(f"could not reach {self.spec['host']} to stop it ({e}); it ends when the next attempt of this node starts there")
 
-    def run(self) -> int:
+    def publish_response(self):
+        """The node's response, now that it is final: with what the cloud machine cost added to what the node spent."""
+        part = self.local / "response.json.part"
+        if not part.exists():
+            return
+        if self.extra_usd:
+            response = json.loads(part.read_text())
+            usage = response.setdefault("usage", {})
+            usage["usd"] = round(float(usage.get("usd", 0.0)) + self.extra_usd, 4)
+            usage["machine_usd"] = self.extra_usd
+            part.write_text(json.dumps(response, indent=1))
+        part.replace(self.local / "response.json")
+
+    # --- a cloud machine ------------------------------------------------------------------------------------------
+
+    def cloud_env(self, c: dict) -> dict:
+        return {**os.environ, "SKYPILOT_PROJECT_CONFIG": c["project_config"]}
+
+    def provision(self, c: dict):
+        """Start the machine. Its own deadline is set from the first moment, in case this laptop never comes back: the
+        task's setup schedules the OS shutdown first (DEADLINE_MINUTES), and while the launch runs a watcher makes an OS
+        shutdown terminate the instance (EC2 would only stop it, its disk billing). The launch has a time limit
+        (launch_s). SkyPilot runs a launch on its API server, where it goes on if its client is stopped: so it is
+        submitted (--async), followed by its id, and on a timeout or a cancel canceled there before the machine is
+        deleted."""
+        from .hosts import HostError, probe
+        say(f"starting a cloud machine, {c['cluster']} (at most {c['deadline_s'] / 60:.0f} min at ${c['hourly_usd']}/h)")
+        minutes = max(1, math.floor(c["deadline_s"] / 60))
+        request = None
         try:
+            submitted = subprocess.run([c["sky"], "launch", "--async", "-c", c["cluster"], "-y", "--down", "-i", "15",
+                                        "--env", f"DEADLINE_MINUTES={minutes}", c["task"]], env=self.cloud_env(c),
+                                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
+            sys.stdout.write(submitted.stdout + submitted.stderr)
+            sys.stdout.flush()
+            found = re.search(r"request: ([0-9a-f]{8}-[0-9a-f-]{27,})", re.sub(r"\x1b\[[0-9;]*m", "", submitted.stdout))
+            if submitted.returncode or not found:
+                raise LaunchFailed(f"sky launch was not submitted, or did not say its request (exit {submitted.returncode})")
+            request = found.group(1)
+        except FileNotFoundError:
+            raise Refused("input", f"SkyPilot is not installed here ({c['sky']}): perception cloud on checks for it")
+        finally:
+            if request is None:   # interrupted, timed out or not understood: it may still have been submitted
+                self.cancel_launches(c)
+        logs = subprocess.Popen([c["sky"], "api", "logs", request], env=self.cloud_env(c), stdout=sys.stdout,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        terminating, finished = False, False
+        try:
+            while True:
+                state = self.request_status(c, request)
+                if state == "SUCCEEDED":
+                    finished = True
+                    break
+                if state in ("FAILED", "CANCELLED"):
+                    finished = True
+                    raise LaunchFailed(f"sky launch {state.lower()}")
+                if not terminating:
+                    terminating = self.terminate_on_shutdown(c, quiet=True)
+                if time.monotonic() - self.started > c["launch_s"]:
+                    raise LaunchFailed(f"the machine was not ready after {c['launch_s'] / 60:.0f} min (sky launch canceled)")
+                time.sleep(POLL_S)
+        finally:
+            if not finished:   # a timeout or a cancel: stop the launch on the API server, or sky down could miss it
+                subprocess.run([c["sky"], "api", "cancel", "-y", request], env=self.cloud_env(c), stdout=sys.stdout,
+                               stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+            logs.terminate()
+            logs.wait()
+        # again now that it is up: the launch may have replaced the instance it first created (another zone). A machine
+        # that would only stop at its deadline (its disk billing on) is not used.
+        if not self.terminate_on_shutdown(c):
+            raise Refused("internal", f"{c['cluster']} could not be set to terminate on shutdown (aws ec2 modify-instance-attribute): it is not used")
+        try:
+            caps, root = probe(c["cluster"])
+        except HostError as e:
+            raise LaunchFailed(f"{c['cluster']} started but could not be probed: {e}")
+        self.at(c["cluster"], root)
+        self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
+        if "cuda" not in caps.accelerators:
+            raise Refused("resources", f"{c['cluster']} has no NVIDIA GPU that nvidia-smi can see")
+        # its OS shuts it down (and so terminates it) at the deadline, counted from the start of the launch
+        minutes = max(1, math.floor((c["deadline_s"] - (time.monotonic() - self.started)) / 60))
+        guard = Path(c["guard"]).read_bytes()
+        result = self.sh(f"bash -s {minutes}", check=False, data=guard)
+        sys.stdout.buffer.write(result.stdout + result.stderr)
+        if result.returncode:
+            raise GuardRefused(f"guard.sh refused {c['cluster']} (exit {result.returncode}): nothing was sent; see the log")
+        # what the node needs, installed now and waited for (SkyPilot's own setup runs detached: node-setup.sh)
+        say("installing ffmpeg and uv on the machine")
+        try:
+            done = self.sh(f"bash -s", check=False, data=Path(c["setup"]).read_bytes())
+        except subprocess.TimeoutExpired:
+            raise LaunchFailed(f"setting up {c['cluster']} took more than 10 min")
+        sys.stdout.buffer.write(done.stderr)
+        if done.returncode:
+            raise LaunchFailed(f"setting up {c['cluster']} failed (exit {done.returncode}): see the log")
+        uv = done.stdout.decode().strip().splitlines()[-1] if done.stdout.strip() else ""
+        self.spec["uv"] = uv or None
+        if not uv:
+            raise LaunchFailed(f"setting up {c['cluster']} did not say where uv is")
+        self.stop_at = self.started + c["deadline_s"] - min(300, c["deadline_s"] / 4)
+
+    def cancel_launches(self, c: dict):
+        """Cancel, on SkyPilot's API server, any launch of this attempt's cluster still pending or running: found by its
+        cluster's name, which only this attempt uses (a launch whose request id was never read)."""
+        out = subprocess.run([c["sky"], "api", "status", "-v", "-o", "json"], env=self.cloud_env(c), capture_output=True,
+                             text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=120)
+        try:
+            ids = [r["request_id"] for r in json.loads(out.stdout[out.stdout.index("["):])
+                   if r.get("name") == "sky.launch" and r.get("cluster_name") == c["cluster"] and r.get("status") in ("PENDING", "RUNNING")]
+        except (ValueError, KeyError, TypeError):
+            say(f"WARNING: could not list SkyPilot's requests to cancel a launch of {c['cluster']}; sky down follows")
+            return
+        if ids:
+            subprocess.run([c["sky"], "api", "cancel", "-y", *ids], env=self.cloud_env(c), stdout=sys.stdout,
+                           stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+
+    def request_status(self, c: dict, request: str) -> str:
+        """A request's status on SkyPilot's API server (PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED), or "" when it
+        could not be read this time."""
+        out = subprocess.run([c["sky"], "api", "status", "-a", request, "-o", "json"], env=self.cloud_env(c),
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        try:
+            text = out.stdout[out.stdout.index("["):]
+            return next((r["status"] for r in json.loads(text) if r["request_id"] == request), "")
+        except (ValueError, KeyError, TypeError):
+            return ""
+
+    def terminate_on_shutdown(self, c: dict, quiet: bool = False) -> bool:
+        """EC2 only stops an on-demand machine on an OS shutdown (its disk keeps billing): make it terminate, so its
+        deadline deletes it (as launch.sh does). Whether its instance was found and changed; `quiet` while the launch is
+        still creating it."""
+        aws = [c["aws"], "--region", c["region"], "--output", "text"]
+        ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
+                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']}*",
+                              "Name=instance-state-name,Values=pending,running"], capture_output=True, text=True)
+        found = ids.stdout.split() if ids.returncode == 0 else []
+        done_all = bool(found)
+        for instance in found:
+            done = subprocess.run([*aws, "ec2", "modify-instance-attribute", "--instance-id", instance,
+                                   "--instance-initiated-shutdown-behavior", "terminate"], capture_output=True, text=True)
+            done_all &= done.returncode == 0
+            say(f"{instance} terminates on OS shutdown" if done.returncode == 0 else
+                f"WARNING: could not make {instance} terminate on shutdown ({done.stderr.strip()[-200:]}); its deadline only stops it")
+        if not found and not quiet:
+            say(f"WARNING: no instance found for {c['cluster']} ({ids.stderr.strip()[-200:]}); its deadline only stops it")
+        return done_all
+
+    def teardown(self, c: dict):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # deleting the machine must not be interrupted
+        say(f"deleting {c['cluster']}")
+        # its own session: a cancel signals the driver's whole process group, and must not stop the deletion
+        out = subprocess.run([c["sky"], "down", "-y", c["cluster"]], env=self.cloud_env(c), stdout=sys.stdout,
+                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        if out.returncode == 0:
+            self.extra_usd = round(c["hourly_usd"] * (time.monotonic() - self.started) / 3600, 4)
+        else:   # it lives until its deadline at most (guard.sh), and is charged that
+            self.extra_usd = round(c["hourly_usd"] * c["deadline_s"] / 3600, 4)
+            say(f"WARNING: could not delete {c['cluster']} (sky down exited {out.returncode}): run `sky down {c['cluster']}`; "
+                "otherwise it shuts down at its deadline")
+        say(f"the machine cost about ${self.extra_usd:.2f}")
+
+    def run(self) -> int:
+        cloud = self.spec.get("cloud")
+        try:
+            if cloud:
+                self.provision(cloud)
             # each repeated while the host cannot be reached: they can be (uploads go under the attempt's own names and
             # are published in one step; starting stops this attempt's node if a lost answer hid that it had started)
             self.patiently(self.check_root)
@@ -365,6 +566,24 @@ echo $pid
         except Canceled:
             self.stop()
             return 143
+        except LaunchFailed as e:
+            say(str(e))
+            # retried within the policy, charged what the machine cost until it was deleted (not the whole deadline)
+            self.fail("transient", str(e))
+            return 1
+        except GuardRefused as e:
+            say(str(e))
+            # the machine is not set up as this repository requires (its role, credentials on it): not worth retrying
+            self.fail("privacy", str(e))
+            return 1
+        except Deadline:
+            minutes = cloud["deadline_s"] / 60
+            say(f"stopping it: the machine's deadline ({minutes:.0f} min) is near")
+            self.stop()
+            # a failure of its own, not a crash: another attempt would only reach the same deadline, at the same cost
+            if not (self.local / "response.json.part").exists():   # never over results already brought back
+                self.fail("resources", f"stopped at the cloud machine's deadline ({minutes:.0f} min); a longer video needs a longer deadline")
+            return 124
         except Unreachable as e:
             say(f"{self.spec['host']} could not be reached for {self.spec['lost_after_s']:.0f} s ({e}): giving up on this attempt")
             return 75
@@ -372,12 +591,29 @@ echo $pid
             say(str(e))
             self.fail(e.code, str(e))
             return 1
+        finally:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a cancel now must not skip deleting the machine or charging it
+            self.discard_incoming()
+            if cloud:
+                self.teardown(cloud)
+            self.publish_response()
+
+    def discard_incoming(self):
+        """This attempt's own uploads that never finished (a cancel, a failure): a partial copy of an input must not stay
+        on the host. One that finished was renamed into place, so nothing published is touched."""
+        if not self.uploading:
+            return   # nothing was sent (a machine the guard refused gets nothing, not even this)
+        q = shlex.quote
+        try:
+            self.sh(f"chmod -R u+w {q(self.root)}/objects/.incoming-{q(self.tag)}-* 2>/dev/null; "
+                    f"rm -rf {q(self.root)}/objects/.incoming-{q(self.tag)}-* {q(self.root)}/code/.incoming-{q(self.tag)}", check=False)
+        except (Unreachable, subprocess.TimeoutExpired) as e:
+            say(f"could not remove this attempt's unfinished uploads on {self.spec['host']} ({e}): perception hosts clean removes them")
 
     def fail(self, code: str, message: str):
-        """A response saying the attempt failed, as a node writes one: the coordinator does not retry it."""
-        tmp = self.local / "response.json.tmp"
-        tmp.write_text(json.dumps({"ok": False, "usage": {}, "error": {"code": code, "message": message}}))
-        tmp.replace(self.local / "response.json")
+        """A response saying the attempt failed, as a node writes one: the coordinator does not retry it (published as
+        the run ends, with what a cloud machine cost)."""
+        (self.local / "response.json.part").write_text(json.dumps({"ok": False, "usage": {}, "error": {"code": code, "message": message}}))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,0 +1,21 @@
+# The machine the cloud backend (orchestrator/src/perception/backends/cloud.py) starts for one node, and deletes after it:
+# an L4 with 8 vCPUs, the face node's fastest measured setup (perception #4; frame decoding needs the cores). Only
+# set-up here: the driver checks the machine with guard.sh before sending anything, then runs the node over SSH.
+# Started with SKYPILOT_PROJECT_CONFIG=sky.yaml (no laptop credentials on the machine; only the perception-node role).
+resources:
+  cloud: aws
+  region: us-east-1
+  instance_type: g6.2xlarge
+  # on-demand: on 2026-10-23 us-east-1 had no L4 or A10G spot capacity, and the account's G spot quota is 0 elsewhere
+  use_spot: false
+  disk_size: 60
+
+envs:
+  DEADLINE_MINUTES: null   # required: the driver passes the node's deadline
+
+setup: |
+  # SkyPilot runs setup detached (as a job: `sky launch` returns before it ends), so only what must come first is here:
+  # the machine shuts itself down (terminating: the driver sets that while it launches) at the deadline, even if the
+  # laptop that started it never comes back. guard.sh later sets it again, to what is left. What the node needs (ffmpeg,
+  # uv) the driver installs itself and waits for: node-setup.sh.
+  sudo shutdown -h "+${DEADLINE_MINUTES}"
