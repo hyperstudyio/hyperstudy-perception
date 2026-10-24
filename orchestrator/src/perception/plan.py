@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .estimates import estimate, media_seconds, probe_seconds
 from .ir import Graph
 from .manifests import ModelRef
 from .scheduler import Coordinator, manifest_cost
@@ -30,6 +31,10 @@ class NodePlan:
     cost_usd: float = 0.0
     cost_note: str = ""
     uploads: list[str] = field(default_factory=list)   # data kinds the node sends off the machine (its manifest's privacy)
+    place: str | None = None                           # where it would run (backend:accelerator)
+    options: list[str] = field(default_factory=list)   # every place it can run here, best first
+    estimate_s: float | None = None                    # seconds, from its measured runs here (estimates.py)
+    estimate_basis: str = ""
 
 
 @dataclass
@@ -77,10 +82,16 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
     known: dict[str, dict[str, Artifact]] = {}   # node -> outputs, when its result is cached
     graph_inputs = {name: coord._graph_input(graph, name) for name in graph.spec.inputs}
     out = []
+    video_s = None   # the video's length: from a cached decode below, else ffprobe on the graph input
+    for name, spec in graph.spec.inputs.items():
+        if spec.type == "video.v1" and not video_s:
+            video_s = probe_seconds(graph.input_path(name))
     for node in graph.nodes.values():
         m = node.manifest
-        placement, why = coord.place(m, node.spec.backend)
+        placement, why = coord.place(m, node.spec.backend, node.spec.place)
         np = NodePlan(node.id, m.ref, f"{placement.backend.kind} ({placement.runner.accelerator})" if placement else None, why)
+        np.options = [p.label for p in coord.placements(m, node.spec.backend)[0]]
+        np.place = placement.label if placement else None
         np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://") and not hf_cached(x.source)]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads = list(m.privacy.external_upload)
@@ -100,9 +111,12 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
                         np.cached = True
                         np.downloads = []
                         known[node.id] = outs
+                        video_s = media_seconds(json.loads(hit["outputs"])) or video_s
             np.cost_usd = placement.backend.estimate(m, placement.runner, {}).cost_usd
             if m.cost:   # units are known once the input exists (from the cache, or a graph input)
                 np.cost_usd += manifest_cost(m, node.config, inputs) if m.cost.per == "run" or m.cost.input in inputs else 0.0
                 np.cost_note = "" if m.cost.per == "run" or m.cost.input in inputs else f"${m.cost.unit_usd(node.config)} per {m.cost.per}, units known after {node.inputs[m.cost.input].node}"
+        if placement and not np.cached:
+            np.estimate_s, np.estimate_basis = estimate(coord.store, m.ref, placement.label, video_s)
         out.append(np)
     return Plan(out, allow_downloads)

@@ -69,6 +69,8 @@ class NodeSpec(Strict):
     inputs: dict[str, str] = Field(default_factory=dict)
     config: dict = Field(default_factory=dict)
     backend: Literal["auto", "native", "self"] = "auto"
+    # where it runs, among the places it can run here (`perception plan` lists them): native:mps, native:cpu...
+    place: str | None = Field(default=None, pattern=r"^[a-z]+:[a-z]+$")
 
 
 class GraphSpec(Strict):

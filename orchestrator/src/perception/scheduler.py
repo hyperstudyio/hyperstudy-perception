@@ -82,6 +82,11 @@ class Placement:
     backend: Backend
     runner: Runner
 
+    @property
+    def label(self) -> str:
+        """Where it runs, as a graph's `place` and a task's runner name it: `native:mps`, `native:cpu`..."""
+        return f"{self.backend.kind}:{self.runner.accelerator}"
+
 
 class Coordinator:
     def __init__(self, store: Store, registry: Registry, backends: list[Backend], secrets: dict[str, str] | None = None,
@@ -263,21 +268,31 @@ class Coordinator:
                 out[name] = Artifact.from_json(json.loads(tasks[ref.node]["outputs"])[ref.name])
         return out
 
-    def place(self, manifest: Manifest, wanted: str = "auto") -> tuple[Placement | None, str]:
-        """The backend and runner this node would use here. Native runners first (they reach the Apple GPU and need no
-        transfer), then containers."""
+    def placements(self, manifest: Manifest, wanted: str = "auto") -> tuple[list[Placement], str]:
+        """Every place this node can run here, best first (accelerated runners before CPU ones); why none, when none."""
         kinds = [wanted] if wanted != "auto" else ["native", "self"]
-        reasons = []
+        options, reasons = [], []
         for kind in kinds:
             backend = self.backends.get(kind)
             if backend is None:
                 continue
-            runner, why = backend.runner_for(manifest)
-            if runner:
-                return Placement(backend, runner), ""
-            if not why.startswith("no "):
+            runners, why = backend.runners_for(manifest)
+            options += [Placement(backend, r) for r in runners]
+            if not runners and not why.startswith("no "):
                 reasons.append(f"{kind}: {why}")
-        return None, "; ".join(reasons) or f"no runner of kind {', '.join(kinds)}"
+        return options, "" if options else "; ".join(reasons) or f"no runner of kind {', '.join(kinds)}"
+
+    def place(self, manifest: Manifest, wanted: str = "auto", choice: str | None = None) -> tuple[Placement | None, str]:
+        """Where this node runs here: the graph's choice (`place`, as `native:cpu`), else the best place it can."""
+        options, why = self.placements(manifest, wanted)
+        if not options:
+            return None, why
+        if choice is None:
+            return options[0], ""
+        chosen = next((p for p in options if p.label == choice), None)
+        if chosen is None:
+            return None, f"{choice} is not one of the places it can run here ({', '.join(p.label for p in options)})"
+        return chosen, ""
 
     def cache_key(self, node: CompiledNode, placement: Placement, inputs: dict[str, Artifact]) -> str:
         m = node.manifest
@@ -293,7 +308,7 @@ class Coordinator:
 
     def _start(self, run_id: str, graph: Graph, node: CompiledNode, tasks: dict[str, dict]):
         t, m = tasks[node.id], node.manifest
-        placement, why = self.place(m, node.spec.backend)
+        placement, why = self.place(m, node.spec.backend, node.spec.place)
         if placement is None:
             self._fail(run_id, node.id, "input", f"no backend can run {m.ref} here: {why}")
             return
@@ -328,7 +343,7 @@ class Coordinator:
         # reserved from the moment it is chosen: a coordinator that dies before recording it running leaves the
         # reservation with the task that the next one adopts
         self._set(run_id, node.id, state="leased", attempt=attempt, cache_key=key, lease_owner=self.owner,
-                  lease_expires=time.time() + self.lease_s, runner=f"{placement.backend.kind}:{placement.runner.accelerator}",
+                  lease_expires=time.time() + self.lease_s, runner=placement.label,
                   cost_usd=estimate.cost_usd)
         request = {
             "protocol": 1, "run": run_id, "node": node.id, "uses": m.ref, "attempt": attempt, "partition": None,

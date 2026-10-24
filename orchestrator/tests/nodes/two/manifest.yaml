@@ -1,0 +1,18 @@
+id: test.two
+version: 1.0.0
+description: test.work with a CUDA and a CPU runner (placement choices)
+inputs: {a: json.v1}
+outputs: {out: json.v1}
+config:
+  add: {type: number, default: 1}
+  sleep: {type: number, default: 0}
+  fail: {enum: [none, transient, crash, schema, internal, input, oom], default: none}
+  fail_until: {type: integer, default: 0}
+  record_dir: {type: string}
+  batch_size: {type: integer, default: 4}
+runners:
+  - {kind: self, entry: ../work/node.py, accelerator: cuda}
+  - {kind: self, entry: ../work/node.py}
+resources: {cpu_cores: 1, memory_gb: 0.1}
+models:
+  - {id: test-model, licence_mode: commercial-ok}

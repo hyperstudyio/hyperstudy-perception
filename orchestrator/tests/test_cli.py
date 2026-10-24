@@ -140,3 +140,27 @@ def test_the_plan_says_what_each_node_sends_off_this_machine(home, capsys, tmp_p
     assert cli("plan", str(g)) == 0
     [plan] = lines(capsys)
     assert {n["id"]: n["uploads"] for n in plan["nodes"]} == {"shots": [], "captions": ["frames"]}
+
+
+def test_nodes_lists_what_each_node_takes_makes_costs_sends_and_where_it_can_run(home, capsys):
+    assert cli("nodes") == 0
+    [doc] = lines(capsys)
+    work_node = next(n for n in doc["nodes"] if n["ref"] == "test.work@1.0.0")
+    assert work_node["inputs"] == {"a": "json.v1"} and work_node["outputs"] == {"out": "json.v1"}
+    assert work_node["places"] == ["self:cpu"] and work_node["why_not"] == ""
+    refine = next(n for n in doc["nodes"] if n["ref"] == "test.refine@1.0.0")
+    assert refine["uploads"] == ["frames"] and refine["cost"]["per"] == "shot"
+    assert refine["models"] == [{"id": "test-captioner", "licence_mode": "api-terms", "source": None, "size_gb": None, "gated": False}]
+
+
+def test_place_chooses_where_a_node_runs_and_a_place_it_cannot_run_is_a_plan_problem(home, capsys):
+    g = graph(home, [work("a", home)])
+    assert cli("plan", str(g), "--place", "a=self:cpu") == 0
+    [plan] = lines(capsys)
+    assert plan["nodes"][0]["place"] == "self:cpu" and plan["nodes"][0]["options"] == ["self:cpu"]
+    assert cli("plan", str(g), "--place", "a=self:mps") == 1
+    [plan] = lines(capsys)
+    assert plan["ok"] is False and "self:mps is not one of the places it can run here" in plan["nodes"][0]["why_not"]
+    assert cli("plan", str(g), "--place", "zz=self:cpu") == 1
+    [err] = lines(capsys)
+    assert err["type"] == "error" and "the graph has no node 'zz'" in err["problems"][0]
