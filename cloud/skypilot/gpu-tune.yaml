@@ -13,7 +13,8 @@ resources:
 
 envs:
   CLIP_SRC: null      # required: the clip on the laptop
-  SWEEP: "32:0 64:0 128:0 32:4 64:4 128:4 64:7"   # batch_size:num_workers
+  # batch_size:num_workers. Batch 64 ran out of GPU memory on 2026-10-24 (py-feat feeds whole 1080p frames).
+  SWEEP: "8:0 16:0 32:0 16:4 32:4"
 
 file_mounts:
   /data/clip.mp4: ${CLIP_SRC}
@@ -30,9 +31,14 @@ run: |
   set -e
   export PATH=$HOME/.local/bin:$PATH
   mkdir -p ~/out
+  # Background processes end with the job however it ends: a GPU logger left running kept a failed job open on
+  # 2026-10-24 until it was cancelled by hand.
+  trap 'kill $(jobs -p) 2>/dev/null || :' EXIT
   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv | tee ~/out/gpu.txt
-  nproc | tee -a ~/out/gpu.txt
-  nvidia-smi dmon -s um -o T > ~/out/dmon.txt &
+  # Ray, which runs SkyPilot jobs, sets OMP_NUM_THREADS=1, and PyTorch takes its CPU thread count from it.
+  echo "vCPUs $(nproc --all); OMP_NUM_THREADS from the job: ${OMP_NUM_THREADS:-unset}" | tee -a ~/out/gpu.txt
+  export OMP_NUM_THREADS=$(nproc --all)
+  nvidia-smi dmon -s um -o T > ~/out/dmon.txt 2>&1 &
   cd orchestrator
   uv run perception run ../graphs/decode.yaml --input video=/data/clip.mp4
   for point in $SWEEP; do
@@ -40,9 +46,10 @@ run: |
     sed "s/uses: vision.face-track@1.0.0/&\n    config: {batch_size: $b, num_workers: $w}/" ../graphs/faces.yaml > ../graphs/tune-$b-$w.yaml
     echo "=== batch $b workers $w $(date +%T)" | tee -a ~/out/sweep.txt
     SECONDS=0
-    uv run perception run ../graphs/tune-$b-$w.yaml --input video=/data/clip.mp4 --allow-downloads
-    echo "wall ${SECONDS}s end $(date +%T)" | tee -a ~/out/sweep.txt
+    # A failed point is recorded (with its error code, from status) and the sweep goes on.
+    if uv run perception run ../graphs/tune-$b-$w.yaml --input video=/data/clip.mp4 --allow-downloads; then result=ok; else result=failed; fi
+    echo "wall ${SECONDS}s $result end $(date +%T)" | tee -a ~/out/sweep.txt
     run=$(uv run perception status | awk 'NR==1{print $1}')
+    uv run perception status "$run" | tee -a ~/out/sweep.txt
     cp -r ~/.hyperstudy-perception/work/"$run" ~/out/work-$b-$w
   done
-  kill %1

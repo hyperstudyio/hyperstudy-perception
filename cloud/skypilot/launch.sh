@@ -8,6 +8,8 @@
 # - Once the instance exists, its OS shutdown is set to terminate it, so guard.sh's deadline deletes on-demand
 #   machines as well as spot ones.
 # - sky down runs on exit, whether the job succeeded, failed or was interrupted.
+# - A wall-clock deadline (MAX_MINUTES, default 60) ends the launch, and so deletes the machine, whatever the job is
+#   doing: a hang of any kind (a stray process holding the job open, a stuck download) costs at most that long.
 set -euo pipefail
 task=$(cd "$(dirname "$1")" && pwd)/$(basename "$1"); cluster=$2; shift 2
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
@@ -17,7 +19,7 @@ export SKYPILOT_PROJECT_CONFIG=$repo/cloud/skypilot/sky.yaml
 stage=$(mktemp -d)
 git -C "$repo" ls-files -z --cached --others --exclude-standard | rsync -a --from0 --files-from=- "$repo/" "$stage/"
 finish() {
-  kill "${watcher:-}" 2>/dev/null || :
+  kill "${watcher:-}" "${deadline:-}" 2>/dev/null || :
   if [ -n "${OUT:-}" ]; then mkdir -p "$OUT"; rsync -a "$cluster:out/" "$OUT/" || echo "launch.sh: could not fetch ~/out" >&2; fi
   sky down -y "$cluster"
   rm -rf "$stage"
@@ -43,4 +45,9 @@ trap finish EXIT
 ) &
 watcher=$!
 
-sky launch -c "$cluster" -i 15 --down -y "$task" --workdir "$stage" "$@"
+sky launch -c "$cluster" -i 15 --down -y "$task" --workdir "$stage" "$@" &
+launch=$!
+minutes=${MAX_MINUTES:-60}
+( sleep $((minutes * 60)); echo "launch.sh: past MAX_MINUTES=$minutes; deleting the machine" >&2; kill "$launch" ) &
+deadline=$!
+wait "$launch"

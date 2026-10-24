@@ -181,6 +181,15 @@ def test_terminal_failures_are_not_retried_and_cancel_descendants(tmp_path, rec,
                                                                         # attempt wrote was published
 
 
+def test_running_out_of_memory_fails_once_and_names_the_setting_to_change(tmp_path, rec):
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, graph_doc(tmp_path, [work("a", record_dir=rec, fail="oom", fail_until=9)], retries=2))
+    t = coord._tasks(run_id)["a"]
+    assert status == "failed" and t["error_code"] == "resources"
+    assert "batch_size" in t["error"] and "CUDA out of memory" in t["error"]
+    assert len(executions(Path(rec))) == 1                                # the same input would run out again: no retry
+
+
 def test_retries_stop_at_the_policy_limit(tmp_path, rec):
     coord = coordinator(tmp_path)
     run_id, status = run(coord, graph_doc(tmp_path, [work("a", record_dir=rec, fail="transient", fail_until=9)], retries=1))
