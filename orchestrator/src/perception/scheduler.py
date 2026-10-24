@@ -31,7 +31,7 @@ from pathlib import Path, PurePath
 
 from . import artifacts
 from .backends.base import Backend, child_env
-from .ir import CompiledNode, Graph, compile_graph
+from .ir import CompiledNode, Graph, Policy, compile_graph
 from .manifests import Manifest, Registry, Runner
 from .store import Artifact, Store, dumps
 
@@ -275,35 +275,74 @@ class Coordinator:
                 out[name] = Artifact.from_json(json.loads(tasks[ref.node]["outputs"])[ref.name])
         return out
 
-    def placements(self, manifest: Manifest, wanted: str = "auto") -> tuple[list[Placement], str]:
-        """Every place this node can run here, best first (accelerated runners before CPU ones); why none, when none."""
-        kinds = [wanted] if wanted != "auto" else ["native", "self"]
-        options, reasons = [], []
-        for kind in kinds:
-            backend = self.backends.get(kind)
-            if backend is None:
-                continue
+    def placements(self, manifest: Manifest, wanted: str = "auto", policy: Policy | None = None) -> tuple[list[Placement], str]:
+        """Every place this node can run, best first: this machine's (accelerated runners before CPU ones), then other
+        machines' (lab servers, cloud), which a graph's policy must allow: they receive the node's inputs. Why none,
+        when none."""
+        options, reasons = self._placements(manifest, wanted, policy)
+        return options, "" if options else "; ".join(f"{k}: {v}" for k, v in reasons.items()) or \
+            f"no runner of kind {wanted if wanted != 'auto' else 'native or self'}"
+
+    def _placements(self, manifest: Manifest, wanted: str, policy: Policy | None) -> tuple[list[Placement], dict[str, str]]:
+        """The places, and why each backend that offers none cannot run it (backends without its kind of runner aside)."""
+        local = [b for b in self.backends.values() if not b.remote]
+        remote = [b for b in self.backends.values() if b.remote]
+        chosen = [self.backends[wanted]] if wanted != "auto" and wanted in self.backends else local + remote if wanted == "auto" else []
+        options, reasons = [], {}
+        for backend in chosen:
             runners, why = backend.runners_for(manifest)
             # Apple silicon's memory is shared by CPU and GPU: a node that runs on the GPU there has no reason to be
             # offered the CPU too (a CUDA machine's CPU fallback stays a choice: its GPU memory is its own)
             if any(r.accelerator == "mps" for r in runners):
                 runners = [r for r in runners if r.accelerator != "cpu"]
+            if runners and backend.remote and (refusal := self.remote_policy(manifest, backend, policy)):
+                runners, why = [], refusal
             options += [Placement(backend, r) for r in runners]
             if not runners and not why.startswith("no "):
-                reasons.append(f"{kind}: {why}")
-        return options, "" if options else "; ".join(reasons) or f"no runner of kind {', '.join(kinds)}"
+                reasons[backend.kind] = why
+        return options, reasons
 
-    def place(self, manifest: Manifest, wanted: str = "auto", choice: str | None = None) -> tuple[Placement | None, str]:
-        """Where this node runs here: the graph's choice (`place`, as `native:cpu`), else the best place it can."""
-        options, why = self.placements(manifest, wanted)
-        if not options:
-            return None, why
+    @staticmethod
+    def remote_policy(manifest: Manifest, backend: Backend, policy: Policy | None) -> str:
+        """Why the graph's policy keeps this node off another machine, or "". Without a graph (doctor, nodes), only
+        what could run there is asked, not what may."""
+        if policy is None:
+            return ""
+        if policy.placement == "local" or policy.privacy == "local-only":
+            return "the graph keeps its nodes on this machine (policy.placement / policy.privacy)"
+        if not_allowed := [k for k in backend.sends(manifest) if k not in policy.allow_upload]:
+            return f"its inputs hold {', '.join(not_allowed)}, which policy.allow_upload does not let leave this machine"
+        return ""
+
+    def place(self, manifest: Manifest, wanted: str = "auto", choice: str | None = None,
+              policy: Policy | None = None) -> tuple[Placement | None, str]:
+        """Where this node runs: the graph's choice (`place`, as `native:cpu` or `ssh-gpu1:cuda`), else the best place
+        on this machine. Another machine is only ever chosen, never a default: it receives the node's inputs."""
+        options, reasons = self._placements(manifest, wanted, policy)
+        why = "" if options else "; ".join(f"{k}: {v}" for k, v in reasons.items()) or f"no runner of kind {wanted}"
         if choice is None:
-            return options[0], ""
+            here = [p for p in options if not p.backend.remote]
+            if here:
+                return here[0], ""
+            if options:
+                return None, f"it cannot run on this machine; it can run on {', '.join(p.label for p in options)} (choose one with --place)"
+            return None, why
         chosen = next((p for p in options if p.label == choice), None)
         if chosen is None:
-            return None, f"{choice} is not one of the places it can run here ({', '.join(p.label for p in options)})"
+            listed = f" ({', '.join(p.label for p in options)})" if options else ""
+            reason = reasons.get(choice.split(":")[0]) or (why if not options else "")
+            return None, f"{choice} is not one of the places it can run{listed}" + (f": {reason}" if reason else "")
         return chosen, ""
+
+    def uploads(self, manifest: Manifest, placement: Placement) -> tuple[list[str], str | None]:
+        """The kinds of data that leave this machine when the node runs at `placement`, and where they go (None: nothing
+        leaves): to the API it calls (its manifest's privacy), or with its inputs to the other machine it runs on. Running
+        on another machine always sends something there, even inputs that hold none of the kinds."""
+        if manifest.privacy.external_upload:
+            return list(manifest.privacy.external_upload), manifest.service or "an API"
+        if placement.backend.remote:
+            return placement.backend.sends(manifest), placement.backend.title
+        return [], None
 
     def cache_key(self, node: CompiledNode, placement: Placement, inputs: dict[str, Artifact]) -> str:
         m = node.manifest
@@ -319,9 +358,9 @@ class Coordinator:
 
     def _start(self, run_id: str, graph: Graph, node: CompiledNode, tasks: dict[str, dict]):
         t, m = tasks[node.id], node.manifest
-        placement, why = self.place(m, node.spec.backend, node.spec.place)
+        placement, why = self.place(m, node.spec.backend, node.spec.place, graph.spec.policy)
         if placement is None:
-            self._fail(run_id, node.id, "input", f"no backend can run {m.ref} here: {why}")
+            self._fail(run_id, node.id, "input", f"no backend can run {m.ref}: {why}")
             return
         inputs = self._inputs(run_id, graph, node, tasks)
         key = self.cache_key(node, placement, inputs)
@@ -338,11 +377,12 @@ class Coordinator:
 
         # consent to send data off is the run's (--allow-uploads), checked when the node is about to run: a resume or a
         # rerun, or a cache that is gone, cannot make a node upload in a run that was not allowed to
-        if m.privacy.external_upload and not self.store.db.execute("SELECT allow_uploads FROM runs WHERE id=?", (run_id,)).fetchone()[0]:
-            self._fail(run_id, node.id, "policy", f"{m.ref} sends {', '.join(m.privacy.external_upload)} off this machine, "
+        sent, to = self.uploads(m, placement)
+        if to and not self.store.db.execute("SELECT allow_uploads FROM runs WHERE id=?", (run_id,)).fetchone()[0]:
+            self._fail(run_id, node.id, "policy", f"{m.ref} sends {', '.join(sent) or 'its inputs'} off this machine (to {to}), "
                                                   "and this run may not (--allow-uploads)")
             return
-        if not self._fits(run_id, graph, m, tasks):
+        if not self._fits(run_id, graph, m, placement, tasks):
             return   # stays ready; started when running nodes free their share
         estimate = placement.backend.estimate(m, placement.runner, inputs)
         estimate.cost_usd += manifest_cost(m, node.config, inputs)
@@ -386,9 +426,14 @@ class Coordinator:
             self._set(run_id, node.id, state="running", handle=dumps(handle), started_at=time.time(), cost_usd=estimate.cost_usd)
         self.store.event(run_id, node.id, "task.started", f"attempt {attempt} on {placement.backend.kind} ({placement.runner.accelerator})")
 
-    def _fits(self, run_id: str, graph: Graph, m: Manifest, tasks: dict[str, dict]) -> bool:
-        caps = next(iter(self.backends.values())).probe_capabilities()
-        running = [graph.nodes[i].manifest.resources for i, x in tasks.items() if x["state"] in ("running", "leased")]
+    def _fits(self, run_id: str, graph: Graph, m: Manifest, placement: Placement, tasks: dict[str, dict]) -> bool:
+        """Within the CPU, memory and GPU of the machine it would run on, beside the nodes already running there."""
+        machine = placement.backend.machine
+        if machine is None:
+            return True   # a machine of its own
+        caps = placement.backend.probe_capabilities()
+        running = [graph.nodes[i].manifest.resources for i, x in tasks.items() if x["state"] in ("running", "leased")
+                   and x["runner"] and self.backends[x["runner"].split(":")[0]].machine == machine]
         if not running:
             return True   # a node bigger than the machine still runs, alone
         r = m.resources

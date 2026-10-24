@@ -395,7 +395,7 @@ def test_a_node_runs_where_it_is_placed_among_the_places_it_can_run_here(tmp_pat
     run_id, _ = run(coord, graph_doc(tmp_path, [node("self:cpu")]))   # same config: another place is another result
     assert coord._tasks(run_id)["a"]["runner"] == "self:cpu"
     placement, why = coord.place(m, "auto", "self:mps")
-    assert placement is None and why == "self:mps is not one of the places it can run here (self:cuda, self:cpu)"
+    assert placement is None and why == "self:mps is not one of the places it can run (self:cuda, self:cpu)"
 
 
 def test_an_estimate_counts_the_seconds_a_node_ran_not_time_no_coordinator_watched(tmp_path):
@@ -425,7 +425,8 @@ def test_a_plan_estimates_each_node_from_its_measured_runs_here(tmp_path):
     est = planned["captions"]
     assert est.estimate_basis == "median of 2 runs of test.refine@1.0.0 on self:cpu here"
     assert 0.3 <= est.estimate_s < 5                 # about a run's seconds: the same 2 s video each time
-    assert est.estimates == {"self:cpu": {"estimate_s": est.estimate_s, "estimate_basis": est.estimate_basis}}
+    assert est.estimates == {"self:cpu": {"estimate_s": est.estimate_s, "estimate_basis": est.estimate_basis, "cost_usd": 0.0,
+                                          "uploads": ["frames"], "upload_to": "an API"}}   # test.refine declares frames, names no service
 
 
 def test_a_plan_estimates_every_place_a_node_could_be_moved_to(tmp_path, rec):
@@ -434,7 +435,8 @@ def test_a_plan_estimates_every_place_a_node_could_be_moved_to(tmp_path, rec):
     node = {**work("a", uses="test.two@1.0.0", record_dir=rec), "place": "self:cpu"}
     planned = make_plan(coord, compile_graph(graph_doc(tmp_path, [node]), coord.registry)).nodes[0]
     assert planned.place == "self:cpu"
-    assert planned.estimates == {p: {"estimate_s": None, "estimate_basis": f"no runs of test.two@1.0.0 on {p} here yet"}
+    assert planned.estimates == {p: {"estimate_s": None, "estimate_basis": f"no runs of test.two@1.0.0 on {p} here yet",
+                                     "cost_usd": 0.0, "uploads": [], "upload_to": None}
                                  for p in ("self:cuda", "self:cpu")}   # the place not chosen too
 
 

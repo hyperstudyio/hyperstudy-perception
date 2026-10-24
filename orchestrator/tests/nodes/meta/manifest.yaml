@@ -1,0 +1,9 @@
+id: test.meta
+version: 1.0.0
+description: Reads only a video's format and timing (media.v1), which holds none of the upload kinds (remote consent tests)
+inputs: {m: media.v1}
+outputs: {out: json.v1}
+runners:
+  - {kind: self, entry: ../work/node.py}
+models:
+  - {id: test-model, licence_mode: commercial-ok}

@@ -214,7 +214,7 @@ def test_place_chooses_where_a_node_runs_and_a_place_it_cannot_run_is_a_plan_pro
     assert plan["nodes"][0]["place"] == "self:cpu" and plan["nodes"][0]["options"] == ["self:cpu"]
     assert cli("plan", str(g), "--place", "a=self:mps") == 1
     [plan] = lines(capsys)
-    assert plan["ok"] is False and "self:mps is not one of the places it can run here" in plan["nodes"][0]["why_not"]
+    assert plan["ok"] is False and "self:mps is not one of the places it can run (self:cpu)" in plan["nodes"][0]["why_not"]
     assert cli("plan", str(g), "--place", "zz=self:cpu") == 1
     [err] = lines(capsys)
     assert err["type"] == "error" and "the graph has no node 'zz'" in err["problems"][0]

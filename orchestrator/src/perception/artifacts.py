@@ -29,6 +29,9 @@ class ArtifactType:
     shape: Literal["file", "tree", "source"]   # source: an input that stays where it is (the video), never copied
     validate: Callable[[Path], list[str]]
     layer: str | None = None                    # the bundle layer this type is, if any
+    # the kinds of data it holds, in policy.allow_upload's terms: what leaves the machine when a node that reads it runs
+    # elsewhere (a lab server, a cloud machine). None: anything (a JSON or text file could hold any of them)
+    kinds: tuple[str, ...] | None = None
 
 
 @cache
@@ -97,16 +100,26 @@ MEDIA_SCHEMA = {
     },
 }
 
+# What each layer can hold. Shots carry captions, which describe and name the people on screen; prosody measures the
+# audio and carries each utterance's words; the waveform is a measure of the audio. Every layer is listed: a new one must say what it holds.
+LAYER_KINDS: dict[str, tuple[str, ...]] = {
+    "shots": ("transcript", "faces"), "transcript": ("transcript",), "speakers": ("transcript",), "text": ("transcript",),
+    "faces": ("faces", "embeddings"), "bodies": (), "hands": (), "gestures": (), "facing": (), "gaze": (), "objects": (),
+    "sounds": (), "prosody": ("audio", "transcript"), "waveform": ("audio",),
+}
+assert set(LAYER_KINDS) == set(BUNDLE_LAYERS)
+
 TYPES: dict[str, ArtifactType] = {
-    "video.v1": ArtifactType("video.v1", "source", lambda p: [] if p.is_file() else ["missing"]),
-    "media.v1": ArtifactType("media.v1", "file", _json_schema(MEDIA_SCHEMA)),
-    "audio.wav.v1": ArtifactType("audio.wav.v1", "file", _wav),
+    "video.v1": ArtifactType("video.v1", "source", lambda p: [] if p.is_file() else ["missing"], kinds=("video",)),
+    "media.v1": ArtifactType("media.v1", "file", _json_schema(MEDIA_SCHEMA), kinds=()),   # the video's format and timing
+    "audio.wav.v1": ArtifactType("audio.wav.v1", "file", _wav, kinds=("audio",)),
     # small images (keyframes, crops) a layer refers to as "assets/<path>"; export merges every assets.v1 tree into the
-    # bundle's assets/ directory
-    "assets.v1": ArtifactType("assets.v1", "tree", _tree_of((".jpg", ".jpeg", ".png", ".webp"))),
+    # bundle's assets/ directory. Either kind of image: both kinds are counted
+    "assets.v1": ArtifactType("assets.v1", "tree", _tree_of((".jpg", ".jpeg", ".png", ".webp")), kinds=("frames", "faces")),
     "json.v1": ArtifactType("json.v1", "file", _json_schema({})),
     "text.v1": ArtifactType("text.v1", "file", lambda p: []),
-    **{f"bundle.{name}@0.1": ArtifactType(f"bundle.{name}@0.1", "file", _layer(name), layer=name) for name in BUNDLE_LAYERS},
+    **{f"bundle.{name}@0.1": ArtifactType(f"bundle.{name}@0.1", "file", _layer(name), layer=name, kinds=LAYER_KINDS[name])
+       for name in BUNDLE_LAYERS},
 }
 
 

@@ -54,7 +54,30 @@ def this_platform() -> str:
 
 
 class Backend(ABC):
-    kind: str
+    kind: str            # names the backend in a place (`kind:accelerator`): unique among a coordinator's backends
+    runner_kind: str = ""   # the manifest runners it runs (default: its kind); a remote machine runs `native` ones
+    remote = False       # runs elsewhere: a node's inputs leave this machine to reach it
+    title = "This machine"   # where it is, for people: "gpu1 (SSH)", "Cloud GPU (AWS L4)"
+
+    @property
+    def machine(self) -> str | None:
+        """Which machine's CPU, memory and GPU a node placed here shares with other nodes; None when every node gets a
+        machine of its own (a cloud machine started for it)."""
+        return "local"
+
+    def sends(self, manifest: Manifest) -> list[str]:
+        """The kinds of data that leave this machine when the node runs here: its inputs', for a remote machine (every
+        kind, for an input that could hold anything)."""
+        if not self.remote:
+            return []
+        from ..artifacts import get
+        from ..ir import UPLOAD_KINDS
+        kinds = [get(t).kinds for t in manifest.inputs.values()]
+        return sorted(UPLOAD_KINDS) if None in kinds else sorted({k for ks in kinds for k in ks})
+
+    def remote_refusal(self, manifest: Manifest) -> str:
+        """Why a node may not run on this remote machine at all, or "" (local backends: never)."""
+        return ""
 
     @abstractmethod
     def probe_capabilities(self) -> Capabilities: ...
@@ -68,9 +91,12 @@ class Backend(ABC):
         """Every runner of the manifest this backend can use here, accelerated ones first; why none, when none."""
         caps = self.probe_capabilities()
         reasons, usable = [], []
-        mine = [r for r in manifest.runners if r.kind == self.kind]
+        kind = self.runner_kind or self.kind
+        mine = [r for r in manifest.runners if r.kind == kind]
         if not mine:
-            return [], f"no {self.kind} runner"
+            return [], f"no {kind} runner"
+        if refusal := self.remote_refusal(manifest):
+            return [], refusal
         for r in sorted(mine, key=lambda r: r.accelerator == "cpu"):
             if caps.platform not in r.platforms:
                 reasons.append(f"{r.accelerator} runner is for {', '.join(r.platforms)}, not {caps.platform}")
