@@ -1,9 +1,11 @@
 import os
+import time
 
 from perception_node import Node, NodeError
 
 with Node() as node:
     doc = node.input_json("shots")
+    time.sleep(node.config["sleep"])
     if node.request["attempt"] <= node.config["fail_until"]:
         if node.config["crash"]:
             os._exit(3)                                  # killed mid-call: no response, so no usage reported

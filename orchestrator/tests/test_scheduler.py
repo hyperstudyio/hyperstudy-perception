@@ -500,6 +500,26 @@ def test_a_billable_node_that_dies_without_a_response_is_charged_its_reservation
     assert spent == pytest.approx(0.5)
 
 
+def test_a_billable_node_killed_by_a_cancel_is_charged_its_reservation(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id = start(coord, refine_graph(video, {"sleep": 30}, max_cost_usd=1))   # 1 shot x $0.5 reserved
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
+        while coord._tasks(run_id)["captions"]["state"] != "running":
+            assert time.time() < deadline, "the node never started"
+            await asyncio.sleep(0.02)
+        coordinator(tmp_path).cancel(run_id)
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)   # it may have spent what was reserved before it was killed
+
+
 def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
     from perception import export
     video = tmp_path / "clip.mp4"
