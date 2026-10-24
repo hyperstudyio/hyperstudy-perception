@@ -462,8 +462,10 @@ def cmd_hosts(args):
             q = shlex.quote
             root = q(host.root)
             # not while an attempt's folder is there: a node running (or its watchdog not done) still uses them
-            script = (f'if [ -n "$(ls -A {root}/work 2>/dev/null)" ]; then echo "a node is running there" >&2; exit 4; fi; '
-                      f"rm -rf {root}/objects {root}/code")
+            # only perception's own root (hosts.MARKER), and inputs are read-only there (made writable to be removed)
+            script = (f'[ -e {root}/.hyperstudy-perception ] || {{ echo "{host.root} is not marked as perception\'s" >&2; exit 4; }}; '
+                      f'if [ -n "$(ls -A {root}/work 2>/dev/null)" ]; then echo "a node is running there" >&2; exit 4; fi; '
+                      f"chmod -R u+w {root}/objects 2>/dev/null; rm -rf {root}/objects {root}/code")
             out = subprocess.run([*ssh_command(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
             if out.returncode:
                 raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")

@@ -12,7 +12,7 @@ refused if someone else owns it, so the code, inputs and markers kept there can 
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
                          or by the host's watchdog when no driver has asked about it for a while
 `perception hosts clean NAME` removes the root's inputs and code (what stays on the host between runs), unless a node
-is running there. A host with a node running there is not removed either: that node could no longer be stopped.
+is running there or the root is not marked as perception's. A host with a node running there is not removed either: that node could no longer be stopped.
 """
 
 from __future__ import annotations
@@ -98,13 +98,20 @@ def check_names(name: str, dest: str, root: str):
         raise HostError(f"a host's root is a plain path below / or ~ (its own folder: `hosts clean` empties it): {root!r}")
 
 
-# The root is private: created 0700, and refused if someone else owns it. Only the user can then write the code, inputs and
-# completion markers kept there, so they are trusted across runs; and others on a shared server cannot read the inputs.
+# The root is perception's own and private. It is used only if it is missing, empty or already marked as perception's
+# (MARKER): a folder of the user's own given by mistake is never changed or cleaned. It is created 0700, and refused if
+# someone else owns it: only the user can then write the code, inputs and completion markers kept there, so they are
+# trusted across runs, and others on a shared server cannot read the inputs.
+MARKER = ".hyperstudy-perception"
 PRIVATE_ROOT = r"""
 umask 077
+if [ -d "$root" ] && [ ! -e "$root/.hyperstudy-perception" ] && [ -n "$(ls -A "$root")" ]; then
+  echo "$root already holds other files: give perception a folder of its own (--root)" >&2; exit 3
+fi
 mkdir -p "$root"
 if [ "$(ls -ldn "$root" | awk '{print $3}')" != "$(id -u)" ]; then echo "$root belongs to someone else" >&2; exit 3; fi
 chmod 700 "$root"
+touch "$root/.hyperstudy-perception"
 """
 
 

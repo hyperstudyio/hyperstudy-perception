@@ -25,7 +25,7 @@ from pathlib import Path
 from ..hosts import Host, ssh_command
 from ..manifests import Manifest, Runner
 from .base import Capabilities
-from .native import REPO, NativeBackend, sdk_hash
+from .native import REPO, NativeBackend
 
 
 def code_files(manifest: Manifest, runner: Runner) -> list[str]:
@@ -89,11 +89,13 @@ class SshBackend(NativeBackend):
         return ""
 
     def identity(self, manifest: Manifest, runner: Runner) -> str:
-        lock = REPO / runner.env / "uv.lock" if runner.env else None
-        h = hashlib.sha256(manifest.code_hash().encode())
-        h.update(sdk_hash().encode())
-        h.update(lock.read_bytes() if lock and lock.exists() else b"no lock")
-        h.update(f"{runner.accelerator} {self.host.caps.platform}".encode())
+        """Exactly the code that runs there (what code_files sends: the node's tracked files, a shared entry script, its
+        uv project with its lock, the SDK), the accelerator and the host's platform."""
+        try:
+            code = code_hash(code_files(manifest, runner))
+        except RuntimeError as e:   # not a git checkout: nothing could be sent, and submit says so; no cache entry is shared
+            code = f"unsendable {e}"
+        h = hashlib.sha256(f"{code} {runner.accelerator} {self.host.caps.platform}".encode())
         return f"{self.kind}:{h.hexdigest()[:16]}"
 
     def command(self, manifest: Manifest, runner: Runner, request: Path) -> list[str]:

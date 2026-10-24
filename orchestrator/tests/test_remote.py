@@ -473,6 +473,63 @@ def test_a_host_unreachable_when_the_attempt_starts_is_waited_for(tmp_path, host
     assert coord._tasks(run_id)["a"]["attempt"] == 1 and "cannot be reached" in log_of(coord, run_id, "a")
 
 
+def test_inputs_kept_on_a_host_are_read_only_and_still_cleaned(tmp_path, host, monkeypatch, capsys):
+    from perception.cli import main
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    assert main(["hosts", "add", "lab", "lab"]) == 0
+    coord = Coordinator(Store(tmp_path / "home"), Registry.load(NODES),
+                        [SelfBackend(), SshBackend(Hosts(tmp_path / "home").load()["lab"], runner_kind="self", python=sys.executable)],
+                        tick_s=0.02, backoff_s=0.01)
+    run_id = start(coord, video_graph(tmp_path, place="ssh-lab:cpu"))
+    assert asyncio.run(coord.run(run_id)) == "succeeded"
+    objects = host / "home" / ".cache" / "hyperstudy-perception" / "objects"
+    [stored] = objects.glob("*/data")
+    for path in (stored, stored.parent):                    # a node cannot change it through its link, as in the store
+        assert path.stat().st_mode & 0o222 == 0, path
+    assert main(["hosts", "clean", "lab"]) == 0
+    assert not objects.exists()
+
+
+def test_a_root_that_already_holds_other_files_is_never_taken_changed_or_cleaned(tmp_path, host, monkeypatch, capsys):
+    from perception.cli import main
+    mine = host / "home" / "projects"
+    (mine / "code").mkdir(parents=True)
+    (mine / "code" / "analysis.py").write_text("my own work")
+    mine.chmod(0o750)
+    with pytest.raises(HostError, match="already holds other files"):
+        Hosts(tmp_path / "home").add("lab", "lab", "projects")
+    assert mine.stat().st_mode & 0o777 == 0o750
+    # nor cleaned, if hosts.json names it some other way
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    Hosts(tmp_path / "home").save({"lab": Host("lab", "lab", str(mine), lab(host).caps, 0)})
+    assert main(["hosts", "clean", "lab"]) == 1
+    assert "not marked as perception's" in capsys.readouterr().err
+    assert (mine / "code" / "analysis.py").read_text() == "my own work"
+
+
+def test_an_input_that_changed_fails_once_as_an_input_error_not_a_crash_to_retry(tmp_path, host):
+    coord = coordinator(tmp_path, host)
+    doc = video_graph(tmp_path, place="ssh-lab:cpu")
+    doc["policy"]["retries"] = 2
+    run_id = start(coord, doc)
+    Path(doc["inputs"]["video"]["uri"]).write_bytes(b"another cut of the film")
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    t = coord._tasks(run_id)["shots"]
+    assert (t["error_code"], t["attempt"]) == ("input", 1) and "it changed since the run read it" in t["error"]
+
+
+def test_a_remote_identity_is_the_code_that_is_sent(tmp_path, host, monkeypatch):
+    import perception.backends.remote as remote
+    backend = SshBackend(lab(host), runner_kind="self", python=sys.executable)
+    m = Registry.load(NODES).get("test.gpu@1.0.0")                # its entry is ../work/node.py
+    runner = m.runners[0]
+    assert "orchestrator/tests/nodes/work/node.py" in remote.code_files(m, runner)
+    before = backend.identity(m, runner)
+    real = remote.code_hash
+    monkeypatch.setattr(remote, "code_hash", lambda files: real(files) + "-changed")   # what is sent changed
+    assert backend.identity(m, runner) != before
+
+
 def test_prosody_counts_as_transcript_too():
     from perception.artifacts import get
     assert set(get("bundle.prosody@0.1").kinds) == {"audio", "transcript"}   # each utterance's words
@@ -496,7 +553,7 @@ def test_a_hosts_root_is_private_to_the_user_and_one_someone_else_owns_is_refuse
     root = host / "home" / ".cache" / "hyperstudy-perception"
     Hosts(tmp_path / "home").add("lab", "lab")
     assert root.stat().st_mode & 0o777 == 0o700
-    with pytest.raises(HostError, match="belongs to someone else"):
+    with pytest.raises(HostError, match="already holds other files"):
         Hosts(tmp_path / "home").add("lab2", "lab", "/usr")   # root's, not ours: never used, never changed
 
     coord = coordinator(tmp_path, host)

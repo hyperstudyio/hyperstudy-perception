@@ -29,6 +29,8 @@ import time
 from pathlib import Path
 
 POLL_S = 3.0
+# exit codes the scripts here use for a refusal that would happen again: the node's error code for each
+REFUSALS = {3: "input", 5: "input"}
 
 
 class Canceled(Exception):
@@ -39,11 +41,19 @@ class Unreachable(Exception):
     pass
 
 
+class Refused(Exception):
+    """The host answered, and the attempt cannot go on: the same would happen again (an input that changed since the run
+    read it, a root that is not the user's). It fails as the node's own error, not a crash to retry."""
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 # Publish a folder in one step: rename $1 to $2 unless $2 exists, in which case $1 is dropped (the same content, by its
 # hash, arrived first). rename(2) onto a folder that is not empty fails, so a published folder is never replaced or
 # nested into: GNU mv -T on Linux, perl's rename on a Mac (BSD mv has no -T and would move $1 into $2).
 PUBLISH = r"""publish() {
-  mv -T "$1" "$2" 2>/dev/null || perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$1" "$2" 2>/dev/null || { rm -rf "$1"; [ -e "$2/.complete" ]; }
+  mv -T "$1" "$2" 2>/dev/null || perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$1" "$2" 2>/dev/null || { chmod -R u+w "$1"; rm -rf "$1"; [ -e "$2/.complete" ]; }
 }"""
 
 # The host's backstop for a node its driver lost (the laptop gone, a cancel that could not reach the host): every
@@ -90,6 +100,8 @@ class Driver:
         out = subprocess.run([*self.spec["ssh"], self.dest, f"sh -c {shlex.quote(script)}"], input=data, capture_output=True, timeout=600)
         if out.returncode == 255:
             raise Unreachable(out.stderr.decode(errors="replace").strip()[-300:])
+        if check and out.returncode in REFUSALS:
+            raise Refused(REFUSALS[out.returncode], out.stderr.decode(errors="replace").strip()[-500:])
         if check and out.returncode:
             raise RuntimeError(f"on {self.spec['host']}: {script[:120]}... exited {out.returncode}: "
                                f"{out.stderr.decode(errors='replace').strip()[-500:]}")
@@ -151,7 +163,9 @@ class Driver:
                 f"got=$( (sha256sum {q(incoming)}/data 2>/dev/null || shasum -a 256 {q(incoming)}/data) | cut -d' ' -f1)\n"
                 f"[ \"$got\" = {q(entry['sha256'])} ] || {{ rm -rf {q(incoming)}; echo \"{name} arrived as $got, not {entry['sha256']}: "
                 f"it changed since the run read it\" >&2; exit 5; }}\n")
-            self.sh(f"{PUBLISH}\n{verify}touch {q(incoming)}/.complete && publish {q(incoming)} {q(folder)}")
+            # read-only once published, as the local store's objects are: a node that wrote to its input (through its
+            # link) would change it for every later run on this host, under the same sha256
+            self.sh(f"{PUBLISH}\n{verify}touch {q(incoming)}/.complete && publish {q(incoming)} {q(folder)} && chmod -R a-w {q(folder)}")
         return out
 
     def start(self, inputs: dict[str, dict]):
@@ -323,6 +337,16 @@ echo $pid
         except Unreachable as e:
             say(f"{self.spec['host']} could not be reached for {self.spec['lost_after_s']:.0f} s ({e}): giving up on this attempt")
             return 75
+        except Refused as e:
+            say(str(e))
+            self.fail(e.code, str(e))
+            return 1
+
+    def fail(self, code: str, message: str):
+        """A response saying the attempt failed, as a node writes one: the coordinator does not retry it."""
+        tmp = self.local / "response.json.tmp"
+        tmp.write_text(json.dumps({"ok": False, "usage": {}, "error": {"code": code, "message": message}}))
+        tmp.replace(self.local / "response.json")
 
 
 def main(argv: list[str] | None = None) -> int:
