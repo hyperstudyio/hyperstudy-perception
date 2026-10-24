@@ -479,9 +479,22 @@ echo $pid
             self.fail(e.code, str(e))
             return 1
         finally:
+            self.discard_incoming()
             if cloud:
                 self.teardown(cloud)
             self.publish_response()
+
+    def discard_incoming(self):
+        """This attempt's own uploads that never finished (a cancel, a failure): a partial copy of an input must not stay
+        on the host. One that finished was renamed into place, so nothing published is touched."""
+        if not self.root:
+            return   # a cloud machine that never started
+        q = shlex.quote
+        try:
+            self.sh(f"chmod -R u+w {q(self.root)}/objects/.incoming-{q(self.tag)}-* 2>/dev/null; "
+                    f"rm -rf {q(self.root)}/objects/.incoming-{q(self.tag)}-* {q(self.root)}/code/.incoming-{q(self.tag)}", check=False)
+        except (Unreachable, subprocess.TimeoutExpired) as e:
+            say(f"could not remove this attempt's unfinished uploads on {self.spec['host']} ({e}): perception hosts clean removes them")
 
     def fail(self, code: str, message: str):
         """A response saying the attempt failed, as a node writes one: the coordinator does not retry it (published as

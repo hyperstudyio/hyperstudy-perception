@@ -10,7 +10,9 @@ refused if someone else owns it, so the code, inputs and markers kept there can 
     code/<hash>/         the files git tracks for the node, its uv project and the node SDK, by content
     objects/<sha256>/data   inputs, by content: the video is sent once per host (each attempt links it under its name)
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
-                         or by the host's watchdog when no driver has asked about it for a while
+                         or by the host's watchdog when no driver has asked about it for a while (a finished node's
+                         results wait a day for its driver)
+An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*) are removed when it ends.
 `perception hosts clean NAME` removes the root's inputs and code (what stays on the host between runs), unless a node
 is running there or the root is not marked as perception's. A host with a node running there is not removed either: that node could no longer be stopped.
 """
