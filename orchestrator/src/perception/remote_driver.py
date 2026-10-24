@@ -31,6 +31,7 @@ from pathlib import Path
 POLL_S = 3.0
 # exit codes the scripts here use for a refusal that would happen again: the node's error code for each
 REFUSALS = {3: "input", 5: "input"}
+KEEP_S = 24 * 3600   # how long a finished node's results wait on the host for a driver that lost touch (WATCHDOG)
 
 
 class Canceled(Exception):
@@ -57,22 +58,34 @@ PUBLISH = r"""publish() {
 }"""
 
 # The host's backstop for a node its driver lost (the laptop gone, a cancel that could not reach the host): every
-# `every` seconds, while the attempt's folder exists, if no driver has written the heartbeat (alive) for `lost` seconds,
-# stop the node's process group (if that pid is still this attempt's node) and remove the folder, outputs and all.
-WATCHDOG = r"""w=$1 pid=$2 lost=$3 every=$4
+# `every` seconds, while the attempt's folder exists, if no driver has written the heartbeat (alive) for `lost` seconds
+# and the node is still running, stop its process group (only if that pid is still this attempt's node) and remove the
+# folder: its outputs are partial. A node that finished keeps its folder for `keep` seconds, for a driver that comes back
+# (a laptop that slept) to fetch: its results are whole, and running it again would cost the GPU time again.
+WATCHDOG = r"""w=$1 pid=$2 lost=$3 every=$4 keep=$5
 while [ -d "$w" ]; do
   sleep "$every"
   [ -d "$w" ] || exit 0
-  last=$(cat "$w/alive" 2>/dev/null || echo 0)
-  if [ $(( $(date +%s) - last )) -gt "$lost" ]; then
-    if ps -ww -p "$pid" -o command= 2>/dev/null | grep -qF -- "$w/request.json"; then
-      kill -s TERM -- "-$pid" 2>/dev/null; sleep 5; kill -s KILL -- "-$pid" 2>/dev/null
-    fi
-    rm -rf "$w"
-    rmdir "${w%/*}" "${w%/*/*}" 2>/dev/null   # the run's folders too, once empty (as fetch does)
-    exit 0
+  last=$(cat "$w/alive" 2>/dev/null)
+  case "$last" in ''|*[!0-9]*) continue;; esac   # not a time (being written): never read as 0, which is long ago
+  age=$(( $(date +%s) - last ))
+  if ps -ww -p "$pid" -o command= 2>/dev/null | grep -qF -- "$w/request.json"; then
+    [ "$age" -gt "$lost" ] || continue
+    kill -s TERM -- "-$pid" 2>/dev/null; sleep 5; kill -s KILL -- "-$pid" 2>/dev/null
+  elif [ "$age" -le "$keep" ]; then
+    continue
   fi
+  rm -rf "$w"
+  rmdir "${w%/*}" "${w%/*/*}" 2>/dev/null   # the run's folders too, once empty (as fetch does)
+  exit 0
 done"""
+
+
+def heartbeat_sh(attempt: str) -> str:
+    """sh that writes the heartbeat the watchdog reads, in one step (written beside it, then renamed): `date > alive`
+    empties the file first, and a watchdog reading it then would see no time at all."""
+    a = shlex.quote(attempt)
+    return f"date +%s > {a}/alive.tmp 2>/dev/null && mv -f {a}/alive.tmp {a}/alive 2>/dev/null"
 
 
 def say(msg: str):
@@ -213,7 +226,7 @@ done
 mkdir -p {q(self.attempt)}/out
 {links}
 cat > {q(req)}
-date +%s > {q(self.attempt)}/alive
+{heartbeat_sh(self.attempt)}
 cd {q(self.code + '/' + s['node_dir'])}
 # its own session, so its whole process tree can be stopped (kill -s TERM -- -PID) and a closed connection does not
 # reach it: setsid on Linux, perl's on a Mac (no setsid command there). Not a group leader in the background, so
@@ -224,7 +237,7 @@ pid=$!
 echo $pid > {q(self.attempt)}/pid
 # a cancel that came while this script ran (and found no pid yet) left a stop mark: stop the node now
 if [ -e {q(self.attempt)}/stop ]; then kill -s TERM -- "-$pid" 2>/dev/null || true; fi
-nohup "$@" sh -c {q(WATCHDOG)} watchdog {q(self.attempt)} "$pid" {lost} {every} > /dev/null 2>&1 < /dev/null &
+nohup "$@" sh -c {q(WATCHDOG)} watchdog {q(self.attempt)} "$pid" {lost} {every} {KEEP_S} > /dev/null 2>&1 < /dev/null &
 echo $pid
 """
         out = self.sh(script, data=json.dumps(request, indent=1).encode())
@@ -271,8 +284,8 @@ echo $pid
         def beat():
             while not done.wait(every):
                 try:
-                    self.sh(f"date +%s > {shlex.quote(self.attempt)}/alive 2>/dev/null", check=False)
-                except Exception:
+                    self.sh(heartbeat_sh(self.attempt), check=False)
+                except (Unreachable, subprocess.TimeoutExpired):
                     pass   # a dropped connection: the step itself waits it out
         thread = threading.Thread(target=beat, daemon=True)
         thread.start()
@@ -288,7 +301,7 @@ echo $pid
         offset = 0
         while True:
             # the heartbeat first: the host's watchdog ends a node no driver has asked about for too long
-            check = (f"date +%s > {q(self.attempt)}/alive 2>/dev/null; "
+            check = (f"{heartbeat_sh(self.attempt)}; "
                      f"if kill -0 {self.pid} 2>/dev/null && ps -ww -p {self.pid} -o command= | grep -qF -- {q(req)}; "
                      f"then echo running; else echo exited; fi; tail -c +{offset + 1} {q(log)} 2>/dev/null || true")
             try:

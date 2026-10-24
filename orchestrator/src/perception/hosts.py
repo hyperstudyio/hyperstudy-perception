@@ -105,7 +105,9 @@ def check_names(name: str, dest: str, root: str):
 MARKER = ".hyperstudy-perception"
 PRIVATE_ROOT = r"""
 umask 077
-if [ -d "$root" ] && [ ! -e "$root/.hyperstudy-perception" ] && [ -n "$(ls -A "$root")" ]; then
+# the contents first, then the marker: perception writes there only after the marker exists, and never removes it, so
+# a root that another attempt is setting up at this moment is never taken for someone else's
+if [ -d "$root" ] && [ -n "$(ls -A "$root")" ] && [ ! -e "$root/.hyperstudy-perception" ]; then
   echo "$root already holds other files: give perception a folder of its own (--root)" >&2; exit 3
 fi
 mkdir -p "$root"

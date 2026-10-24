@@ -106,7 +106,7 @@ class SshBackend(NativeBackend):
         uv project with its lock, the SDK), the accelerator and the host's platform."""
         try:
             code = code_hash(code_files(manifest, runner))
-        except RuntimeError as e:   # not a git checkout: nothing could be sent, and submit says so; no cache entry is shared
+        except (RuntimeError, OSError) as e:   # nothing could be sent (not a git checkout, a tracked file deleted): submit says so; no cache entry is shared
             code = f"unsendable {e}"
         h = hashlib.sha256(f"{code} {runner.accelerator} {self.host.caps.platform}".encode())
         return f"{self.kind}:{h.hexdigest()[:16]}"

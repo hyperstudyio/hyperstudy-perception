@@ -598,6 +598,41 @@ def test_a_host_whose_home_is_not_a_plain_path_is_refused(tmp_path, host, monkey
         Hosts(tmp_path / "home").add("lab", "lab")
 
 
+def watchdog(tmp_path, alive: str, lost=6, keep=3600, seconds=2.5, node=None) -> Path:
+    """Run the host's watchdog over a fake attempt folder for a few seconds; the folder, or where it was."""
+    from perception.remote_driver import WATCHDOG
+    w = tmp_path / "work" / "r" / "a" / "1"
+    w.mkdir(parents=True, exist_ok=True)
+    (w / "alive").write_text(alive)
+    pid = node.pid if node else 999999
+    dog = subprocess.Popen(["sh", "-c", WATCHDOG, "watchdog", str(w), str(pid), str(lost), "1", str(keep)])
+    time.sleep(seconds)
+    dog.kill()
+    dog.wait()
+    return w
+
+
+def test_the_watchdog_never_reads_a_heartbeat_being_written_as_long_ago(tmp_path):
+    assert watchdog(tmp_path, "").exists()                  # emptied by `date > alive` at that moment
+
+
+def test_the_watchdog_keeps_a_finished_nodes_results_for_a_driver_that_comes_back(tmp_path):
+    old = str(int(time.time()) - 3600)                      # no driver for an hour: the laptop slept
+    assert watchdog(tmp_path / "kept", old, keep=24 * 3600).exists()
+    assert not watchdog(tmp_path / "gone", old, keep=60).exists()   # past keep, removed
+
+
+def test_the_watchdog_stops_a_running_node_no_driver_watches(tmp_path):
+    w = tmp_path / "work" / "r" / "a" / "1"
+    w.mkdir(parents=True)
+    node = subprocess.Popen(["sh", "-c", "sleep 60; :", str(w / "request.json")], start_new_session=True)
+    try:
+        assert not watchdog(tmp_path, str(int(time.time()) - 60), lost=6, seconds=8, node=node).exists()
+        assert node.wait(timeout=5) is not None
+    finally:
+        node.kill()
+
+
 def test_prosody_counts_as_transcript_too():
     from perception.artifacts import get
     assert set(get("bundle.prosody@0.1").kinds) == {"audio", "transcript"}   # each utterance's words
