@@ -1,0 +1,13 @@
+id: test.refine
+version: 1.0.0
+description: Refines a shots layer (adds captions), as an API node would; declares a cost per shot and an upload
+inputs: {shots: bundle.shots@0.1}
+outputs: {shots: bundle.shots@0.1}
+config:
+  usd: {type: number, default: 0.01, description: "what the node reports having spent"}
+runners:
+  - {kind: self, entry: node.py}
+privacy: {external_upload: [frames]}
+cost: {usd: 0.5, per: shot, input: shots}
+models:
+  - {id: test-captioner, licence_mode: api-terms}

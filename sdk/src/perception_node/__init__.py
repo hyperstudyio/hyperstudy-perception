@@ -95,11 +95,16 @@ class Node:
         return p
 
     def producer(self, timings: dict | None = None, device: str | None = None) -> dict:
-        """The bundle layer `producer` block: stage and models from the manifest, plus what this run recorded."""
+        """The bundle layer `producer` block: stage and models from the manifest, and the device.
+
+        Deliberately without the run time or timings: a stored layer must be the same bytes whenever the same inputs
+        produce the same data, or every downstream node would miss the cache after an upstream rerun. Timings go to
+        the response's usage; `perception export` writes run_at and timings into the bundle's copy of the layer."""
+        if timings:
+            self._usage.setdefault("timings", {}).update(timings)
         base = self.request.get("producer", {})
         return {**base, "models": self._models or base.get("models", []), "config": self.config,
-                "device": device, "run_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
-                "timings": timings or {}}
+                "device": device, "run_at": None, "timings": {}}
 
     def model(self, id: str, licence_mode: str, source: str | None = None, revision: str | None = None, licence: str | None = None):
         """Record a model this run used (the coordinator checks it against the manifest's licence mode)."""

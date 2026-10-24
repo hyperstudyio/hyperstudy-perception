@@ -138,14 +138,16 @@ def test_unchanged_inputs_come_from_the_cache_and_a_change_reruns_only_descendan
     assert output(coord, run_id, "d") == {"value": 7}
 
 
-def test_rerun_from_a_node_resets_it_and_its_descendants(tmp_path, rec):
+def test_rerun_without_cache_forces_only_the_named_node(tmp_path, rec):
+    """b runs again; its output is unchanged, so c comes from the cache instead of running a second time."""
     coord = coordinator(tmp_path)
     run_id, _ = run(coord, graph_doc(tmp_path, [work("a", record_dir=rec), work("b", "$nodes.a.out", record_dir=rec),
                                                 work("c", "$nodes.b.out", record_dir=rec)]))
     coord.rerun(run_id, "b", use_cache=False)
     assert asyncio.run(coord.run(run_id)) == "succeeded"
     counts = {n: len(executions(Path(rec), n)) for n in "abc"}
-    assert counts == {"a": 1, "b": 2, "c": 2}
+    assert counts == {"a": 1, "b": 2, "c": 1}
+    assert {k: t["state"] for k, t in coord._tasks(run_id).items()} == {"a": "succeeded", "b": "succeeded", "c": "cached"}
 
 
 # --- failures ---------------------------------------------------------------------------------------------------
@@ -345,3 +347,77 @@ def test_output_paths_must_be_plain_relative_paths(tmp_path, rel):
     out.mkdir(parents=True)
     problems, outs = _publish_case(tmp_path, out, rel)
     assert outs == {} and problems and "plain relative path" in problems[0][1]
+
+
+def test_rerunning_a_node_with_the_same_inputs_gives_byte_identical_layers(tmp_path):
+    """Run time and timings must not be part of a stored layer: if they were, every rerun of an upstream node would
+    change its outputs' hashes and every downstream node would miss the cache (acceptance criterion 2)."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    run_id, _ = run(coord, doc)
+    first = json.loads(coord._tasks(run_id)["shots"]["outputs"])["shots"]["hash"]
+    time.sleep(1.1)                                     # a different second: a timestamp in the layer would differ
+    coord.rerun(run_id, "shots", use_cache=False)
+    asyncio.run(coord.run(run_id))
+    task = coord._tasks(run_id)["shots"]
+    assert task["attempt"] == 2 and task["state"] == "succeeded"
+    assert json.loads(task["outputs"])["shots"]["hash"] == first
+
+
+def test_export_puts_the_run_time_and_timings_back_into_the_bundle(tmp_path):
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    run_id, _ = run(coord, doc)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    producer = json.loads((out / "layers" / "shots.json").read_text())["producer"]
+    assert producer["run_at"] and producer["timings"].get("seconds") is not None
+
+
+def refine_graph(video: Path, **policy) -> dict:
+    return {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+            "policy": {"privacy": "local-preferred", "allow_upload": ["frames"], **policy},
+            "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                      {"id": "captions", "uses": "test.refine@1.0.0", "inputs": {"shots": "$nodes.shots.shots"}}]}
+
+
+def test_uploads_need_the_data_kind_allowed_by_name(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    reg = Registry.load(NODES)
+    compile_graph(refine_graph(video), reg)                                       # frames allowed: valid
+    with pytest.raises(GraphError, match="uploads frames, which policy.allow_upload does not permit"):
+        compile_graph(refine_graph(video, allow_upload=[]), reg)
+    with pytest.raises(GraphError, match="privacy policy is local-only"):
+        compile_graph(refine_graph(video, privacy="local-only"), reg)
+
+
+def test_a_billable_node_is_held_to_its_estimate_and_charged_what_it_spent(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, refine_graph(video, max_cost_usd=0.4))           # 1 shot x $0.5 estimate > $0.4
+    assert status == "failed" and coord._tasks(run_id)["captions"]["error_code"] == "budget"
+    run_id, status = run(coord, refine_graph(video, max_cost_usd=0.6))
+    assert status == "succeeded"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.01)                                          # what the node reported, not the estimate
+
+
+def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id, _ = run(coord, refine_graph(video, max_cost_usd=1))
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    shots = json.loads((out / "layers" / "shots.json").read_text())["shots"]
+    assert shots[0]["caption"] == {"description": "shot 0"}
+    # the strictest licence up the chain: the upstream shots node is academic-only, so the refined layer is too
+    assert json.loads((out / "manifest.json").read_text())["layers"]["shots"]["licence_mode"] == "academic-only"

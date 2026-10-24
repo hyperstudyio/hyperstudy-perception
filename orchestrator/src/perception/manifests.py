@@ -54,6 +54,14 @@ class Privacy(Strict):
     external_upload: list[Literal["video", "audio", "frames", "faces", "transcript", "embeddings"]] = Field(default_factory=list)
 
 
+class Cost(Strict):
+    """A billable node's estimate, reserved against the run's budget before it starts; what it actually spent comes
+    back in its response (usage.usd). `per` counts units in one of the node's inputs."""
+    usd: float                                   # per unit, an upper estimate
+    per: Literal["shot", "minute", "run"]
+    input: str | None = None                     # the input holding the units (shots layer; media for minutes)
+
+
 class ModelRef(Strict):
     """A model the node uses: where its weights come from and under what terms."""
     id: str
@@ -80,6 +88,7 @@ class Manifest(Strict):
     models: list[ModelRef] = Field(default_factory=list)
     secrets: list[str] = Field(default_factory=list)
     licence: dict = Field(default_factory=dict)
+    cost: Cost | None = None
 
     directory: Path = Field(default=Path("."), exclude=True)
 

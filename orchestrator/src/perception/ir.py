@@ -55,8 +55,10 @@ class InputSpec(Strict):
 
 class Policy(Strict):
     placement: Literal["local", "hybrid", "remote"] = "local"
-    # local-only: no node may upload anything; local-preferred: uploads allowed where no local runner exists
+    # local-only: nothing leaves the machine. Otherwise a node may send out only the kinds of data allow_upload names
+    # (spec: video, audio, frames, faces, transcripts and embeddings are permitted separately).
     privacy: Literal["local-only", "local-preferred", "allow-external"] = "local-only"
+    allow_upload: list[Literal["video", "audio", "frames", "faces", "transcript", "embeddings"]] = Field(default_factory=list)
     max_cost_usd: float = 0.0
     retries: int = Field(default=2, ge=0, le=10)
 
@@ -203,6 +205,8 @@ def compile_graph(doc: dict, registry: Registry) -> Graph:
 
         if spec.policy.privacy == "local-only" and m.privacy.external_upload:
             problems.append(f"node {n.id}: {m.ref} uploads {', '.join(m.privacy.external_upload)}, but the graph's privacy policy is local-only")
+        elif not_allowed := [k for k in m.privacy.external_upload if k not in spec.policy.allow_upload]:
+            problems.append(f"node {n.id}: {m.ref} uploads {', '.join(not_allowed)}, which policy.allow_upload does not permit")
 
         compiled[n.id] = CompiledNode(n, m, refs, config, {r.node for r in refs.values() if r.node})
 

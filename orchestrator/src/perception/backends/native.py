@@ -25,6 +25,13 @@ from .probe import probe
 REPO = Path(__file__).resolve().parents[4]
 
 
+def sdk_hash() -> str:
+    h = hashlib.sha256()
+    for p in sorted((REPO / "sdk" / "src").rglob("*.py")):
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
 class NativeBackend(Backend):
     kind = "native"
 
@@ -43,6 +50,7 @@ class NativeBackend(Backend):
     def identity(self, manifest: Manifest, runner: Runner) -> str:
         lock = REPO / runner.env / "uv.lock" if runner.env else None
         h = hashlib.sha256(manifest.code_hash().encode())
+        h.update(sdk_hash().encode())   # the node SDK shapes what a node writes; it is installed editable, outside the lock
         h.update(lock.read_bytes() if lock and lock.exists() else b"no lock")
         h.update(runner.accelerator.encode())
         return f"native:{h.hexdigest()[:16]}"
@@ -93,7 +101,7 @@ class SelfBackend(NativeBackend):
         return []
 
     def identity(self, manifest: Manifest, runner: Runner) -> str:
-        return f"self:{manifest.code_hash()[:16]}"
+        return f"self:{hashlib.sha256((manifest.code_hash() + sdk_hash()).encode()).hexdigest()[:16]}"
 
 
 def _alive(pid: int, request: str) -> bool:

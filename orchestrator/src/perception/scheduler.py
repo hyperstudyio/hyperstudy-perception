@@ -62,6 +62,17 @@ def output_path(out_dir: Path, rel) -> tuple[Path | None, str]:
     return steps[-1], ""
 
 
+def manifest_cost(m: Manifest, inputs: dict[str, Artifact]) -> float:
+    """A billable node's upper estimate: its manifest's price per unit times the units in its input."""
+    if m.cost is None:
+        return 0.0
+    if m.cost.per == "run":
+        return m.cost.usd
+    doc = json.loads(inputs[m.cost.input].path.read_text())
+    units = len(doc["shots"]) if m.cost.per == "shot" else doc["duration"] / 60
+    return round(m.cost.usd * units, 4)
+
+
 class LeaseHeld(RuntimeError):
     pass
 
@@ -104,7 +115,9 @@ class Coordinator:
         return graph
 
     def rerun(self, run_id: str, from_node: str, use_cache: bool = True):
-        """Reset `from_node` and everything downstream of it; they run again (or come from the cache)."""
+        """Reset `from_node` and everything downstream of it. Without the cache (`use_cache=False`) only `from_node`
+        is forced to run: downstream nodes run again only if its new outputs differ, and otherwise come from the
+        cache (spec: rerun only nodes whose declared inputs change)."""
         graph = self.graph_of(run_id)
         if from_node not in graph.nodes:
             raise KeyError(f"run {run_id} has no node {from_node}")
@@ -114,7 +127,7 @@ class Coordinator:
                 db.execute("""UPDATE tasks SET state='pending', first_attempt=attempt+1, cache_key=NULL, runner=NULL, lease_owner=NULL,
                               lease_expires=NULL, handle=NULL, not_before=NULL, started_at=NULL, finished_at=NULL,
                               error_code=NULL, error=NULL, cost_usd=0, usage=NULL, outputs=NULL, skip_cache=?
-                              WHERE run_id=? AND node_id=?""", (0 if use_cache else 1, run_id, node_id))
+                              WHERE run_id=? AND node_id=?""", (0 if use_cache or node_id != from_node else 1, run_id, node_id))
             db.execute("UPDATE runs SET status='running', finished_at=NULL WHERE id=?", (run_id,))
         self.store.event(run_id, None, "run.rerun", f"from {from_node}: {', '.join(sorted(reset))}")
 
@@ -256,6 +269,7 @@ class Coordinator:
         if not self._fits(run_id, graph, m, tasks):
             return   # stays ready; started when running nodes free their share
         estimate = placement.backend.estimate(m, placement.runner, inputs)
+        estimate.cost_usd += manifest_cost(m, inputs)
         run = self.store.db.execute("SELECT max_cost_usd, spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()
         reserved = sum(x["cost_usd"] for x in tasks.values() if x["state"] == "running")
         if estimate.cost_usd > 0 and run["spent_usd"] + reserved + estimate.cost_usd > run["max_cost_usd"]:
@@ -320,7 +334,7 @@ class Coordinator:
         if problems:
             self._attempt_failed(run_id, graph, node.id, t["attempt"], problems[0][0], "; ".join(p for _, p in problems))
             return
-        usage = response.get("usage", {})
+        usage = {**response.get("usage", {}), "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}
         cost = float(usage.get("usd", 0.0))
         out_json = dumps({k: a.to_json() for k, a in outs.items()})
         with self.store.tx() as db:

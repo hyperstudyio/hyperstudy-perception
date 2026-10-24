@@ -41,7 +41,7 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
             effective[i] = max([own[i], *(licence(u) for u in graph.nodes[i].upstream)], key=LICENCE_ORDER.index)
         return effective[i]
 
-    media, layers, asset_trees = None, {}, []
+    media, layers, asset_trees, writers = None, {}, [], {}
     for node_id, t in tasks.items():
         for name, a in json.loads(t["outputs"]).items():
             kind = artifacts.get(a["type"])
@@ -50,9 +50,14 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
             elif a["type"] == "media.v1":
                 media = json.loads(Path(a["path"]).read_text())
             elif kind.layer:
-                if kind.layer in layers:
-                    raise SystemExit(f"two nodes write the {kind.layer} layer: {layers[kind.layer][0]} and {node_id}")
-                layers[kind.layer] = (node_id, Path(a["path"]))
+                writers.setdefault(kind.layer, []).append((node_id, Path(a["path"])))
+    for layer_name, ws in writers.items():
+        # a node that refines an upstream node's layer (captions on the shots layer) supersedes it; two unrelated
+        # writers of one layer are a graph error
+        last = [w for w in ws if not any(o[0] in graph.descendants(w[0]) for o in ws)]   # no other writer downstream
+        if len(last) != 1 or any(o is not last[0] and last[0][0] not in graph.descendants(o[0]) for o in ws):
+            raise SystemExit(f"the {layer_name} layer is written by unrelated nodes: {', '.join(w[0] for w in ws)}")
+        layers[layer_name] = last[0]
     if media is None:
         raise SystemExit("the run has no media.v1 artifact (a decode node): the bundle cannot name its video")
 
@@ -60,8 +65,13 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
     entries = {}
     for name, (node_id, path) in layers.items():
         dest = out / "layers" / f"{name}.json"
-        shutil.copyfile(path, dest)
-        dest.chmod(0o644)
+        # stored layers carry no run time or timings (they would defeat the cache); the bundle gets them from the run
+        # that produced the layer, which for a cache hit is the original run
+        usage = json.loads(tasks[node_id]["usage"] or "{}")
+        doc = json.loads(path.read_text())
+        doc["producer"]["run_at"] = usage.get("finished_at")
+        doc["producer"]["timings"] = {**usage.get("timings", {}), "seconds": usage.get("seconds")}
+        dest.write_text(json.dumps(doc, separators=(",", ":")))
         entries[name] = {"file": f"layers/{name}.json", "sha256": artifacts.sha256_file(dest), "bytes": dest.stat().st_size,
                          "licence_mode": licence(node_id), "stage": graph.nodes[node_id].manifest.stage or graph.nodes[node_id].manifest.id}
     assets = []
