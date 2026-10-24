@@ -192,7 +192,7 @@ def test_only_gpu_nodes_are_offered_a_cloud_machine_at_its_price_for_the_deadlin
     assert node.options[-1] == "cloud:cuda" and all(o.startswith("self:") for o in node.options[:-1])   # this machine's first
     assert node.place == "cloud:cuda"
     assert node.cost_usd == node.estimates["cloud:cuda"]["cost_usd"] == round(CloudBackend.hourly_usd / 2, 4)   # 30 min
-    assert planned.places["cloud:cuda"]["title"] == "Cloud GPU (AWS g6.2xlarge, NVIDIA L4)"
+    assert planned.places["cloud:cuda"]["title"] == "Cloud GPU (AWS L4)"
     assert planned.max_cost_usd == 5.0                # the graph's cap: what the app raises by a cloud place's price
 
 

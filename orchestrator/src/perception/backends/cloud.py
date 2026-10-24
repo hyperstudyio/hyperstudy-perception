@@ -49,7 +49,7 @@ class CloudBackend(SshBackend):
         host = Host("cloud", "(started for each node)", "", self.caps, 0)
         super().__init__(host, runner_kind=runner_kind, python=python)
         self.kind = "cloud"
-        self.title = f"Cloud GPU ({self.machine_title})"
+        self.title = "Cloud GPU (AWS L4)"   # short: it names the place in menus (`cloud status` gives the machine)
         self.deadline_s = deadline_s
         for name, value in paths.items():   # tests: stand-in task, guard
             setattr(self, name, value)
