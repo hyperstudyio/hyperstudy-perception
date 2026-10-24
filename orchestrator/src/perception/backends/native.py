@@ -101,8 +101,8 @@ class NativeBackend(Backend):
         if self.poll(handle) == "running":
             try:
                 os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            except (ProcessLookupError, PermissionError):
+                pass   # already gone, or exiting: macOS reports EPERM for a group whose leader is a zombie
 
 
 class SelfBackend(NativeBackend):
@@ -123,5 +123,7 @@ def _alive(pid: int, request: str) -> bool:
         return False
     except PermissionError:
         return False
-    out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
+    # -ww: unlimited width (procps truncates columns to 80 characters when not writing to a terminal, and a long request
+    # path then made a live node look dead)
+    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
     return request in out.stdout
