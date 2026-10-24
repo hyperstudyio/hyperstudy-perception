@@ -520,6 +520,33 @@ def test_a_billable_node_killed_by_a_cancel_is_charged_its_reservation(tmp_path)
     assert spent == pytest.approx(0.5)   # it may have spent what was reserved before it was killed
 
 
+def test_a_killed_attempt_is_charged_once_even_if_a_stale_snapshot_reports_its_death(tmp_path):
+    """cancel() charges the reservation of what it kills. The coordinator running the loop may have read that task as
+    running just before, then see the dead process and report a crashed attempt: that report must change nothing."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    doc = refine_graph(video, {"sleep": 30}, max_cost_usd=1)
+    run_id = start(coord, doc)
+    graph = compile_graph(doc, coord.registry)
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
+        while coord._tasks(run_id)["captions"]["state"] != "running":
+            assert time.time() < deadline, "the node never started"
+            await asyncio.sleep(0.02)
+        stale = coord._tasks(run_id)["captions"]          # the loop's snapshot, taken before the cancel
+        coordinator(tmp_path).cancel(run_id)
+        coord._attempt_failed(run_id, graph, "captions", stale["attempt"], "transient", "exited without a response", usd=stale["cost_usd"])
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)                     # once, not twice
+    assert coord._tasks(run_id)["captions"]["state"] == "canceled"
+
+
 def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
     from perception import export
     video = tmp_path / "clip.mp4"

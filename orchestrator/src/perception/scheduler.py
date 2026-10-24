@@ -132,16 +132,17 @@ class Coordinator:
         self.store.event(run_id, None, "run.rerun", f"from {from_node}: {', '.join(sorted(reset))}")
 
     def cancel(self, run_id: str):
-        killed = 0.0   # a killed attempt may have spent up to its reservation: it is charged that, as a crash is
-        for t in self._tasks(run_id).values():
-            if t["state"] == "running" and t["handle"]:
-                self.backends[t["runner"].split(":")[0]].cancel(json.loads(t["handle"]))
-                killed += t["cost_usd"] or 0.0
+        """Record the cancel first, then kill: once a task is canceled, a coordinator that sees its process die reports
+        nothing (_attempt_failed ignores tasks no longer running), so the kill is charged once, here."""
         with self.store.tx() as db:
-            db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (killed, run_id))
+            running = [t for t in self._tasks(run_id).values() if t["state"] == "running" and t["handle"]]
+            # a killed attempt may have spent up to its reservation: it is charged that, as a crash is
+            db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (sum(t["cost_usd"] or 0.0 for t in running), run_id))
             db.execute("UPDATE tasks SET state='canceled', finished_at=? WHERE run_id=? AND state NOT IN ('succeeded','cached','failed')",
                        (time.time(), run_id))
             db.execute("UPDATE runs SET status='canceled', finished_at=? WHERE id=?", (time.time(), run_id))
+        for t in running:
+            self.backends[t["runner"].split(":")[0]].cancel(json.loads(t["handle"]))
         self.store.event(run_id, None, "run.canceled")
 
     # --- the loop -------------------------------------------------------------------------------------------
@@ -409,9 +410,12 @@ class Coordinator:
         """Retry a transient failure within the policy, else fail. `usd`, what the attempt spent, is charged in the same
         transaction: a coordinator that dies in between must not charge it again on resume."""
         retries = graph.spec.policy.retries
-        first = self._tasks(run_id)[node_id]["first_attempt"]
-        tried = attempt - first + 1
         with self.store.tx():
+            now = self._tasks(run_id)[node_id]
+            if now["state"] not in ("running", "leased") or now["attempt"] != attempt:
+                return   # a stale report: the task was canceled (and charged) or has moved on since it was read
+            first = now["first_attempt"]
+            tried = attempt - first + 1
             if usd:
                 self.store.db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (usd, run_id))
             if code == "transient" and tried <= retries:
