@@ -444,6 +444,8 @@ def test_a_cost_per_unit_must_name_the_input_it_counts():
     with pytest.raises(ValueError, match="cost.input None is not one of this node's inputs"):
         Manifest.model_validate(doc)
     Manifest.model_validate({**doc, "cost": {"usd": 0.1, "per": "shot", "input": "shots"}})
+    with pytest.raises(ValueError, match="per minute cannot be counted in shots"):
+        Manifest.model_validate({**doc, "cost": {"usd": 0.1, "per": "minute", "input": "shots"}})
 
 
 def test_a_failed_attempt_is_charged_what_it_spent(tmp_path):

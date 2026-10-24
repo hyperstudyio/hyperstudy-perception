@@ -99,9 +99,15 @@ class Manifest(Strict):
 
     @model_validator(mode="after")
     def _cost_counts_an_input(self):
-        if self.cost and self.cost.per != "run" and self.cost.input not in self.inputs:
-            raise ValueError(f"cost: per {self.cost.per} counts units in an input, but cost.input "
-                             f"{self.cost.input!r} is not one of this node's inputs ({', '.join(self.inputs) or 'none'})")
+        if self.cost and self.cost.per != "run":
+            if self.cost.input not in self.inputs:
+                raise ValueError(f"cost: per {self.cost.per} counts units in an input, but cost.input "
+                                 f"{self.cost.input!r} is not one of this node's inputs ({', '.join(self.inputs) or 'none'})")
+            # what manifest_cost reads: the shots of a shots layer, or the duration of media.v1
+            kind = self.inputs[self.cost.input]
+            if (self.cost.per == "shot") != kind.startswith("bundle.shots@") or (self.cost.per == "minute") != (kind == "media.v1"):
+                raise ValueError(f"cost: per {self.cost.per} cannot be counted in {self.cost.input} ({kind}); "
+                                 "shots come from a bundle.shots layer, minutes from media.v1")
         return self
 
     @model_validator(mode="after")

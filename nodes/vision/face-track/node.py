@@ -10,6 +10,7 @@ ArcFace weights are research-only, so this layer is academic-only.
 """
 
 import multiprocessing
+import os
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from perception_node import Node, NodeError
+from loader import decode_workers
 from thumbnails import QUALITY_PX, choose, shortlist
 from tracking import FRONTAL_YAW, build_tracks, cluster_tracks, detection_rows, name_people, person_pairs
 
@@ -62,14 +64,15 @@ with Node() as node:
     fps = media["fps"]
     device = {"mps": "mps", "cuda": "cuda"}.get(node.accelerator, "cpu")
 
-    if c["num_workers"] and multiprocessing.get_start_method() != "fork":
-        raise NodeError("input", f"num_workers needs forked workers; this platform starts them with "
-                                 f"{multiprocessing.get_start_method()!r}, which would run the node again in each")
+    try:
+        workers = decode_workers(c["num_workers"], multiprocessing.get_start_method(), os.cpu_count() or 1)
+    except ValueError as e:
+        raise NodeError("input", str(e)) from None
 
     t0 = time.time()
     detector = Detectorv2(device=device)
     fex = detector.detect(str(video), data_type="video", skip_frames=max(1, round(fps / c["fps"])), batch_size=c["batch_size"],
-                          num_workers=c["num_workers"], pin_memory=device == "cuda")
+                          num_workers=workers, pin_memory=device == "cuda")
     detect_s = round(time.time() - t0, 1)
     node.model("py-feat Detectorv2 (RetinaFace + multitask)", licence_mode="academic-only", source="hf://py-feat",
                licence="py-feat code MIT; v2 weights non-commercial")
@@ -135,4 +138,5 @@ with Node() as node:
         "producer": node.producer(timings={"detect_s": detect_s, "thumbnails_s": thumbnails_s, "crops_s": crops_s}, device=device),
         "sample_fps": c["fps"], "angles": "radians; yaw + = subject's right (image left)",
         "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": None})
-    node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures)
+    node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures,
+               decode_workers=workers)
