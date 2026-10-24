@@ -91,16 +91,25 @@ def only(doc: dict, chosen: list[str]) -> dict:
 
 
 def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs: list[str] | None = None,
-               places: list[str] | None = None, chosen: list[str] | None = None):
+               places: list[str] | None = None, chosen: list[str] | None = None, sets: list[str] | None = None):
     doc = yaml.safe_load(path.read_text())
-    if chosen:
-        doc = only(doc, chosen)
+    for item in sets or []:   # --set node.key=value: a node's setting for this run (compile checks it against the manifest)
+        target, eq, value = item.partition("=")
+        name, dot, key = target.partition(".")
+        if not (eq and dot and key):
+            raise GraphError([f"--set {item}: expected NODE.KEY=VALUE"])
+        node = next((n for n in doc.get("nodes", []) if n.get("id") == name), None)
+        if node is None:
+            raise GraphError([f"--set {name}: the graph has no node {name!r}"])
+        node.setdefault("config", {})[key] = yaml.safe_load(value)   # 8 -> int, true -> bool, claude-opus-5-5 -> str
     for item in places or []:   # --place node=backend:accelerator chooses where a node runs (plan lists the options)
         name, _, place = item.partition("=")
         node = next((n for n in doc.get("nodes", []) if n.get("id") == name), None)
         if node is None:
             raise GraphError([f"--place {name}: the graph has no node {name!r}"])
         node["place"] = place
+    if chosen:   # after --place and --set: they may name a node --only leaves out (it goes, with them)
+        doc = only(doc, chosen)
     for item in inputs or []:   # --input name=path overrides a graph input's location
         name, _, value = item.partition("=")
         if name not in doc.get("inputs", {}):
@@ -141,7 +150,8 @@ def plan_json(p) -> dict:
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
               "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads,
               "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
-              "needs": n.needs, "estimates": n.estimates}
+              "needs": n.needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
+              "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
              for n in p.nodes]
     return {"ok": p.ok, "nodes": nodes, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
 
@@ -232,7 +242,7 @@ def cmd_validate(args):
 def cmd_plan(args):
     reg = registry(args)
     try:
-        graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input, args.place, args.only)
+        graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input, args.place, args.only, args.set)
     except GraphError as e:
         return graph_error(args, e)
     p = make_plan(coordinator(args), graph)
@@ -287,26 +297,30 @@ def _run(coord: Coordinator, run_id: str, as_json: bool = False, after: int = 0)
 def cmd_run(args):
     coord = coordinator(args)
     try:
-        graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input, args.place, args.only)
+        graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input, args.place, args.only, args.set)
     except GraphError as e:
         return graph_error(args, e)
-    p = make_plan(coord, graph, allow_downloads=args.allow_downloads)
+    p = make_plan(coord, graph, allow_downloads=args.allow_downloads, allow_uploads=args.allow_uploads)
     if not p.ok:
         if args.json:
             emit("plan", **plan_json(p))
         else:
             print(p.render(explain=True))
         return 1
-    return _run(coord, coord.create_run(graph, doc), args.json)
+    return _run(coord, coord.create_run(graph, doc, allow_uploads=args.allow_uploads), args.json)
 
 
 def cmd_resume(args):
     coord = coordinator(args)
+    if args.allow_uploads:
+        coord.allow_uploads(args.run_id)
     return _run(coord, args.run_id, args.json, after=last_event(coord.store, args.run_id))
 
 
 def cmd_rerun(args):
     coord = coordinator(args)
+    if args.allow_uploads:
+        coord.allow_uploads(args.run_id)
     after = last_event(coord.store, args.run_id)   # before the rerun writes its own run.rerun event
     coord.rerun(args.run_id, args.from_node, use_cache=not args.no_cache)
     return _run(coord, args.run_id, args.json, after=after)
@@ -446,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--input", action="append", metavar="NAME=PATH", help="set a graph input's file")
     p.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (plan lists its options)")
     p.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
+    p.add_argument("--set", action="append", metavar="NODE.KEY=VALUE", help="a node's setting (plan lists the choices)")
     p.set_defaults(fn=cmd_plan)
     r = sub.add_parser("run")
     r.add_argument("graph")
@@ -454,10 +469,14 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--allow-downloads", action="store_true", help="let nodes fetch model weights that are not on this machine yet")
     r.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (plan lists its options)")
     r.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
+    r.add_argument("--set", action="append", metavar="NODE.KEY=VALUE", help="a node's setting (plan lists the choices)")
+    r.add_argument("--allow-uploads", action="store_true", help="let nodes send what the plan says off this machine (within policy.allow_upload)")
     r.set_defaults(fn=cmd_run)
     for name, fn in (("resume", cmd_resume), ("cancel", cmd_cancel), ("artifacts", cmd_artifacts)):
         x = sub.add_parser(name)
         x.add_argument("run_id")
+        if name == "resume":
+            x.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
         x.set_defaults(fn=fn)
     s = sub.add_parser("status")
     s.add_argument("run_id", nargs="?")
@@ -471,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("run_id")
     rr.add_argument("--from", dest="from_node", required=True)
     rr.add_argument("--no-cache", action="store_true", help="run the nodes even if the cache has their results")
+    rr.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
     rr.set_defaults(fn=cmd_rerun)
     ex = sub.add_parser("export")
     ex.add_argument("run_id")

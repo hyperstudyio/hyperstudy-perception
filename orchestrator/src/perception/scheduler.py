@@ -99,17 +99,24 @@ class Coordinator:
 
     # --- runs -----------------------------------------------------------------------------------------------
 
-    def create_run(self, graph: Graph, graph_doc: dict) -> str:
+    def create_run(self, graph: Graph, graph_doc: dict, allow_uploads: bool = False) -> str:
+        """A run of `graph`. `allow_uploads`: its nodes may send data off the machine (within the graph's
+        policy.allow_upload); without it a node that would is failed before it starts, whenever it comes to run."""
         run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         inputs = {name: self._graph_input(graph, name).to_json() for name in graph.spec.inputs}
         with self.store.tx() as db:
-            db.execute("INSERT INTO runs (id, pipeline, graph, graph_path, inputs, status, created_at, max_cost_usd) VALUES (?,?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO runs (id, pipeline, graph, graph_path, inputs, status, created_at, max_cost_usd, allow_uploads) VALUES (?,?,?,?,?,?,?,?,?)",
                        (run_id, graph.spec.pipeline, dumps(graph_doc), str(graph.source) if graph.source else None,
-                        dumps(inputs), "running", time.time(), graph.spec.policy.max_cost_usd))
+                        dumps(inputs), "running", time.time(), graph.spec.policy.max_cost_usd, int(allow_uploads)))
             for node_id in graph.nodes:
                 db.execute("INSERT INTO tasks (run_id, node_id, state) VALUES (?,?,?)", (run_id, node_id, "pending"))
         self.store.event(run_id, None, "run.created", f"{len(graph.nodes)} nodes")
         return run_id
+
+    def allow_uploads(self, run_id: str):
+        """Let the run's nodes send data off the machine from now on (resume or rerun --allow-uploads)."""
+        with self.store.tx() as db:
+            db.execute("UPDATE runs SET allow_uploads=1 WHERE id=?", (run_id,))
 
     def graph_of(self, run_id: str) -> Graph:
         row = self.store.db.execute("SELECT graph, graph_path FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -277,6 +284,10 @@ class Coordinator:
             if backend is None:
                 continue
             runners, why = backend.runners_for(manifest)
+            # Apple silicon's memory is shared by CPU and GPU: a node that runs on the GPU there has no reason to be
+            # offered the CPU too (a CUDA machine's CPU fallback stays a choice: its GPU memory is its own)
+            if any(r.accelerator == "mps" for r in runners):
+                runners = [r for r in runners if r.accelerator != "cpu"]
             options += [Placement(backend, r) for r in runners]
             if not runners and not why.startswith("no "):
                 reasons.append(f"{kind}: {why}")
@@ -325,6 +336,12 @@ class Coordinator:
                     self.store.event(run_id, node.id, "task.cached", key[:12])
                     return
 
+        # consent to send data off is the run's (--allow-uploads), checked when the node is about to run: a resume or a
+        # rerun, or a cache that is gone, cannot make a node upload in a run that was not allowed to
+        if m.privacy.external_upload and not self.store.db.execute("SELECT allow_uploads FROM runs WHERE id=?", (run_id,)).fetchone()[0]:
+            self._fail(run_id, node.id, "policy", f"{m.ref} sends {', '.join(m.privacy.external_upload)} off this machine, "
+                                                  "and this run may not (--allow-uploads)")
+            return
         if not self._fits(run_id, graph, m, tasks):
             return   # stays ready; started when running nodes free their share
         estimate = placement.backend.estimate(m, placement.runner, inputs)

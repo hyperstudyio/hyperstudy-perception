@@ -38,13 +38,13 @@ def work(id: str, a: str = "$inputs.seed", uses: str = "test.work@1.0.0", **conf
     return {"id": id, "uses": uses, "inputs": {"a": a}, "config": config}
 
 
-def start(coord: Coordinator, doc: dict) -> str:
+def start(coord: Coordinator, doc: dict, allow_uploads: bool = True) -> str:
     graph = compile_graph(doc, coord.registry)
-    return coord.create_run(graph, doc)
+    return coord.create_run(graph, doc, allow_uploads=allow_uploads)
 
 
-def run(coord: Coordinator, doc: dict) -> tuple[str, str]:
-    run_id = start(coord, doc)
+def run(coord: Coordinator, doc: dict, allow_uploads: bool = True) -> tuple[str, str]:
+    run_id = start(coord, doc, allow_uploads)
     return run_id, asyncio.run(coord.run(run_id))
 
 
@@ -372,6 +372,19 @@ class TwoDevices(SelfBackend):
         return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=24)
 
 
+class AppleSilicon(SelfBackend):
+    """A Mac: an Apple GPU sharing its memory with the CPU, as far as placement can tell."""
+    def probe_capabilities(self):
+        import dataclasses
+        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "mps"})
+
+
+def test_on_apple_silicon_a_node_that_runs_on_the_gpu_is_not_offered_the_cpu_too(tmp_path):
+    coord = coordinator(tmp_path, AppleSilicon())
+    assert [p.label for p in coord.placements(coord.registry.get("test.two@1.0.0"))[0]] == ["self:mps"]   # unified memory
+    assert [p.label for p in coord.placements(coord.registry.get("test.work@1.0.0"))[0]] == ["self:cpu"]   # CPU only: still runs
+
+
 def test_a_node_runs_where_it_is_placed_among_the_places_it_can_run_here(tmp_path, rec):
     coord = coordinator(tmp_path, TwoDevices())
     m = coord.registry.get("test.two@1.0.0")
@@ -543,6 +556,23 @@ def refine_graph(video: Path, config: dict | None = None, **policy) -> dict:
             "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
                       {"id": "captions", "uses": "test.refine@1.0.0", "inputs": {"shots": "$nodes.shots.shots"},
                        "config": config or {}}]}
+
+
+def test_a_run_not_allowed_to_upload_never_starts_a_node_that_would_even_on_rerun(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    allowed, status = run(coord, refine_graph(video, max_cost_usd=1))
+    assert status == "succeeded"                                     # captions is in the cache now
+    run_id, status = run(coord, refine_graph(video, max_cost_usd=1), allow_uploads=False)
+    assert status == "succeeded" and coord._tasks(run_id)["captions"]["state"] == "cached"   # nothing was sent
+    coord.rerun(run_id, "captions", use_cache=False)                 # would send frames again
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    t = coord._tasks(run_id)["captions"]
+    assert t["error_code"] == "policy" and "may not (--allow-uploads)" in t["error"] and t["attempt"] == 0   # never started
+    coord.allow_uploads(run_id)                                      # rerun --allow-uploads
+    coord.rerun(run_id, "captions", use_cache=False)
+    assert asyncio.run(coord.run(run_id)) == "succeeded"
 
 
 def test_uploads_need_the_data_kind_allowed_by_name(tmp_path):

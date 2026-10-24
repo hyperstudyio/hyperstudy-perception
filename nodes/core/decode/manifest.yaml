@@ -1,6 +1,7 @@
 id: core.decode
 version: 1.0.0
 stage: extract
+title: Shots and audio
 description: Video identity and timing, shots, keyframes and 16 kHz mono audio
 inputs: {video: video.v1}
 outputs:

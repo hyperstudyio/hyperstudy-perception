@@ -37,16 +37,24 @@ class NodePlan:
     estimate_basis: str = ""
     needs: list[str] = field(default_factory=list)     # the nodes whose outputs it takes (a stage picker's edges)
     estimates: dict[str, dict] = field(default_factory=dict)   # every option -> {estimate_s, estimate_basis}: to compare places
+    title: str = ""
+    service: str | None = None                                  # the hosted API that does its work, if it runs elsewhere
+    description: str = ""
+    outputs: dict[str, str] = field(default_factory=dict)      # name -> artifact type
+    models: list[ModelRef] = field(default_factory=list)       # every model it uses (downloads: the ones not here yet)
+    settings: list[dict] = field(default_factory=list)         # its fixed-choice settings: {key, description, value, choices, prices, per}
 
 
 @dataclass
 class Plan:
     nodes: list[NodePlan]
     allow_downloads: bool = False
+    allow_uploads: bool = False   # the run's consent; the graph's policy.allow_upload is the most it may ever send
 
     @property
     def ok(self) -> bool:
-        return all(n.where and not n.missing_secrets and (self.allow_downloads or not n.downloads) for n in self.nodes)
+        return all(n.where and not n.missing_secrets and (self.allow_downloads or not n.downloads)
+                   and (self.allow_uploads or n.cached or not n.uploads) for n in self.nodes)
 
     def render(self, explain: bool = False) -> str:
         lines = []
@@ -67,6 +75,10 @@ class Plan:
         downloads = [m for n in self.nodes for m in n.downloads]
         if downloads and not self.allow_downloads:
             lines.append("weights are missing: fetch them first (perception models pull) or run with --allow-downloads")
+        uploading = [n for n in self.nodes if n.uploads and not n.cached]
+        if uploading and not self.allow_uploads:
+            kinds = sorted({k for n in uploading for k in n.uploads})
+            lines.append(f"{', '.join(n.id for n in uploading)} send {', '.join(kinds)} off this machine: run with --allow-uploads, or leave them out (--only)")
         return "\n".join(lines)
 
 
@@ -80,7 +92,20 @@ def hf_cached(source: str) -> bool:
     return (hub / f"models--{parts[0]}--{parts[1]}").is_dir()
 
 
-def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Plan:
+def settings(m, config: dict) -> list[dict]:
+    """A node's settings that are a fixed list of choices (a model, an effort), with the price of each when the node's
+    cost is keyed by that setting: what the app offers as menus. Free-form settings stay at their tuned defaults."""
+    out = []
+    for key, schema in m.config.items():
+        if "enum" not in schema:
+            continue
+        priced = m.cost and m.cost.by == key and isinstance(m.cost.usd, dict)
+        out.append({"key": key, "description": schema.get("description", ""), "value": config.get(key), "choices": list(schema["enum"]),
+                    "prices": dict(m.cost.usd) if priced else None, "per": m.cost.per if priced else None})
+    return out
+
+
+def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_uploads: bool = False) -> Plan:
     known: dict[str, dict[str, Artifact]] = {}   # node -> outputs, when its result is cached
     graph_inputs = {name: coord._graph_input(graph, name) for name in graph.spec.inputs}
     out = []
@@ -98,6 +123,8 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
         np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://") and not hf_cached(x.source)]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads = list(m.privacy.external_upload)
+        np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(m.models)
+        np.settings = settings(m, node.config)
         if placement:
             inputs = {}
             for name, ref in node.inputs.items():
@@ -126,4 +153,4 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
             chosen = np.estimates[placement.label]
             np.estimate_s, np.estimate_basis = chosen["estimate_s"], chosen["estimate_basis"]
         out.append(np)
-    return Plan(out, allow_downloads)
+    return Plan(out, allow_downloads, allow_uploads)
