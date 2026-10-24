@@ -372,6 +372,19 @@ class TwoDevices(SelfBackend):
         return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=24)
 
 
+class AppleSilicon(SelfBackend):
+    """A Mac: an Apple GPU sharing its memory with the CPU, as far as placement can tell."""
+    def probe_capabilities(self):
+        import dataclasses
+        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "mps"})
+
+
+def test_on_apple_silicon_a_node_that_runs_on_the_gpu_is_not_offered_the_cpu_too(tmp_path):
+    coord = coordinator(tmp_path, AppleSilicon())
+    assert [p.label for p in coord.placements(coord.registry.get("test.two@1.0.0"))[0]] == ["self:mps"]   # unified memory
+    assert [p.label for p in coord.placements(coord.registry.get("test.work@1.0.0"))[0]] == ["self:cpu"]   # CPU only: still runs
+
+
 def test_a_node_runs_where_it_is_placed_among_the_places_it_can_run_here(tmp_path, rec):
     coord = coordinator(tmp_path, TwoDevices())
     m = coord.registry.get("test.two@1.0.0")

@@ -1,6 +1,6 @@
 id: test.two
 version: 1.0.0
-description: test.work with a CUDA and a CPU runner (placement choices)
+description: test.work with an Apple GPU, a CUDA and a CPU runner (placement choices)
 inputs: {a: json.v1}
 outputs: {out: json.v1}
 config:
@@ -11,6 +11,7 @@ config:
   record_dir: {type: string}
   batch_size: {type: integer, default: 4}
 runners:
+  - {kind: self, entry: ../work/node.py, accelerator: mps}
   - {kind: self, entry: ../work/node.py, accelerator: cuda}
   - {kind: self, entry: ../work/node.py}
 resources: {cpu_cores: 1, memory_gb: 0.1}

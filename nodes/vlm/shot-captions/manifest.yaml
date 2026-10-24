@@ -2,6 +2,7 @@ id: vlm.shot-captions
 version: 1.0.0
 stage: extract+caption
 title: Shot captions
+service: Anthropic API
 description: Per-shot descriptions from keyframes (faces boxed and labelled), speech and the face roster; on-screen text
 inputs:
   shots: bundle.shots@0.1

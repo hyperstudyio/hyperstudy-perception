@@ -190,6 +190,8 @@ def test_the_full_graph_is_valid_with_the_real_nodes_and_every_node_has_a_title(
     assert main(["graph", "validate", str(root / "graphs" / "full.yaml")]) == 0
     for m in (root / "nodes").glob("*/*/manifest.yaml"):
         assert yaml.safe_load(m.read_text()).get("title"), f"{m} has no title (the app's feature list shows it)"
+    captions = yaml.safe_load((root / "nodes" / "vlm" / "shot-captions" / "manifest.yaml").read_text())
+    assert captions["service"] == "Anthropic API"   # it runs there: the app shows the API, not this machine's CPU
 
 
 def test_nodes_lists_what_each_node_takes_makes_costs_sends_and_where_it_can_run(home, capsys):

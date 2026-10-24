@@ -277,6 +277,10 @@ class Coordinator:
             if backend is None:
                 continue
             runners, why = backend.runners_for(manifest)
+            # Apple silicon's memory is shared by CPU and GPU: a node that runs on the GPU there has no reason to be
+            # offered the CPU too (a CUDA machine's CPU fallback stays a choice: its GPU memory is its own)
+            if any(r.accelerator == "mps" for r in runners):
+                runners = [r for r in runners if r.accelerator != "cpu"]
             options += [Placement(backend, r) for r in runners]
             if not runners and not why.startswith("no "):
                 reasons.append(f"{kind}: {why}")

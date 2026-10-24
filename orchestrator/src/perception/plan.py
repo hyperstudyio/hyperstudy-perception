@@ -38,6 +38,7 @@ class NodePlan:
     needs: list[str] = field(default_factory=list)     # the nodes whose outputs it takes (a stage picker's edges)
     estimates: dict[str, dict] = field(default_factory=dict)   # every option -> {estimate_s, estimate_basis}: to compare places
     title: str = ""
+    service: str | None = None                                  # the hosted API that does its work, if it runs elsewhere
     description: str = ""
     outputs: dict[str, str] = field(default_factory=dict)      # name -> artifact type
     models: list[ModelRef] = field(default_factory=list)       # every model it uses (downloads: the ones not here yet)
@@ -122,7 +123,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://") and not hf_cached(x.source)]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads = list(m.privacy.external_upload)
-        np.title, np.description, np.outputs, np.models = m.title, m.description, dict(m.outputs), list(m.models)
+        np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(m.models)
         np.settings = settings(m, node.config)
         if placement:
             inputs = {}
