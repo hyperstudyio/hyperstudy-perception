@@ -128,7 +128,9 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     cluster = cluster_name(run_id, "faces", 1)
     assert cluster.startswith("perception-")   # the only machines the perception-node role can end
     ev = events(machine)
-    launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch --async -c {cluster} -y --down -i 15 --env DEADLINE_MINUTES=30"))
+    launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch --async -c {cluster} -y --down -i 15 --env DEADLINE_EPOCH="))
+    at = int(ev[launch].split("DEADLINE_EPOCH=")[1].split()[0])
+    assert abs(at - (time.time() + 1800)) < 60                       # the deadline as a moment, from the launch
     assert ev[launch].endswith(f"(config {CloudBackend.project_config})")   # no credentials, only perception-node
     guard = ev.index("guard 29")                 # the shutdown deadline: whole minutes left of the 30, counted from the launch
     setup = ev.index("setup")                    # ffmpeg and uv, installed and waited for (SkyPilot's setup is detached)
@@ -252,6 +254,14 @@ def test_the_machine_is_set_to_terminate_again_once_the_launch_is_done(tmp_path,
     terminate = [i for i, e in enumerate(ev) if "--instance-initiated-shutdown-behavior terminate" in e]
     done = next(i for i, e in enumerate(ev) if e.startswith("ssh "))   # the first command on the started machine
     assert len(terminate) >= 2 and terminate[-1] < done   # during the launch, and after it (a replaced instance too)
+
+
+def test_a_machine_is_never_charged_past_its_deadline(tmp_path, machine, rec):
+    (machine / "slow").write_text("--sender")              # results take 8 s to come back, past a 4 s deadline
+    coord = coordinator(tmp_path, deadline_s=4)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    usage = json.loads(coord._tasks(run_id)["faces"]["usage"])
+    assert usage["machine_usd"] <= round(CloudBackend.hourly_usd * 4 / 3600, 4)
 
 
 def test_a_machine_that_could_not_be_deleted_is_charged_its_whole_deadline(tmp_path, machine, rec):
