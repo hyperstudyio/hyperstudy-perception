@@ -1,6 +1,6 @@
 # The Phase 1 graph plus shot captions through the Anthropic API: the first node that sends data off the machine
 # and costs money. allow_upload names exactly what may leave; max_cost_usd caps the spend.
-#   perception run graphs/mvp-captions.yaml --input video=PATH/TO/VIDEO.mp4
+#   perception run graphs/mvp-captions.yaml --input video=PATH/TO/VIDEO.mp4 --allow-uploads
 schema_version: 1
 pipeline: perception-mvp-captions
 inputs:
