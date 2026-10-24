@@ -64,7 +64,8 @@ esac
 """
 FAKE_AWS = r"""#!/bin/sh
 echo "aws $*" >> "$FAKE_HOST/events"
-case "$*" in *terminate-instances*) [ -e "$FAKE_HOST/terminate-fails" ] && exit 254; exit 0;; esac
+case "$*" in *terminate-instances*) [ -e "$FAKE_HOST/terminate-fails" ] && exit 254
+                                    [ -e "$FAKE_HOST/terminate-hangs" ] && sleep 60; exit 0;; esac
 case "$*" in *describe-instances*) echo "i-0abc";; esac
 """
 GUARD_OK = 'echo "guard $1" >> "$FAKE_HOST/events"; echo "guard: ok"\n'
@@ -94,8 +95,8 @@ def events(fake: Path) -> list[str]:
     return (fake / "events").read_text().splitlines() if (fake / "events").exists() else []
 
 
-def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60, setup=SETUP_OK, down_s=900) -> Coordinator:
-    cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=launch_s, down_s=down_s,
+def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60, setup=SETUP_OK, down_s=900, aws_s=120) -> Coordinator:
+    cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=launch_s, down_s=down_s, aws_s=aws_s,
                          guard=script(tmp_path / "guard.sh", guard), setup=script(tmp_path / "node-setup.sh", setup),
                          task=tmp_path / "node-gpu.yaml")
     return Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), cloud], tick_s=0.02, backoff_s=0.01)
@@ -288,7 +289,8 @@ def test_a_machine_sky_down_could_not_delete_is_terminated_through_ec2(tmp_path,
     assert any("ec2 terminate-instances --instance-ids i-0abc" in e for e in events(machine))
     cluster = cluster_name(run_id, "faces", 1)
     # only this attempt's cluster (or SkyPilot's name for it, with a suffix): never perception-...-10 for -1
-    assert any(f"Values={cluster},{cluster}-*" in e for e in events(machine) if "describe-instances" in e)
+    lookups = [e for e in events(machine) if "describe-instances" in e]
+    assert lookups and all(f"Values={cluster},{cluster}-*" in e for e in lookups)
     assert coord._tasks(run_id)["faces"]["error_code"] == "transient"   # it is gone: another attempt may start one
 
 
@@ -381,6 +383,17 @@ def test_a_machine_whose_deadline_was_never_set_is_charged_all_its_time(tmp_path
     run_id, status = run(coord, graph(tmp_path, rec))
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent > round(CloudBackend.hourly_usd * 2 / 3600, 4)   # every second it existed, not capped at the deadline
+
+
+def test_ec2_not_answering_while_ending_a_machine_with_no_deadline_still_stops_the_retries(tmp_path, machine, rec):
+    for f in ("launch-hangs", "down-hangs", "terminate-hangs"):
+        (machine / f).touch()
+    coord = coordinator(tmp_path, launch_s=1, down_s=2, aws_s=2)
+    doc = graph(tmp_path, rec)
+    doc["policy"]["retries"] = 2
+    run_id, status = run(coord, doc)
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1) and "may still be running" in t["error"]
 
 
 def test_a_machine_that_cannot_be_set_to_terminate_is_not_used(tmp_path, machine, rec):

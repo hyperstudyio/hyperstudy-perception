@@ -501,8 +501,12 @@ echo $pid
     def cancel_launches(self, c: dict):
         """Cancel, on SkyPilot's API server, any launch of this attempt's cluster still pending or running: found by its
         cluster's name, which only this attempt uses (a launch whose request id was never read)."""
-        out = subprocess.run([c["sky"], "api", "status", "-v", "-o", "json"], env=self.cloud_env(c), capture_output=True,
-                             text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=120)
+        try:
+            out = subprocess.run([c["sky"], "api", "status", "-v", "-o", "json"], env=self.cloud_env(c), capture_output=True,
+                                 text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            say(f"WARNING: SkyPilot did not list its requests in time to cancel a launch of {c['cluster']}; sky down follows")
+            return
         try:
             ids = [r["request_id"] for r in json.loads(out.stdout[out.stdout.index("["):])
                    if r.get("name") == "sky.launch" and r.get("cluster_name") == c["cluster"] and r.get("status") in ("PENDING", "RUNNING")]
@@ -516,8 +520,11 @@ echo $pid
     def request_status(self, c: dict, request: str) -> str:
         """A request's status on SkyPilot's API server (PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED), or "" when it
         could not be read this time."""
-        out = subprocess.run([c["sky"], "api", "status", "-a", request, "-o", "json"], env=self.cloud_env(c),
-                             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        try:
+            out = subprocess.run([c["sky"], "api", "status", "-a", request, "-o", "json"], env=self.cloud_env(c),
+                                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        except subprocess.TimeoutExpired:
+            return ""   # not read this time: the launch's own time limit still applies
         try:
             text = out.stdout[out.stdout.index("["):]
             return next((r["status"] for r in json.loads(text) if r["request_id"] == request), "")
@@ -571,20 +578,26 @@ echo $pid
         say(f"the machine cost about ${self.extra_usd:.2f}" + ("" if code == 0 else " (at least)"))
 
     def terminate_instances(self, c: dict) -> bool:
-        """Terminate every instance of this attempt's cluster through EC2 (when SkyPilot could not): whether none is left."""
+        """Terminate every instance of this attempt's cluster through EC2 (when SkyPilot could not): whether none is left.
+        An AWS call that fails or does not answer in time counts as not terminated (teardown then says so)."""
         aws = [c["aws"], "--region", c["region"], "--output", "text"]
-        ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
-                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']},{c['cluster']}-*",
-                              "Name=instance-state-name,Values=pending,running,stopping,stopped"],
-                             capture_output=True, text=True, start_new_session=True, timeout=120)
-        if ids.returncode:
-            say(f"could not list {c['cluster']}'s instances: {ids.stderr.strip()[-200:]}")
+        limit = c.get("aws_s", 120)
+        try:
+            ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
+                                  "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']},{c['cluster']}-*",
+                                  "Name=instance-state-name,Values=pending,running,stopping,stopped"],
+                                 capture_output=True, text=True, start_new_session=True, timeout=limit)
+            if ids.returncode:
+                say(f"could not list {c['cluster']}'s instances: {ids.stderr.strip()[-200:]}")
+                return False
+            found = ids.stdout.split()
+            if not found:
+                return True
+            done = subprocess.run([*aws, "ec2", "terminate-instances", "--instance-ids", *found], capture_output=True,
+                                  text=True, start_new_session=True, timeout=limit)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            say(f"could not reach EC2 to terminate {c['cluster']}'s instances ({e})")
             return False
-        found = ids.stdout.split()
-        if not found:
-            return True
-        done = subprocess.run([*aws, "ec2", "terminate-instances", "--instance-ids", *found], capture_output=True,
-                              text=True, start_new_session=True, timeout=120)
         if done.returncode:
             say(f"could not terminate {', '.join(found)}: {done.stderr.strip()[-200:]}")
             return False

@@ -47,11 +47,11 @@ class CloudBackend(SshBackend):
     caps = Capabilities(platform="linux/amd64", cpu_cores=8, memory_gb=32, accelerators={"cpu", "cuda"}, vram_gb=22)
 
     def __init__(self, deadline_s: float | None = None, runner_kind: str = "native", python: str | None = None,
-                 launch_s: float = 15 * 60, down_s: float = 15 * 60, **paths):
+                 launch_s: float = 15 * 60, down_s: float = 15 * 60, aws_s: float = 120, **paths):
         """`deadline_s` fixes the deadline whatever the video (tests); by default it follows the video's length.
         `launch_s`: how long starting the machine (and installing ffmpeg and uv on it) may take: within the deadline's
         20 minutes for starting, which also cover installing the node's environment."""
-        self.launch_s, self.down_s = launch_s, down_s   # down_s: how long sky down may take
+        self.launch_s, self.down_s, self.aws_s = launch_s, down_s, aws_s   # how long sky down, and an EC2 call, may take
         host = Host("cloud", "(started for each node)", "", self.caps, 0)
         super().__init__(host, runner_kind=runner_kind, python=python)
         self.kind = "cloud"
@@ -91,7 +91,7 @@ class CloudBackend(SshBackend):
         return {"host": "the cloud machine", "cloud": {
             "cluster": cluster_name(request["run"], request["node"], request["attempt"]),
             "task": str(self.task), "project_config": str(self.project_config), "guard": str(self.guard), "setup": str(self.setup),
-            "region": self.region, "hourly_usd": self.hourly_usd, "launch_s": self.launch_s, "down_s": self.down_s,
+            "region": self.region, "hourly_usd": self.hourly_usd, "launch_s": self.launch_s, "down_s": self.down_s, "aws_s": self.aws_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values())),
             "sky": os.environ.get("PERCEPTION_SKY") or shutil.which("sky") or "sky",
             "aws": os.environ.get("PERCEPTION_AWS") or shutil.which("aws") or "aws"}}
