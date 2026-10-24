@@ -547,6 +547,62 @@ def test_a_killed_attempt_is_charged_once_even_if_a_stale_snapshot_reports_its_d
     assert coord._tasks(run_id)["captions"]["state"] == "canceled"
 
 
+def test_a_cancel_during_submission_stops_the_node_and_keeps_it_canceled(tmp_path):
+    """The window between deciding to start a node and recording it running: a cancel there must win."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id = start(coord, refine_graph(video, {"sleep": 30}, max_cost_usd=1))
+    backend = coord.backends["self"]
+    real_submit = backend.submit
+
+    def submit_then_cancel(m, runner, attempt_dir, env):
+        handle = real_submit(m, runner, attempt_dir, env)
+        if m.id == "test.refine":
+            coordinator(tmp_path).cancel(run_id)                 # lands after the submit, before "running" is recorded
+        return handle
+    backend.submit = submit_then_cancel
+    assert asyncio.run(coord.run(run_id)) == "canceled"
+    t = coord._tasks(run_id)["captions"]
+    assert t["state"] == "canceled"
+    assert backend.poll(json.loads(t["handle"])) != "running"    # the process it had started was stopped
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)                             # charged its reservation, once
+
+
+def test_a_cancel_while_a_finished_node_is_collected_keeps_it_canceled_and_charged_once(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    doc = refine_graph(video, {"sleep": 1}, max_cost_usd=1)
+    run_id = start(coord, doc)
+    graph = compile_graph(doc, coord.registry)
+    real_check = coord._check_running
+    hold = {"on": True}
+    # the loop does not collect captions for now (shots, upstream, is collected as usual)
+    coord._check_running = lambda run_id, g, t: None if hold["on"] and t["node_id"] == "captions" else real_check(run_id, g, t)
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
+        while coord._tasks(run_id)["captions"]["state"] != "running":
+            assert time.time() < deadline, "the node never started"
+            await asyncio.sleep(0.02)
+        stale = coord._tasks(run_id)["captions"]
+        while coord.backends["self"].poll(json.loads(stale["handle"])) == "running":   # it finishes, with a response
+            assert time.time() < deadline, "the node never finished"
+            await asyncio.sleep(0.05)
+        coordinator(tmp_path).cancel(run_id)                     # charges the reservation
+        real_check(run_id, graph, stale)                         # the loop collects from its earlier snapshot
+        hold["on"] = False
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    assert coord._tasks(run_id)["captions"]["state"] == "canceled"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)                             # the reservation; not also the reported $0.01
+
+
 def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
     from perception import export
     video = tmp_path / "clip.mp4"

@@ -322,7 +322,13 @@ class Coordinator:
         except Exception as e:   # could not even start (missing tool, docker error): transient, the retry policy decides
             self._attempt_failed(run_id, graph, node.id, attempt, "transient", f"submit failed: {e}")
             return
-        self._set(run_id, node.id, state="running", handle=dumps(handle), started_at=time.time(), cost_usd=estimate.cost_usd)
+        with self.store.tx():   # recorded running only if nothing (a cancel) changed the task while it was submitted
+            if self._tasks(run_id)[node.id]["state"] != "leased" or self._canceled(run_id):
+                placement.backend.cancel(handle)   # canceled meanwhile: stop it now; it may have begun spending
+                self.store.db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (estimate.cost_usd, run_id))
+                self._set(run_id, node.id, handle=dumps(handle), cost_usd=estimate.cost_usd)
+                return
+            self._set(run_id, node.id, state="running", handle=dumps(handle), started_at=time.time(), cost_usd=estimate.cost_usd)
         self.store.event(run_id, node.id, "task.started", f"attempt {attempt} on {placement.backend.kind} ({placement.runner.accelerator})")
 
     def _fits(self, run_id: str, graph: Graph, m: Manifest, tasks: dict[str, dict]) -> bool:
@@ -369,6 +375,9 @@ class Coordinator:
         cost = float(usage.get("usd", 0.0))
         out_json = dumps({k: a.to_json() for k, a in outs.items()})
         with self.store.tx() as db:
+            now = self._tasks(run_id)[node.id]
+            if now["state"] != "running" or now["attempt"] != t["attempt"]:
+                return   # canceled (and charged its reservation) while it finished: it stays canceled
             db.execute("INSERT OR REPLACE INTO cache VALUES (?,?,?,?,?)", (t["cache_key"], node.manifest.ref, out_json, dumps(usage), time.time()))
             db.execute("""UPDATE tasks SET state='succeeded', outputs=?, usage=?, cost_usd=?, finished_at=?, lease_owner=NULL,
                           lease_expires=NULL, error_code=NULL, error=NULL WHERE run_id=? AND node_id=?""",
