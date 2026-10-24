@@ -530,7 +530,7 @@ echo $pid
         still creating it."""
         aws = [c["aws"], "--region", c["region"], "--output", "text"]
         ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
-                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']}*",
+                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']},{c['cluster']}-*",
                               "Name=instance-state-name,Values=pending,running"], capture_output=True, text=True)
         found = ids.stdout.split() if ids.returncode == 0 else []
         done_all = bool(found)
@@ -565,7 +565,7 @@ echo $pid
         else:   # no deadline on it either: nothing ends it but someone; no other attempt starts another one
             self.extra_usd = round(c["hourly_usd"] * c["deadline_s"] / 3600, 4)
             message = (f"{c['cluster']} could not be deleted and has no shutdown deadline: it may still be running. "
-                       f"Run `sky down {c['cluster']}`, or terminate its instance in the AWS console (us-east-1)")
+                       f"Run `sky down {c['cluster']}`, or terminate its instance in the AWS console ({c['region']})")
             say(f"WARNING: {message}")
             self.fail("internal", message)
         say(f"the machine cost about ${self.extra_usd:.2f}" + ("" if code == 0 else " (at least)"))
@@ -574,9 +574,9 @@ echo $pid
         """Terminate every instance of this attempt's cluster through EC2 (when SkyPilot could not): whether none is left."""
         aws = [c["aws"], "--region", c["region"], "--output", "text"]
         ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
-                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']}*",
+                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']},{c['cluster']}-*",
                               "Name=instance-state-name,Values=pending,running,stopping,stopped"],
-                             capture_output=True, text=True, start_new_session=True)
+                             capture_output=True, text=True, start_new_session=True, timeout=120)
         if ids.returncode:
             say(f"could not list {c['cluster']}'s instances: {ids.stderr.strip()[-200:]}")
             return False
@@ -584,7 +584,7 @@ echo $pid
         if not found:
             return True
         done = subprocess.run([*aws, "ec2", "terminate-instances", "--instance-ids", *found], capture_output=True,
-                              text=True, start_new_session=True)
+                              text=True, start_new_session=True, timeout=120)
         if done.returncode:
             say(f"could not terminate {', '.join(found)}: {done.stderr.strip()[-200:]}")
             return False

@@ -286,6 +286,9 @@ def test_a_machine_sky_down_could_not_delete_is_terminated_through_ec2(tmp_path,
     run_id, status = run(coord, graph(tmp_path, rec))
     assert status == "failed"
     assert any("ec2 terminate-instances --instance-ids i-0abc" in e for e in events(machine))
+    cluster = cluster_name(run_id, "faces", 1)
+    # only this attempt's cluster (or SkyPilot's name for it, with a suffix): never perception-...-10 for -1
+    assert any(f"Values={cluster},{cluster}-*" in e for e in events(machine) if "describe-instances" in e)
     assert coord._tasks(run_id)["faces"]["error_code"] == "transient"   # it is gone: another attempt may start one
 
 
