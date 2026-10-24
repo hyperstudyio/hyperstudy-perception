@@ -1,0 +1,38 @@
+# First NVIDIA run: decode + face tracks on one clip, on an L4 spot machine. The clip is copied to the machine only
+# (file mount from the laptop) and deleted with it. Results are exported to ~/out for the laptop to fetch, then the
+# cluster is taken down (sky down; autostop -i ... --down and the shutdown deadline below are the backstops).
+#   sky launch -c perception-gpu -i 15 --down -y cloud/skypilot/gpu-faces.yaml --workdir <staged repo> \
+#     --env CLIP=/data/clip.mp4
+resources:
+  cloud: aws
+  region: us-east-1
+  # L4 (g6) or A10G (g5): both 24 GB. On 2026-10-23 us-east-1 had no g6.xlarge spot capacity in any zone, and the
+  # account's G spot quota is 0 outside us-east-1.
+  accelerators: {L4: 1, A10G: 1}
+  use_spot: true
+  disk_size: 60
+
+file_mounts:
+  /data/clip.mp4: ~/Github/hyperstudy/.claude/worktrees/video-perception-bakeoff/tools/perception-bakeoff/data/ooo-genz-clip2.mp4
+
+setup: |
+  set -e
+  # Dead man's switch: no AWS credentials on the machine (remote_identity: NO_UPLOAD), so it powers itself off
+  # if the laptop never comes back to delete it. A one-time spot instance ends on OS shutdown.
+  sudo shutdown -h +90
+  sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+  command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH=$HOME/.local/bin:$PATH
+  (cd orchestrator && uv sync -q) && (cd envs/core && uv sync -q) && (cd envs/faces && uv sync -q)
+
+run: |
+  set -e
+  export PATH=$HOME/.local/bin:$PATH
+  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+  (cd envs/faces && uv run python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)")
+  cd orchestrator
+  uv run perception doctor
+  time uv run perception run ../graphs/faces.yaml --input video=/data/clip.mp4 --allow-downloads
+  run=$(uv run perception status | awk 'NR==1{print $1}')
+  uv run perception export "$run" --output ~/out/bundle
+  cp -r ~/.hyperstudy-perception/work/"$run" ~/out/work

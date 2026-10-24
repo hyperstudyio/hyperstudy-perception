@@ -10,6 +10,8 @@ config:
   batch_size: {type: integer, minimum: 1, default: 32}
 runners:
   - {kind: native, env: envs/faces, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # The faces lock resolves PyPI's CUDA 13 torch wheels on Linux (needs an NVIDIA driver >= 580).
+  - {kind: native, env: envs/faces, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 8}
   - {kind: native, env: envs/faces, entry: node.py, accelerator: cpu}
   # TODO: [PERCEPTION-GRAPH] Phase 1 step 7 - CUDA image for linux/amd64 (pinned digest), validated against MPS output
   # Plan: docs/plans/GRAPH_MVP_PLAN.md#phase-1--local-mvp
