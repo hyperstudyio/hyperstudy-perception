@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DATA_KINDS = ("video", "audio", "frames", "faces", "transcript", "embeddings")
 
@@ -56,10 +56,15 @@ class Privacy(Strict):
 
 class Cost(Strict):
     """A billable node's estimate, reserved against the run's budget before it starts; what it actually spent comes
-    back in its response (usage.usd). `per` counts units in one of the node's inputs."""
-    usd: float                                   # per unit, an upper estimate
+    back in its response (usage.usd). `per` counts units in one of the node's inputs. When the price depends on a
+    config value (the model), `usd` is a table keyed by that value and `by` names the config key."""
+    usd: float | dict[str, float]                # per unit, an upper estimate
+    by: str | None = None                        # the config key `usd` is keyed by
     per: Literal["shot", "minute", "run"]
     input: str | None = None                     # the input holding the units (shots layer; media for minutes)
+
+    def unit_usd(self, config: dict) -> float:
+        return self.usd[config[self.by]] if isinstance(self.usd, dict) else self.usd
 
 
 class ModelRef(Strict):
@@ -91,6 +96,20 @@ class Manifest(Strict):
     cost: Cost | None = None
 
     directory: Path = Field(default=Path("."), exclude=True)
+
+    @model_validator(mode="after")
+    def _cost_covers_its_config(self):
+        """A price table must price every value the config allows, or a new model would be reserved at nothing."""
+        if self.cost is None or not (isinstance(self.cost.usd, dict) or self.cost.by):
+            return self
+        if not (isinstance(self.cost.usd, dict) and self.cost.by):
+            raise ValueError("cost: a price table (usd: {value: price}) and `by` go together")
+        if self.cost.by not in self.config or "enum" not in self.config[self.cost.by]:
+            raise ValueError(f"cost.by: {self.cost.by!r} is not a config key with an enum")
+        missing = [v for v in self.config[self.cost.by]["enum"] if v not in self.cost.usd]
+        if missing:
+            raise ValueError(f"cost: no price for {self.cost.by} {', '.join(map(repr, missing))}")
+        return self
 
     @property
     def ref(self) -> str:

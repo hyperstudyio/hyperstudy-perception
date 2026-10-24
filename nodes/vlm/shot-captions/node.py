@@ -125,6 +125,11 @@ def caption(client, model, effort, prompt, images):
     return json.loads(text), response.usage.input_tokens, response.usage.output_tokens
 
 
+def spent(model, tokens_in, tokens_out):
+    price = PRICE_PER_MTOK[model]
+    return round((tokens_in * price[0] + tokens_out * price[1]) / 1e6, 4)
+
+
 with Node() as node:
     import anthropic
 
@@ -150,6 +155,8 @@ with Node() as node:
                   + ("\n".join(f"- {s}" for s in seen) or "(nobody yet)"))
         cap, n_in, n_out = caption(client, model, effort, prompt, labelled_keyframes(shot, keyframes_dir, faces, width))
         tokens_in, tokens_out = tokens_in + n_in, tokens_out + n_out
+        # The running total after every call: if a later shot fails, the response still reports what was spent.
+        node.usage(usd=spent(model, tokens_in, tokens_out), tokens_in=tokens_in, tokens_out=tokens_out, calls=len(shots) + 1)
         for person in cap["people"]:
             roster.setdefault(person["label"], person["appearance"])
         previous = cap["description"]
@@ -162,12 +169,9 @@ with Node() as node:
             else:
                 texts.append({"id": f"text:{len(texts)}", "text": string, "start": shot["start"], "end": shot["end"], "box": None})
 
-    price = PRICE_PER_MTOK[model]
-    usd = round((tokens_in * price[0] + tokens_out * price[1]) / 1e6, 4)
     node.model(model, licence_mode="api-terms", licence="Anthropic API terms")
     node.model("PySceneDetect AdaptiveDetector", licence_mode="commercial-ok", licence="BSD-3-Clause")   # the shots it refines
     timings = {"captions_s": round(time.time() - t0, 1)}
     node.write_json("shots", "shots.json", {**shots_doc, "producer": node.producer(timings=timings, device="Anthropic API"), "shots": shots})
     node.write_json("text", "text.json", {"layer": "text", "schema_version": "0.1.0",
                                           "producer": node.producer(timings=timings, device="Anthropic API"), "items": texts})
-    node.usage(usd=usd, tokens_in=tokens_in, tokens_out=tokens_out, calls=len(shots))

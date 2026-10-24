@@ -100,7 +100,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
                         known[node.id] = outs
             np.cost_usd = placement.backend.estimate(m, placement.runner, {}).cost_usd
             if m.cost:   # units are known once the input exists (from the cache, or a graph input)
-                np.cost_usd += manifest_cost(m, inputs) if m.cost.per == "run" or m.cost.input in inputs else 0.0
-                np.cost_note = "" if m.cost.per == "run" or m.cost.input in inputs else f"${m.cost.usd} per {m.cost.per}, units known after {node.inputs[m.cost.input].node}"
+                np.cost_usd += manifest_cost(m, node.config, inputs) if m.cost.per == "run" or m.cost.input in inputs else 0.0
+                np.cost_note = "" if m.cost.per == "run" or m.cost.input in inputs else f"${m.cost.unit_usd(node.config)} per {m.cost.per}, units known after {node.inputs[m.cost.input].node}"
         out.append(np)
     return Plan(out, allow_downloads)

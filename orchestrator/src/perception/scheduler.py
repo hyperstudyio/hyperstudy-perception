@@ -62,15 +62,15 @@ def output_path(out_dir: Path, rel) -> tuple[Path | None, str]:
     return steps[-1], ""
 
 
-def manifest_cost(m: Manifest, inputs: dict[str, Artifact]) -> float:
-    """A billable node's upper estimate: its manifest's price per unit times the units in its input."""
+def manifest_cost(m: Manifest, config: dict, inputs: dict[str, Artifact]) -> float:
+    """A billable node's upper estimate: its manifest's price per unit (for this config) times the units in its input."""
     if m.cost is None:
         return 0.0
     if m.cost.per == "run":
-        return m.cost.usd
+        return m.cost.unit_usd(config)
     doc = json.loads(inputs[m.cost.input].path.read_text())
     units = len(doc["shots"]) if m.cost.per == "shot" else doc["duration"] / 60
-    return round(m.cost.usd * units, 4)
+    return round(m.cost.unit_usd(config) * units, 4)
 
 
 class LeaseHeld(RuntimeError):
@@ -269,7 +269,7 @@ class Coordinator:
         if not self._fits(run_id, graph, m, tasks):
             return   # stays ready; started when running nodes free their share
         estimate = placement.backend.estimate(m, placement.runner, inputs)
-        estimate.cost_usd += manifest_cost(m, inputs)
+        estimate.cost_usd += manifest_cost(m, node.config, inputs)
         run = self.store.db.execute("SELECT max_cost_usd, spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()
         reserved = sum(x["cost_usd"] for x in tasks.values() if x["state"] == "running")
         if estimate.cost_usd > 0 and run["spent_usd"] + reserved + estimate.cost_usd > run["max_cost_usd"]:
@@ -327,11 +327,13 @@ class Coordinator:
                                  f"the node exited without a response (crashed or killed); see {attempt_dir / 'log.txt'}")
             return
         if not response["ok"]:
+            self._charge(run_id, response)   # what a failed attempt spent is still spent
             err = response["error"]
             self._attempt_failed(run_id, graph, node.id, t["attempt"], err["code"], err["message"])
             return
         problems, outs = self._publish(node, backend.output_dir(attempt_dir), response)
         if problems:
+            self._charge(run_id, response)
             self._attempt_failed(run_id, graph, node.id, t["attempt"], problems[0][0], "; ".join(p for _, p in problems))
             return
         usage = {**response.get("usage", {}), "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}
@@ -374,6 +376,10 @@ class Coordinator:
         if problems:
             return problems, {}
         return [], {name: self.store.publish(path, type_id) for name, (path, type_id) in ready.items()}
+
+    def _charge(self, run_id: str, response: dict):
+        self.store.db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?",
+                              (float(response.get("usage", {}).get("usd", 0.0)), run_id))
 
     def _attempt_failed(self, run_id: str, graph: Graph, node_id: str, attempt: int, code: str, message: str):
         retries = graph.spec.policy.retries

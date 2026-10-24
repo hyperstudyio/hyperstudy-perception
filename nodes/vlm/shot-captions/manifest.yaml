@@ -18,9 +18,9 @@ resources: {cpu_cores: 1, memory_gb: 1, gpu: none}
 # Sent to Anthropic: keyframes with face boxes and labels, and the transcript lines of each shot.
 privacy: {external_upload: [frames, faces, transcript]}
 secrets: [ANTHROPIC_API_KEY]
-# Upper estimate per shot (measured on OOO: $0.04 for 44 shots with Haiku 5.5, about $0.001 a shot). Opus 5.5 costs
-# 40x more per token; the estimate assumes Haiku, so raise it if the graph picks Opus.
-cost: {usd: 0.003, per: shot, input: shots}
+# Upper estimate per shot, per model (measured on OOO: $0.04 for 44 shots with Haiku 5.5, about $0.001 a shot; Opus 5.5
+# costs 40x more per token). A model added to the config enum needs a price here, or the manifest does not load.
+cost: {usd: {claude-haiku-5-5: 0.003, claude-opus-5-5: 0.12}, by: model, per: shot, input: shots}
 models:
   - {id: claude-haiku-5-5, licence: Anthropic API terms, licence_mode: api-terms}
   - {id: claude-opus-5-5, licence: Anthropic API terms, licence_mode: api-terms}

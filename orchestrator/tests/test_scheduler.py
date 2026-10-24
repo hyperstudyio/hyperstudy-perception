@@ -380,11 +380,12 @@ def test_export_puts_the_run_time_and_timings_back_into_the_bundle(tmp_path):
     assert producer["run_at"] and producer["timings"].get("seconds") is not None
 
 
-def refine_graph(video: Path, **policy) -> dict:
+def refine_graph(video: Path, config: dict | None = None, **policy) -> dict:
     return {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
             "policy": {"privacy": "local-preferred", "allow_upload": ["frames"], **policy},
             "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
-                      {"id": "captions", "uses": "test.refine@1.0.0", "inputs": {"shots": "$nodes.shots.shots"}}]}
+                      {"id": "captions", "uses": "test.refine@1.0.0", "inputs": {"shots": "$nodes.shots.shots"},
+                       "config": config or {}}]}
 
 
 def test_uploads_need_the_data_kind_allowed_by_name(tmp_path):
@@ -410,6 +411,33 @@ def test_a_billable_node_is_held_to_its_estimate_and_charged_what_it_spent(tmp_p
     assert spent == pytest.approx(0.01)                                          # what the node reported, not the estimate
 
 
+def test_the_estimate_follows_the_config_the_price_depends_on(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, refine_graph(video, {"model": "dear"}, max_cost_usd=0.6))   # 1 shot x $20 > $0.6
+    assert status == "failed" and coord._tasks(run_id)["captions"]["error_code"] == "budget"
+
+
+def test_a_cost_table_must_price_every_value_of_its_config_key():
+    from perception.manifests import Manifest
+    doc = {"id": "x", "version": "1.0.0", "outputs": {}, "runners": [{"kind": "self", "entry": "node.py"}],
+           "config": {"model": {"enum": ["cheap", "dear"], "default": "cheap"}},
+           "cost": {"usd": {"cheap": 0.5}, "by": "model", "per": "run"}}
+    with pytest.raises(ValueError, match="no price for model 'dear'"):
+        Manifest.model_validate(doc)
+
+
+def test_a_failed_attempt_is_charged_what_it_spent(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, refine_graph(video, {"fail_until": 1}, max_cost_usd=1, retries=1))
+    assert status == "succeeded"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.02)                                          # the failed attempt and the retry
+
+
 def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
     from perception import export
     video = tmp_path / "clip.mp4"
@@ -421,3 +449,17 @@ def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
     assert shots[0]["caption"] == {"description": "shot 0"}
     # the strictest licence up the chain: the upstream shots node is academic-only, so the refined layer is too
     assert json.loads((out / "manifest.json").read_text())["layers"]["shots"]["licence_mode"] == "academic-only"
+
+
+@pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])
+def test_changing_the_node_sdk_changes_every_nodes_runner_identity(tmp_path, monkeypatch, backend):
+    from perception.backends import native
+    sdk = tmp_path / "sdk" / "src" / "perception_node"
+    sdk.mkdir(parents=True)
+    (sdk / "__init__.py").write_text("PROTOCOL = 1\n")
+    monkeypatch.setattr(native, "REPO", tmp_path)
+    m = Registry.load(NODES).get("test.work@1.0.0")
+    b = getattr(native, backend)()
+    before = b.identity(m, m.runners[0])
+    (sdk / "__init__.py").write_text("PROTOCOL = 1  # a changed response writer\n")
+    assert b.identity(m, m.runners[0]) != before
