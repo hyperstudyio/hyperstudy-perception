@@ -1,0 +1,16 @@
+id: test.refine
+version: 1.0.0
+description: Refines a shots layer (adds captions), as an API node would; declares a cost per shot and an upload
+inputs: {shots: bundle.shots@0.1}
+outputs: {shots: bundle.shots@0.1}
+config:
+  usd: {type: number, default: 0.01, description: "what the node reports having spent"}
+  model: {enum: [cheap, dear], default: cheap}
+  fail_until: {type: integer, default: 0, description: "attempts up to this one spend `usd`, then fail (transient)"}
+  crash: {type: boolean, default: false, description: "fail by dying without a response instead"}
+runners:
+  - {kind: self, entry: node.py}
+privacy: {external_upload: [frames]}
+cost: {usd: {cheap: 0.5, dear: 20}, by: model, per: shot, input: shots}
+models:
+  - {id: test-captioner, licence_mode: api-terms}

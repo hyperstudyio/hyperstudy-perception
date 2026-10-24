@@ -1,6 +1,7 @@
 """A test node: sums its inputs' `value`s plus config `add`, after `sleep` seconds. It records each execution (a file
 in `record_dir`) and can fail on purpose: `fail` = transient | crash | schema | internal | input, for attempts up to
-`fail_until` (so a retried transient failure can then succeed)."""
+`fail_until` (so a retried transient failure can then succeed). `oom` raises an exception named like PyTorch's
+(torch.OutOfMemoryError) without needing torch."""
 
 import json
 import os
@@ -22,6 +23,10 @@ with Node() as node:
     failing = node.request["attempt"] <= c["fail_until"]
     if failing and c["fail"] == "crash":
         os._exit(3)                                  # dies without a response, as an OOM kill would
+    if failing and c["fail"] == "oom":
+        class OutOfMemoryError(RuntimeError):
+            pass
+        raise OutOfMemoryError("CUDA out of memory. Tried to allocate 7.91 GiB.")
     if failing and c["fail"] in ("transient", "input", "internal"):
         if c["fail"] == "internal":
             raise ZeroDivisionError("a bug")

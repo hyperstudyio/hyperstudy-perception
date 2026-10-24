@@ -1,0 +1,27 @@
+id: vlm.shot-captions
+version: 1.0.0
+stage: extract+caption
+description: Per-shot descriptions from keyframes (faces boxed and labelled), speech and the face roster; on-screen text
+inputs:
+  shots: bundle.shots@0.1
+  keyframes: assets.v1
+  transcript: bundle.transcript@0.1
+  faces: bundle.faces@0.1
+  media: media.v1
+outputs: {shots: bundle.shots@0.1, text: bundle.text@0.1}
+config:
+  model: {enum: [claude-haiku-5-5, claude-opus-5-5], default: claude-haiku-5-5, description: "bake-off choice: Haiku 5.5 with the face roster"}
+  effort: {enum: [low, medium, high], default: medium}
+runners:
+  - {kind: native, env: envs/api, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 1, memory_gb: 1, gpu: none}
+# Sent to Anthropic: keyframes with face boxes and labels, and the transcript lines of each shot.
+privacy: {external_upload: [frames, faces, transcript]}
+secrets: [ANTHROPIC_API_KEY]
+# Upper estimate per shot, per model (measured on OOO: $0.04 for 44 shots with Haiku 5.5, about $0.001 a shot; Opus 5.5
+# costs 40x more per token). A model added to the config enum needs a price here, or the manifest does not load.
+cost: {usd: {claude-haiku-5-5: 0.003, claude-opus-5-5: 0.12}, by: model, per: shot, input: shots}
+models:
+  - {id: claude-haiku-5-5, licence: Anthropic API terms, licence_mode: api-terms}
+  - {id: claude-opus-5-5, licence: Anthropic API terms, licence_mode: api-terms}
+  - {id: PySceneDetect AdaptiveDetector, licence: BSD-3-Clause, licence_mode: commercial-ok}

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .ir import Graph
 from .manifests import ModelRef
-from .scheduler import Coordinator
+from .scheduler import Coordinator, manifest_cost
 from .store import Artifact
 
 
@@ -28,6 +28,7 @@ class NodePlan:
     downloads: list[ModelRef] = field(default_factory=list)
     missing_secrets: list[str] = field(default_factory=list)
     cost_usd: float = 0.0
+    cost_note: str = ""
 
 
 @dataclass
@@ -51,8 +52,8 @@ class Plan:
                 lines.append(f"{'':16s}   needs download: {m.id} ({size}{', gated' if m.gated else ''}, {m.licence_mode}) from {m.source}")
             for s in n.missing_secrets:
                 lines.append(f"{'':16s}   missing secret: {s}")
-            if explain and n.cost_usd:
-                lines.append(f"{'':16s}   estimated ${n.cost_usd:.2f}")
+            if n.cost_usd or n.cost_note:
+                lines.append(f"{'':16s}   estimated ${n.cost_usd:.2f}" + (f" ({n.cost_note})" if n.cost_note else ""))
         total = sum(n.cost_usd for n in self.nodes if not n.cached)
         lines.append(f"estimated spend: ${total:.2f}")
         downloads = [m for n in self.nodes for m in n.downloads]
@@ -98,5 +99,8 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
                         np.downloads = []
                         known[node.id] = outs
             np.cost_usd = placement.backend.estimate(m, placement.runner, {}).cost_usd
+            if m.cost:   # units are known once the input exists (from the cache, or a graph input)
+                np.cost_usd += manifest_cost(m, node.config, inputs) if m.cost.per == "run" or m.cost.input in inputs else 0.0
+                np.cost_note = "" if m.cost.per == "run" or m.cost.input in inputs else f"${m.cost.unit_usd(node.config)} per {m.cost.per}, units known after {node.inputs[m.cost.input].node}"
         out.append(np)
     return Plan(out, allow_downloads)

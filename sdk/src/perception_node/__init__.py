@@ -31,7 +31,16 @@ import traceback
 from pathlib import Path
 
 PROTOCOL = 1
-ERROR_CODES = ("transient", "input", "schema", "privacy", "licence", "internal")
+# resources: the node ran out of memory (GPU or RAM). Terminal like the others: the same input on the same device would
+# run out again, so the fix is a smaller memory setting in the graph's config, or another device.
+ERROR_CODES = ("transient", "input", "schema", "privacy", "licence", "resources", "internal")
+MEMORY_SETTINGS = ("batch_size",)   # config keys that trade memory for speed, named in the message
+
+
+def out_of_memory(exc: BaseException) -> bool:
+    """PyTorch's OutOfMemoryError (CUDA), MPS's RuntimeError, and Python's MemoryError."""
+    return (isinstance(exc, MemoryError) or type(exc).__name__ == "OutOfMemoryError"
+            or (isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()))
 
 
 class NodeError(Exception):
@@ -95,11 +104,16 @@ class Node:
         return p
 
     def producer(self, timings: dict | None = None, device: str | None = None) -> dict:
-        """The bundle layer `producer` block: stage and models from the manifest, plus what this run recorded."""
+        """The bundle layer `producer` block: stage and models from the manifest, and the device.
+
+        Deliberately without the run time or timings: a stored layer must be the same bytes whenever the same inputs
+        produce the same data, or every downstream node would miss the cache after an upstream rerun. Timings go to
+        the response's usage; `perception export` writes run_at and timings into the bundle's copy of the layer."""
+        if timings:
+            self._usage.setdefault("timings", {}).update(timings)
         base = self.request.get("producer", {})
         return {**base, "models": self._models or base.get("models", []), "config": self.config,
-                "device": device, "run_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
-                "timings": timings or {}}
+                "device": device, "run_at": None, "timings": {}}
 
     def model(self, id: str, licence_mode: str, source: str | None = None, revision: str | None = None, licence: str | None = None):
         """Record a model this run used (the coordinator checks it against the manifest's licence mode)."""
@@ -121,6 +135,11 @@ class Node:
                 error = {"code": exc.code, "message": str(exc)}
             elif isinstance(exc, KeyboardInterrupt):
                 error = {"code": "transient", "message": "interrupted"}
+            elif out_of_memory(exc):
+                knobs = [f"{k} (now {self.config[k]})" for k in MEMORY_SETTINGS if k in self.config]
+                hint = f"lower {' or '.join(knobs)} in the graph's config for this node" if knobs else "run it on a device with more memory"
+                error = {"code": "resources", "message": f"out of memory on {self.accelerator}: {exc}. To fix: {hint}.",
+                         "traceback": traceback.format_exc()}
             else:
                 error = {"code": "internal", "message": f"{exc_type.__name__}: {exc}", "traceback": traceback.format_exc()}
         response = {

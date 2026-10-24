@@ -1,0 +1,28 @@
+# Smoke test of a cloud machine: install the orchestrator, run the decode graph on a synthetic video (ffmpeg test
+# pattern and tone, so no stimulus leaves the laptop), print timings, then the cluster is deleted.
+#   cloud/skypilot/launch.sh cloud/skypilot/smoke.yaml perception-smoke
+# --cpus/--gpus after the cluster name pick the machine; the defaults are the cheapest spot CPU machine.
+resources:
+  cloud: aws
+  region: us-east-1
+  cpus: 2+
+  use_spot: true
+
+setup: |
+  set -e
+  bash cloud/skypilot/guard.sh 45
+  sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+  command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH=$HOME/.local/bin:$PATH
+  (cd orchestrator && uv sync -q) && (cd envs/core && uv sync -q)
+
+run: |
+  set -e
+  export PATH=$HOME/.local/bin:$PATH
+  nproc; free -g | head -2; nvidia-smi --query-gpu=name,memory.total --format=csv 2>/dev/null || echo "no GPU"
+  ffmpeg -v error -y -f lavfi -i testsrc2=size=1280x720:rate=30:duration=120 -f lavfi -i sine=frequency=440:duration=120 \
+    -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest /tmp/synthetic.mp4
+  cd orchestrator
+  uv run perception doctor
+  time uv run perception run ../graphs/decode.yaml --input video=/tmp/synthetic.mp4
+  uv run perception status

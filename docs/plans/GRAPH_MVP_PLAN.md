@@ -19,7 +19,7 @@ the bake-off stages). Search the code for `TODO: [PERCEPTION-GRAPH]` for unfinis
 | GPU budget on a Mac | One `gpu: exclusive` node at a time; `gpu: shared` nodes up to the free unified memory. | Measured: SAM 3 overlapping Sapiens2 pushed a 128 GB Mac into 45 GB of swap. |
 | Weights | Nodes declare their weights (`hf://repo@revision`, size, gated, licence). `perception doctor`/`plan` report what is missing; `perception models pull` fetches. A run never downloads silently: a missing weight fails the plan. | Spec: never silently download large weights. |
 | Secrets | Names only in YAML and requests (`secrets: [HF_TOKEN]`); values from the environment or `~/.config/hyperstudy/*.env`, passed in the child's environment, never written to disk or logs. | Spec security section. |
-| Privacy | `privacy.external_upload` per node and per data kind (video, audio, face crops, transcripts, embeddings). A graph's `policy.privacy: local-only` makes any node that needs upload a plan error. | Copyrighted stimuli: only Anthropic/OpenAI were approved for the bake-off clips. |
+| Privacy | `privacy.external_upload` per node and per data kind (video, audio, face crops, transcripts, embeddings). A graph's `policy.privacy: local-only` makes any node that needs upload a plan error. A whole graph run on a cloud machine (`cloud/skypilot/`) is outside this check: the clip is sent only when named at launch. | Copyrighted stimuli: Anthropic and OpenAI were approved for the bake-off clips, and OOO clip 2 for our own temporary AWS machines (2026-10-23). |
 | CLI name | `perception` (the spec's sketch); package `hyperstudy-perception`. Replaces the `ptrack` placeholder. | Final name is still an open decision. |
 
 ## Phase 0 — contracts
@@ -77,7 +77,33 @@ Done and tested:
 
 Not done:
 - **OCI backend.** Written but not yet run against a real image. It needs a CUDA box or a CPU test image.
-- **CUDA runners** for ASR and faces.
+- **CUDA runner** for ASR (faces has one: native on Linux, first run 2026-10-24).
 - **`perception models pull`.**
-- **Cloud backend.** SkyPilot across providers, chosen on measured cost (no provider preferred); the first NVIDIA timing needs a GPU provider account.
+- **Cloud backend in the coordinator.** SkyPilot runs a whole graph on a cloud machine today (`cloud/skypilot/`); placing single nodes there from a local run is not built yet.
 - **Windows.** Untested.
+
+### Phase 2 progress (2026-10-23)
+
+- **First API node, `vlm.shot-captions`.** Claude Haiku 5.5 with the face roster, as chosen in the bake-off. It refines decode's shots layer, and export takes the downstream version. It also writes the on-screen text layer.
+  - On NES: 36 calls, $0.0215, 161 s.
+  - The calls run in order, because each shot's prompt carries the roster and the previous caption. A Message Batch (50% off) would mean dropping that chaining, which is a quality decision still open.
+- **Cost estimates.** A manifest declares `cost: {usd, per: shot|minute|run, input}`. The estimate is reserved against `max_cost_usd` before the node starts, and the run is charged what the node reports (`usage.usd`).
+- **Upload permissions per data kind.** `policy.allow_upload` names each kind that may leave the machine: video, audio, frames, faces, transcript or embeddings. A node that uploads anything else is a graph error.
+- **Deterministic stored layers.** The SDK no longer writes the run time or timings into layer content; export adds them to the bundle's copy. Rerunning decode on NES now leaves ASR, faces and captions as cache hits.
+- **`rerun --no-cache` forces only the named node.** Downstream nodes rerun only if its outputs changed.
+- **The node SDK is part of each native node's cache identity.**
+- **Tests:** 33 (`orchestrator/tests`).
+
+### First cloud runs (2026-10-24)
+
+SkyPilot on AWS us-east-1 (`cloud/skypilot/`), always through `launch.sh`:
+- **Credentials.** No laptop credentials are copied to the machine, and its only role is `perception-node`, which can end `perception-*` machines and do nothing else (`sky.yaml`, `iam-perception-node.json`). `guard.sh` checks both on the machine and fails the job otherwise.
+  - The first runs below used `remote_identity: NO_UPLOAD`. On AWS that only skips copying credential files: SkyPilot still attached its default `skypilot-v1` role, which has EC2 and S3 full access. The guard caught it on 2026-10-24. CloudTrail shows the role was used only for SkyPilot's own autodown (describe and terminate calls).
+- **Uploads.** The workdir is a staged copy of the files git tracks or would track; `.gitignore` keeps out media, run outputs and `.env` files. A clip is sent only when named with `--env CLIP_SRC=...`.
+- **Deletion.** Every machine is deleted after its job: `sky down` when `launch.sh` exits, idle autodown, and a shutdown deadline that terminates the instance (`launch.sh` sets on-demand machines to terminate, not stop, on shutdown).
+
+- **CPU smoke test** (`smoke.yaml`, spot `m6i.large`): decode of a synthetic 2-minute video, 11.8 s. The machine deleted itself 40 s after the job.
+- **First NVIDIA run** (`gpu-faces.yaml`, `graphs/faces.yaml`, OOO clip 2): on-demand `g6.xlarge` (L4, 4 vCPUs, driver 580, torch 2.14.1+cu130). There was no L4 or A10G spot capacity in any us-east-1 zone, and the account's G spot quota is 0 in other regions. About $0.12.
+  - The face node ran on its new CUDA runner. Against the Mac's run: 185 of 186 tracks match (median box IoU 0.994), the same 52 shots, 97.9% agreement on which tracks are the same person, and 18 people in both. The Mac left 31 tracks unassigned and the L4 21: tiny numeric differences move borderline tracks across the clustering threshold.
+  - Timing: decode 43 s (Mac 15 s); faces 141 s (detection 106 s), against 95 s on the Mac (detection 76 s). The batch size was the default 32, and GPU utilisation was not recorded. Next: record utilisation, sweep the batch size, and try a machine with more vCPUs, to find what limits it.
+- **Thumbnails.** Each person's crop is chosen among shortlisted faces on exposure, colour cast, blur and blown-out pixels (`thumbnails.py`), instead of size and frontality alone (which picked a red-lit face on clip 2).

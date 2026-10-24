@@ -1,0 +1,39 @@
+# First NVIDIA run: decode + face tracks on one clip, on an L4 or A10G machine. The clip is copied to the machine only
+# (file mount from the laptop) and deleted with it. Results are exported to ~/out for the laptop to fetch before the
+# cluster is deleted. Sending a study's stimulus to a cloud machine needs that study's approval: a whole graph run
+# off the laptop is not checked by the graph's privacy policy.
+#   cloud/skypilot/launch.sh cloud/skypilot/gpu-faces.yaml perception-gpu --env CLIP_SRC=/path/to/clip.mp4
+resources:
+  cloud: aws
+  region: us-east-1
+  # L4 (g6) or A10G (g5): both 24 GB. On 2026-10-23 us-east-1 had no g6.xlarge spot capacity in any zone, and the
+  # account's G spot quota is 0 outside us-east-1.
+  accelerators: {L4: 1, A10G: 1}
+  use_spot: true
+  disk_size: 60
+
+envs:
+  CLIP_SRC: null      # required: the clip on the laptop
+
+file_mounts:
+  /data/clip.mp4: ${CLIP_SRC}
+
+setup: |
+  set -e
+  bash cloud/skypilot/guard.sh 90
+  sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+  command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH=$HOME/.local/bin:$PATH
+  (cd orchestrator && uv sync -q) && (cd envs/core && uv sync -q) && (cd envs/faces && uv sync -q)
+
+run: |
+  set -e
+  export PATH=$HOME/.local/bin:$PATH
+  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+  (cd envs/faces && uv run python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)")
+  cd orchestrator
+  uv run perception doctor
+  time uv run perception run ../graphs/faces.yaml --input video=/data/clip.mp4 --allow-downloads
+  run=$(uv run perception status | awk 'NR==1{print $1}')
+  uv run perception export "$run" --output ~/out/bundle
+  cp -r ~/.hyperstudy-perception/work/"$run" ~/out/work

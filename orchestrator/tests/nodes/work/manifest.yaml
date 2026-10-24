@@ -6,9 +6,10 @@ outputs: {out: json.v1}
 config:
   add: {type: number, default: 1}
   sleep: {type: number, default: 0}
-  fail: {enum: [none, transient, crash, schema, internal, input], default: none}
+  fail: {enum: [none, transient, crash, schema, internal, input, oom], default: none}
   fail_until: {type: integer, default: 0}
   record_dir: {type: string}
+  batch_size: {type: integer, default: 4}
 runners:
   - {kind: self, entry: node.py}
 resources: {cpu_cores: 1, memory_gb: 0.1}
