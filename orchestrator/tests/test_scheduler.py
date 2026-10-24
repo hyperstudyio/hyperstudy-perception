@@ -190,6 +190,23 @@ def test_running_out_of_memory_fails_once_and_names_the_setting_to_change(tmp_pa
     assert len(executions(Path(rec))) == 1                                # the same input would run out again: no retry
 
 
+def test_a_run_canceled_from_another_process_ends_canceled_not_failed(tmp_path, rec):
+    coord = coordinator(tmp_path)
+    run_id = start(coord, graph_doc(tmp_path, [work("a", record_dir=rec, sleep=30)]))
+
+    async def go():
+        running = asyncio.create_task(coord.run(run_id))
+        while coord._tasks(run_id)["a"]["state"] != "running":   # waiting for the node to start
+            await asyncio.sleep(0.02)
+        coordinator(tmp_path).cancel(run_id)                     # another process (perception cancel) on the same store
+        return await running
+
+    assert asyncio.run(go()) == "canceled"
+    assert coord.store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()[0] == "canceled"
+    kinds = [e["kind"] for e in coord.store.events(run_id)]
+    assert "run.canceled" in kinds and "run.failed" not in kinds
+
+
 def test_retries_stop_at_the_policy_limit(tmp_path, rec):
     coord = coordinator(tmp_path)
     run_id, status = run(coord, graph_doc(tmp_path, [work("a", record_dir=rec, fail="transient", fail_until=9)], retries=1))

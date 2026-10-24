@@ -164,6 +164,9 @@ class Coordinator:
                                       (time.time() + self.lease_s, run_id, self.owner))
                 last_heartbeat = time.time()
             if all(t["state"] in TERMINAL for t in tasks.values()):
+                # cancel() (perhaps from another process) has already recorded the run and said so: keep that
+                if self.store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()["status"] == "canceled":
+                    return "canceled"
                 status = "succeeded" if all(t["state"] in DONE for t in tasks.values()) else "failed"
                 self.store.db.execute("UPDATE runs SET status=?, finished_at=? WHERE id=?", (status, time.time(), run_id))
                 self.store.event(run_id, None, f"run.{status}")
