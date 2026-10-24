@@ -91,3 +91,31 @@ def test_doctor_lists_the_machine_and_where_each_node_can_run(home, capsys):
     assert doc["type"] == "doctor" and doc["cpu_cores"] > 0 and "cpu" in doc["accelerators"]
     work_node = next(n for n in doc["nodes"] if n["ref"] == "test.work@1.0.0")
     assert work_node["where"] and work_node["why_not"] == ""
+
+
+def test_a_rerun_streams_only_its_own_events_not_the_runs_history(home, capsys):
+    g = graph(home, [work("a", home)])
+    assert cli("run", str(g)) == 0
+    run = lines(capsys)[0]["run"]
+    assert cli("rerun", run, "--from", "a", "--no-cache") == 0
+    out = lines(capsys)
+    kinds = [e["kind"] for e in out if e["type"] == "event"]
+    assert kinds[0] == "run.rerun" and kinds.count("run.succeeded") == 1 and kinds.count("task.succeeded") == 1
+
+
+def test_every_command_speaks_json(home, capsys):
+    g = graph(home, [work("a", home)])
+    assert cli("graph", "validate", str(g)) == 0
+    [v] = lines(capsys)
+    assert v["type"] == "graph" and v["valid"] is True and v["nodes"] == ["a"]
+    assert cli("models", "list") == 0
+    [m] = lines(capsys)
+    assert m["type"] == "models" and any(x["node"] == "test.work@1.0.0" for x in m["models"])
+    assert cli("run", str(g)) == 0
+    run = lines(capsys)[0]["run"]
+    assert cli("artifacts", run) == 0
+    [a] = lines(capsys)
+    assert a["type"] == "artifacts" and [(x["node"], x["name"], x["type"]) for x in a["artifacts"]] == [("a", "out", "json.v1")]
+    assert cli("logs", run) == 0
+    out = lines(capsys)
+    assert out and all(e["type"] == "event" for e in out) and out[-1]["kind"] == "run.succeeded"

@@ -150,6 +150,10 @@ def cmd_doctor(args):
 
 def cmd_models(args):
     reg = registry(args)
+    if args.json:
+        emit("models", models=[{"node": m.ref, **x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"})}
+                               for m in reg for x in m.models])
+        return 0
     for m in reg:
         for x in m.models:
             size = f"{x.size_gb:.1f} GB" if x.size_gb else "?"
@@ -160,10 +164,16 @@ def cmd_validate(args):
     try:
         graph, _ = read_graph(Path(args.graph), registry(args))
     except GraphError as e:
+        if args.json:
+            emit("graph", valid=False, nodes=[], problems=e.problems)
+            return 1
         print(f"{args.graph}: invalid")
         for p in e.problems:
             print(f"  - {p}")
         return 1
+    if args.json:
+        emit("graph", valid=True, nodes=list(graph.nodes), problems=[])
+        return 0
     print(f"{args.graph}: valid ({len(graph.nodes)} nodes: {' -> '.join(graph.nodes)})")
     return 0
 
@@ -182,12 +192,17 @@ def cmd_plan(args):
     return 0 if p.ok else 1
 
 
-def _run(coord: Coordinator, run_id: str, as_json: bool = False) -> int:
+def last_event(store: Store, run_id: str) -> int:
+    return store.db.execute("SELECT COALESCE(MAX(id), 0) FROM events WHERE run_id=?", (run_id,)).fetchone()[0]
+
+
+def _run(coord: Coordinator, run_id: str, as_json: bool = False, after: int = 0) -> int:
+    """Run and stream events; `after` skips the run's earlier history (resume and rerun show only what they do)."""
     if as_json:
         emit("run.created", run=run_id, store=str(coord.store.root))
     else:
         print(f"run {run_id}  (store {coord.store.root})")
-    seen = 0
+    seen = after
 
     def flush():
         nonlocal seen
@@ -206,8 +221,7 @@ def _run(coord: Coordinator, run_id: str, as_json: bool = False) -> int:
     async def main():
         w = asyncio.create_task(watch())
         status = await coord.run(run_id)
-        await asyncio.sleep(0.4)
-        w.cancel()
+        w.cancel()   # flush() below prints what it had not seen yet
         return status
 
     status = asyncio.run(main())
@@ -236,13 +250,15 @@ def cmd_run(args):
 
 
 def cmd_resume(args):
-    return _run(coordinator(args), args.run_id, args.json)
+    coord = coordinator(args)
+    return _run(coord, args.run_id, args.json, after=last_event(coord.store, args.run_id))
 
 
 def cmd_rerun(args):
     coord = coordinator(args)
+    after = last_event(coord.store, args.run_id)   # before the rerun writes its own run.rerun event
     coord.rerun(args.run_id, args.from_node, use_cache=not args.no_cache)
-    return _run(coord, args.run_id, args.json)
+    return _run(coord, args.run_id, args.json, after=after)
 
 
 def cmd_cancel(args):
@@ -300,8 +316,11 @@ def cmd_logs(args):
             seen = e["id"]
             if args.node and e["node_id"] != args.node:
                 continue
-            print(f"{time.strftime('%H:%M:%S', time.localtime(e['at']))} {e['node_id'] or '':14s} {e['kind']:16s} {e['message'] or ''}")
-        if args.node:
+            if args.json:
+                emit("event", run=args.run_id, node=e["node_id"], kind=e["kind"], message=e["message"] or "", at=iso(e["at"]))
+            else:
+                print(f"{time.strftime('%H:%M:%S', time.localtime(e['at']))} {e['node_id'] or '':14s} {e['kind']:16s} {e['message'] or ''}")
+        if args.node and not args.json:   # the node's own log is text for people; as JSON, logs streams events only
             t = store.db.execute("SELECT attempt FROM tasks WHERE run_id=? AND node_id=?", (args.run_id, args.node)).fetchone()
             if t and t["attempt"]:
                 log = store.root / "work" / args.run_id / args.node / str(t["attempt"]) / "log.txt"
@@ -315,6 +334,12 @@ def cmd_logs(args):
 
 def cmd_artifacts(args):
     store = Store(home())
+    if args.json:
+        emit("artifacts", run=args.run_id, artifacts=[
+            {"node": t["node_id"], "name": name, "type": a["type"], "hash": a["hash"], "path": a["path"]}
+            for t in store.db.execute("SELECT node_id, outputs FROM tasks WHERE run_id=?", (args.run_id,))
+            for name, a in json.loads(t["outputs"] or "{}").items()])
+        return 0
     for t in store.db.execute("SELECT node_id, state, outputs FROM tasks WHERE run_id=?", (args.run_id,)):
         for name, a in json.loads(t["outputs"] or "{}").items():
             print(f"{t['node_id']}.{name:12s} {a['type']:22s} {a['hash'][:12]}  {a['path']}")
