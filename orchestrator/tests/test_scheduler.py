@@ -376,11 +376,10 @@ def test_a_node_runs_where_it_is_placed_among_the_places_it_can_run_here(tmp_pat
     coord = coordinator(tmp_path, TwoDevices())
     m = coord.registry.get("test.two@1.0.0")
     assert [p.label for p in coord.placements(m)[0]] == ["self:cuda", "self:cpu"]     # accelerated first
-    # (the test backend's cache identity leaves out the accelerator, unlike native's: a new config makes it run again)
-    node = lambda add, place=None: {**work("a", uses="test.two@1.0.0", record_dir=rec, add=add), **({"place": place} if place else {})}
-    run_id, _ = run(coord, graph_doc(tmp_path, [node(1)]))
+    node = lambda place=None: {**work("a", uses="test.two@1.0.0", record_dir=rec), **({"place": place} if place else {})}
+    run_id, _ = run(coord, graph_doc(tmp_path, [node()]))
     assert coord._tasks(run_id)["a"]["runner"] == "self:cuda"
-    run_id, _ = run(coord, graph_doc(tmp_path, [node(2, "self:cpu")]))
+    run_id, _ = run(coord, graph_doc(tmp_path, [node("self:cpu")]))   # same config: another place is another result
     assert coord._tasks(run_id)["a"]["runner"] == "self:cpu"
     placement, why = coord.place(m, "auto", "self:mps")
     assert placement is None and why == "self:mps is not one of the places it can run here (self:cuda, self:cpu)"

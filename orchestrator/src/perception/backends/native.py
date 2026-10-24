@@ -121,7 +121,8 @@ class SelfBackend(NativeBackend):
         return []
 
     def identity(self, manifest: Manifest, runner: Runner) -> str:
-        return f"self:{hashlib.sha256((manifest.code_hash() + sdk_hash()).encode()).hexdigest()[:16]}"
+        # the accelerator too: a place is a choice, and another place's result must not be served from the cache
+        return f"self:{hashlib.sha256((manifest.code_hash() + sdk_hash() + runner.accelerator).encode()).hexdigest()[:16]}"
 
 
 def _alive(pid: int, request: str) -> bool:
