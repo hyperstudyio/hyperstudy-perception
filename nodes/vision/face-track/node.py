@@ -1,8 +1,9 @@
 """vision.face-track: who is on screen, across the whole video, as the bundle's faces layer.
 
 py-feat Detectorv2 (RetinaFace + multitask model + ArcFace) on frames sampled at `fps`; faces linked into tracks
-within each shot and clustered into people (tracking.py). Writes one crop per person (the most frontal large face)
-and one per track (its largest face), referenced from the layer as assets/crops/...
+within each shot and clustered into people (tracking.py). Writes one crop per person (thumbnails.py: shortlisted by size and
+frontality, chosen on exposure, colour cast and sharpness) and one per track (its largest face), referenced from the
+layer as assets/crops/...
 
 Licence: py-feat's code is MIT, but the Detectorv2 multitask weights are non-commercial and InsightFace-derived
 ArcFace weights are research-only, so this layer is academic-only.
@@ -16,25 +17,39 @@ from pathlib import Path
 import numpy as np
 
 from perception_node import Node, NodeError
+from thumbnails import QUALITY_PX, choose, shortlist
 from tracking import FRONTAL_YAW, build_tracks, cluster_tracks, detection_rows, name_people, person_pairs
 
 PERSON_CROP_PAD, PERSON_CROP_PX = 0.25, 256   # padding as a fraction of the box; longest side of the saved crop
 TRACK_CROP_PAD, TRACK_CROP_WIDTH = 0.4, 320
 
 
-def crop_job(video: Path, t: float, box, pad: float, frame_w: int, frame_h: int, out: Path, scale: str) -> list[str]:
+def crop_filter(box, pad: float, frame_w: int, frame_h: int) -> str:
     x, y, w, h = box
     x0, y0 = max(0, x - pad * w), max(0, y - pad * h)
     x1, y1 = min(frame_w, x + (1 + pad) * w), min(frame_h, y + (1 + pad) * h)
+    return f"crop={int(x1 - x0)}:{int(y1 - y0)}:{int(x0)}:{int(y0)}"
+
+
+def crop_job(video: Path, t: float, box, pad: float, frame_w: int, frame_h: int, out: Path, scale: str) -> list[str]:
     return ["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1",
-            "-vf", f"crop={int(x1 - x0)}:{int(y1 - y0)}:{int(x0)}:{int(y0)},{scale}", "-q:v", "3", str(out)]
+            "-vf", f"{crop_filter(box, pad, frame_w, frame_h)},{scale}", "-q:v", "3", str(out)]
 
 
-def run_jobs(jobs: list[list[str]]):
+def pixels_job(video: Path, t: float, box, pad: float, frame_w: int, frame_h: int) -> list[str]:
+    """The crop as raw RGB at QUALITY_PX square, on stdout, for scoring."""
+    return ["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1",
+            "-vf", f"{crop_filter(box, pad, frame_w, frame_h)},scale={QUALITY_PX}:{QUALITY_PX}",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+
+
+def run_jobs(jobs: list[list[str]]) -> list[bytes]:
     with ThreadPoolExecutor(8) as pool:
-        for result in pool.map(lambda cmd: subprocess.run(cmd, capture_output=True, text=True), jobs):
-            if result.returncode:
-                raise NodeError("internal", f"ffmpeg crop failed: {result.stderr.strip()[:300]}")
+        results = list(pool.map(lambda cmd: subprocess.run(cmd, capture_output=True), jobs))
+    for result in results:
+        if result.returncode:
+            raise NodeError("internal", f"ffmpeg crop failed: {result.stderr.decode(errors='replace').strip()[:300]}")
+    return [r.stdout for r in results]
 
 
 with Node() as node:
@@ -64,16 +79,27 @@ with Node() as node:
     crops = assets / "crops"
     crops.mkdir(parents=True, exist_ok=True)
     W, H = media["width"], media["height"]
-    jobs, people = [], []
+    t0 = time.time()
+    members = {label: [t for t, l in zip(tracks, labels) if l == label] for label in order}
+    candidates = {label: shortlist(members[label]) for label in order}
+    flat = [(label, r) for label in order for r in candidates[label]]
+    raw = run_jobs([pixels_job(video, r["t"], r["box"], 0.0, W, H) for _, r in flat])   # the face box only
+    images = {label: [] for label in order}
+    for (label, _), data in zip(flat, raw):
+        images[label].append(np.frombuffer(data, dtype=np.uint8).reshape(QUALITY_PX, QUALITY_PX, 3))
+    thumbnails_s = round(time.time() - t0, 1)
+
+    jobs, people, thumbnail_measures = [], [], {}
     for label in order:
-        members = [t for t, l in zip(tracks, labels) if l == label]
-        best = max((r for t in members for r in t["rows"]), key=lambda r: r["box"][2] * r["box"][3] * np.cos(min(abs(r["yaw"]), 1.4)))
+        index, measures = choose(candidates[label], images[label])
+        best = candidates[label][index]
+        thumbnail_measures[names[label]] = {"t": best["t"], **measures[index]}
         name = f"person_{names[label].replace(' ', '_')}.jpg"
         jobs.append(crop_job(video, best["t"], best["box"], PERSON_CROP_PAD, W, H, crops / name,
                              f"scale='if(gt(iw,ih),{PERSON_CROP_PX},-2)':'if(gt(iw,ih),-2,{PERSON_CROP_PX})'"))
         people.append({"id": f"person:{names[label]}", "first_seen": round(first_seen[label], 3),
-                       "seconds_on_screen": round(sum(len(t["rows"]) for t in members) / c["fps"], 1),
-                       "crop": f"assets/crops/{name}", "shots": [f"shot:{s}" for s in sorted({t["shot"] for t in members})]})
+                       "seconds_on_screen": round(sum(len(t["rows"]) for t in members[label]) / c["fps"], 1),
+                       "crop": f"assets/crops/{name}", "shots": [f"shot:{s}" for s in sorted({t["shot"] for t in members[label]})]})
 
     out_tracks = []
     for i, (track, label) in enumerate(zip(tracks, labels)):
@@ -100,7 +126,7 @@ with Node() as node:
     pairs = [{**p, "a": f"person:{p['a']}", "b": f"person:{p['b']}"} for p in person_pairs(tracks, labels, names)]
     node.write_json("faces", "faces.json", {
         "layer": "faces", "schema_version": "0.1.0",
-        "producer": node.producer(timings={"detect_s": detect_s, "crops_s": crops_s}, device=device),
+        "producer": node.producer(timings={"detect_s": detect_s, "thumbnails_s": thumbnails_s, "crops_s": crops_s}, device=device),
         "sample_fps": c["fps"], "angles": "radians; yaw + = subject's right (image left)",
         "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": None})
-    node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW)
+    node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures)
