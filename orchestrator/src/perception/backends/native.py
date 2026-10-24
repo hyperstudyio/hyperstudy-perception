@@ -10,6 +10,7 @@ instead of starting a second copy.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import signal
@@ -76,7 +77,17 @@ class NativeBackend(Backend):
                                 start_new_session=True)   # its own process group: cancel stops the whole tree
         log.close()
         self._children[proc.pid] = proc
-        return {"pid": proc.pid, "request": str(request)}
+        handle = {"pid": proc.pid, "request": str(request)}
+        tmp = attempt_dir / "handle.json.tmp"   # at once, before the coordinator records it: see recorded_handle
+        tmp.write_text(json.dumps(handle))
+        os.replace(tmp, attempt_dir / "handle.json")
+        return handle
+
+    def recorded_handle(self, attempt_dir: Path) -> dict | None:
+        path = attempt_dir / "handle.json"
+        if not path.is_file() or path.is_symlink():
+            return None
+        return json.loads(path.read_text())
 
     def poll(self, handle: dict) -> str:
         pid = handle["pid"]
@@ -90,8 +101,8 @@ class NativeBackend(Backend):
         if self.poll(handle) == "running":
             try:
                 os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            except (ProcessLookupError, PermissionError):
+                pass   # already gone, or exiting: macOS reports EPERM for a group whose leader is a zombie
 
 
 class SelfBackend(NativeBackend):
@@ -112,5 +123,7 @@ def _alive(pid: int, request: str) -> bool:
         return False
     except PermissionError:
         return False
-    out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
+    # -ww: unlimited width (procps truncates columns to 80 characters when not writing to a terminal, and a long request
+    # path then made a live node look dead)
+    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
     return request in out.stdout

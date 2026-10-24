@@ -135,9 +135,20 @@ class Coordinator:
         """Record the cancel first, then kill: once a task is canceled, a coordinator that sees its process die reports
         nothing (_attempt_failed ignores tasks no longer running), so the kill is charged once, here."""
         with self.store.tx() as db:
-            running = [t for t in self._tasks(run_id).values() if t["state"] == "running" and t["handle"]]
-            # a killed attempt may have spent up to its reservation: it is charged that, as a crash is
+            running = []
+            for t in self._tasks(run_id).values():
+                if t["state"] == "leased" and t["runner"]:   # perhaps started before its coordinator recorded it running
+                    handle = self.backends[t["runner"].split(":")[0]].recorded_handle(
+                        self.store.root / "work" / run_id / t["node_id"] / str(t["attempt"]))
+                    if handle:
+                        t = {**t, "handle": json.dumps(handle)}
+                if t["state"] in ("running", "leased") and t["handle"]:
+                    running.append(t)
+            # a killed attempt may have spent up to its reservation: it is charged that, as a crash is, and the
+            # reservation is used up (cost_usd 0), so nothing else charges it again
             db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (sum(t["cost_usd"] or 0.0 for t in running), run_id))
+            for t in running:
+                db.execute("UPDATE tasks SET cost_usd=0 WHERE run_id=? AND node_id=?", (run_id, t["node_id"]))
             db.execute("UPDATE tasks SET state='canceled', finished_at=? WHERE run_id=? AND state NOT IN ('succeeded','cached','failed')",
                        (time.time(), run_id))
             db.execute("UPDATE runs SET status='canceled', finished_at=? WHERE id=?", (time.time(), run_id))
@@ -211,9 +222,16 @@ class Coordinator:
                             f"{wait:.0f} s more); if that process is gone, resume after the lease expires")
         self.store.db.execute("UPDATE runs SET status='running', finished_at=NULL WHERE id=? AND status!='canceled'", (run_id,))
         for t in tasks.values():
-            if t["state"] == "leased":   # chosen but never submitted
-                self._set(run_id, t["node_id"], state="pending", lease_owner=None, lease_expires=None)
-            elif t["state"] == "running" and t["lease_owner"] != self.owner:
+            if t["state"] == "leased":
+                # chosen; perhaps started (its process recorded a handle) before the coordinator could record it running
+                handle = self.backends[t["runner"].split(":")[0]].recorded_handle(
+                    self.store.root / "work" / run_id / t["node_id"] / str(t["attempt"])) if t["runner"] else None
+                if handle is None:   # never submitted
+                    self._set(run_id, t["node_id"], state="pending", lease_owner=None, lease_expires=None)
+                    continue
+                self._set(run_id, t["node_id"], state="running", handle=dumps(handle), started_at=time.time())
+                t = self._tasks(run_id)[t["node_id"]]
+            if t["state"] == "running" and t["lease_owner"] != self.owner:
                 backend = self.backends[t["runner"].split(":")[0]]
                 handle = json.loads(t["handle"])
                 still = backend.poll(handle)
@@ -297,7 +315,7 @@ class Coordinator:
         estimate = placement.backend.estimate(m, placement.runner, inputs)
         estimate.cost_usd += manifest_cost(m, node.config, inputs)
         run = self.store.db.execute("SELECT max_cost_usd, spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()
-        reserved = sum(x["cost_usd"] for x in tasks.values() if x["state"] == "running")
+        reserved = sum(x["cost_usd"] or 0.0 for x in tasks.values() if x["state"] in ("leased", "running"))
         if estimate.cost_usd > 0 and run["spent_usd"] + reserved + estimate.cost_usd > run["max_cost_usd"]:
             self._fail(run_id, node.id, "budget", f"estimated ${estimate.cost_usd:.2f} would exceed the run's cap of ${run['max_cost_usd']:.2f}")
             return
@@ -307,8 +325,11 @@ class Coordinator:
         attempt = t["attempt"] + 1
         attempt_dir = self.store.root / "work" / run_id / node.id / str(attempt)
         attempt_dir.mkdir(parents=True, exist_ok=False)
+        # reserved from the moment it is chosen: a coordinator that dies before recording it running leaves the
+        # reservation with the task that the next one adopts
         self._set(run_id, node.id, state="leased", attempt=attempt, cache_key=key, lease_owner=self.owner,
-                  lease_expires=time.time() + self.lease_s, runner=f"{placement.backend.kind}:{placement.runner.accelerator}")
+                  lease_expires=time.time() + self.lease_s, runner=f"{placement.backend.kind}:{placement.runner.accelerator}",
+                  cost_usd=estimate.cost_usd)
         request = {
             "protocol": 1, "run": run_id, "node": node.id, "uses": m.ref, "attempt": attempt, "partition": None,
             "accelerator": placement.runner.accelerator,
@@ -323,10 +344,12 @@ class Coordinator:
             self._attempt_failed(run_id, graph, node.id, attempt, "transient", f"submit failed: {e}")
             return
         with self.store.tx():   # recorded running only if nothing (a cancel) changed the task while it was submitted
-            if self._tasks(run_id)[node.id]["state"] != "leased" or self._canceled(run_id):
+            now = self._tasks(run_id)[node.id]
+            if now["state"] != "leased" or self._canceled(run_id):
                 placement.backend.cancel(handle)   # canceled meanwhile: stop it now; it may have begun spending
-                self.store.db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (estimate.cost_usd, run_id))
-                self._set(run_id, node.id, handle=dumps(handle), cost_usd=estimate.cost_usd)
+                # charged what is left of its reservation (cancel() charges it, and uses it up, when it saw the process)
+                self.store.db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (now["cost_usd"] or 0.0, run_id))
+                self._set(run_id, node.id, handle=dumps(handle), cost_usd=0)
                 return
             self._set(run_id, node.id, state="running", handle=dumps(handle), started_at=time.time(), cost_usd=estimate.cost_usd)
         self.store.event(run_id, node.id, "task.started", f"attempt {attempt} on {placement.backend.kind} ({placement.runner.accelerator})")

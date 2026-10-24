@@ -278,6 +278,77 @@ def test_killing_the_coordinator_mid_run_recovers_without_rerunning_or_corruptin
     assert not list((coord.store.root / "tmp").iterdir())
 
 
+def test_a_coordinator_that_dies_just_after_starting_a_node_leaves_it_to_be_adopted_not_run_twice(tmp_path, rec):
+    """The gap between starting a node's process and recording it running: a coordinator killed there must not leave
+    a task that the next coordinator starts again while the first process is still working (twice the spend for an
+    API node). Seen on Linux CI, where processes start faster than on macOS."""
+    class Crash(BaseException):
+        pass
+    coord = coordinator(tmp_path, lease_s=1.0)
+    run_id = start(coord, graph_doc(tmp_path, [work("a", record_dir=rec, sleep=1.0)]))
+    backend = coord.backends["self"]
+    real_submit = backend.submit
+
+    def submit_then_die(*a):
+        real_submit(*a)
+        raise Crash()                                    # the coordinator is gone before it records "running"
+    backend.submit = submit_then_die
+    with pytest.raises(Crash):
+        asyncio.run(coord.run(run_id))
+    time.sleep(1.1)                                      # its lease runs out
+    assert asyncio.run(coordinator(tmp_path, lease_s=1.0).run(run_id)) == "succeeded"
+    assert len(executions(Path(rec), "a")) == 1          # adopted, not started again
+
+
+def test_a_live_node_is_recognised_however_long_its_request_path(tmp_path):
+    """Recovery checks a pid's command line for the attempt's request path. procps (Linux) truncates `ps` columns to 80
+    characters when not writing to a terminal, so a long path made a live node look dead and it was started again."""
+    from perception.backends.native import _alive
+    request = tmp_path / ("x" * 200) / "request.json"
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", str(request)])
+    try:
+        assert _alive(proc.pid, str(request))
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def _crash_after_submit(tmp_path, doc):
+    """Start a run whose coordinator dies just after starting its first billable node, before recording it running."""
+    class Crash(BaseException):
+        pass
+    coord = coordinator(tmp_path, lease_s=1.0)
+    run_id = start(coord, doc)
+    backend = coord.backends["self"]
+    real_submit = backend.submit
+
+    def submit_then_die(m, *a):
+        handle = real_submit(m, *a)
+        if m.id == "test.refine":
+            raise Crash()
+        return handle
+    backend.submit = submit_then_die
+    with pytest.raises(Crash):
+        asyncio.run(coord.run(run_id))
+    return coord, run_id
+
+
+def test_a_node_left_leased_by_a_dead_coordinator_keeps_its_reservation_and_cancel_stops_it(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord, run_id = _crash_after_submit(tmp_path, refine_graph(video, {"sleep": 30}, max_cost_usd=1))
+    t = coord._tasks(run_id)["captions"]
+    assert t["state"] == "leased" and t["cost_usd"] == pytest.approx(0.5)   # reserved from the moment it was chosen
+    handle = coord.backends["self"].recorded_handle(coord.store.root / "work" / run_id / "captions" / str(t["attempt"]))
+    coordinator(tmp_path).cancel(run_id)
+    deadline = time.time() + 10
+    while coord.backends["self"].poll(handle) == "running":                 # its process was found and stopped
+        assert time.time() < deadline, "the process it had started is still running"
+        time.sleep(0.05)
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)
+
+
 # --- export -----------------------------------------------------------------------------------------------------
 
 def test_a_run_exports_as_a_bundle_with_licences_carried_downstream(tmp_path):
