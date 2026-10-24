@@ -117,5 +117,5 @@ SkyPilot on AWS us-east-1 (`cloud/skypilot/`), always through `launch.sh`:
   - **Output.** Workers do not change it: the boxes are byte-identical. Batch size changes boxes very slightly (GPU
     kernels depend on batch shape), with the same 189 tracks and 18 people. Batch size is in the cache key.
   - **Still idle.** The GPU is idle about 40% of the run: model loading, and thumbnails and crops cut by ffmpeg on the
-    CPU. Next: GPU frame decoding (torchcodec on CUDA), and a Linux default for `num_workers`.
+    CPU. `num_workers` now defaults to 4 where workers fork (#4). Next: GPU frame decoding (torchcodec on CUDA).
 - **Thumbnails.** Each person's crop is chosen among shortlisted faces on exposure, colour cast, blur and blown-out pixels (`thumbnails.py`), instead of size and frontality alone (which picked a red-lit face on clip 2).
