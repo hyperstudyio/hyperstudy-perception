@@ -75,6 +75,12 @@ class Driver:
 
     # --- steps ----------------------------------------------------------------------------------------------------
 
+    def check_root(self):
+        """The root must still be the user's own private folder: the markers below are trusted only because no one
+        else can write there (hosts.PRIVATE_ROOT)."""
+        from .hosts import private_root_script
+        self.sh(private_root_script(self.root))
+
     def send_code(self):
         q = shlex.quote
         if self.sh(f"test -e {q(self.code)}/.complete", check=False).returncode == 0:
@@ -198,6 +204,7 @@ echo $!
 
     def run(self) -> int:
         try:
+            self.check_root()
             self.send_code()
             inputs = self.send_inputs()
             self.start(inputs)

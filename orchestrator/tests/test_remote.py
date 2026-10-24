@@ -315,6 +315,22 @@ def test_a_host_is_probed_once_when_added_and_its_places_come_from_that(tmp_path
         hosts.check("lab")
 
 
+def test_a_hosts_root_is_private_to_the_user_and_one_someone_else_owns_is_refused(tmp_path, host, rec):
+    root = host / "home" / ".cache" / "hyperstudy-perception"
+    Hosts(tmp_path / "home").add("lab", "lab")
+    assert root.stat().st_mode & 0o777 == 0o700
+    with pytest.raises(HostError, match="belongs to someone else"):
+        Hosts(tmp_path / "home").add("lab2", "lab", "/usr")   # root's, not ours: never used, never changed
+
+    coord = coordinator(tmp_path, host)
+    hp = host / "home" / ".cache" / "hp"
+    hp.mkdir(parents=True)
+    hp.chmod(0o755)                     # opened up since it was added: made private again before anything is sent
+    run_id = start(coord, work_graph(tmp_path, rec))
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert hp.stat().st_mode & 0o777 == 0o700
+
+
 @pytest.mark.parametrize("name,dest,root", [("Lab", "lab", "x"), ("native", "lab", "x"), ("lab", "-oProxyCommand=x", "x"),
                                             ("lab", "lab", "../etc"), ("lab", "lab", "/"), ("lab", "lab", "~"), ("lab", "lab", "a b")])
 def test_a_host_with_a_name_destination_or_root_that_could_do_harm_is_refused(tmp_path, host, name, dest, root):

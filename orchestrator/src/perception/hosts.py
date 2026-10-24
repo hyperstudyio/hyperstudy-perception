@@ -5,7 +5,8 @@ $PERCEPTION_HOME/hosts.json, so planning never waits on the network. SSH runs in
 and ~/.ssh/config: nothing here asks for or stores a password. Connections are shared (ControlMaster), so the many short
 commands a remote node needs cost one handshake.
 
-On the host everything lives under its root (default ~/.cache/hyperstudy-perception):
+On the host everything lives under its root (default ~/.cache/hyperstudy-perception), which is private: created 0700, and
+refused if someone else owns it, so the code, inputs and markers kept there can be trusted and are not readable by others:
     code/<hash>/         the files git tracks for the node, its uv project and the node SDK, by content
     objects/<sha256>/    inputs, by content, under their own file names: the video is sent once per host
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt (removed after)
@@ -95,9 +96,27 @@ def check_names(name: str, dest: str, root: str):
         raise HostError(f"a host's root is a plain path below / or ~ (its own folder: `hosts clean` empties it): {root!r}")
 
 
+# The root is private: created 0700, and refused if someone else owns it. Only the user can then write the code, inputs and
+# completion markers kept there, so they are trusted across runs; and others on a shared server cannot read the inputs.
+PRIVATE_ROOT = r"""
+umask 077
+mkdir -p "$root"
+if [ "$(ls -ldn "$root" | awk '{print $3}')" != "$(id -u)" ]; then echo "$root belongs to someone else" >&2; exit 3; fi
+chmod 700 "$root"
+"""
+
+
+def private_root_script(root: str) -> str:
+    """sh that makes `root` (absolute, or under the home) the user's own private folder, or fails."""
+    import shlex
+    path = shlex.quote(root) if root.startswith("/") else '"$HOME"/' + shlex.quote(root.removeprefix("~/"))
+    return f"root={path}\n" + PRIVATE_ROOT
+
+
 def probe(dest: str, root: str = DEFAULT_ROOT) -> tuple[Capabilities, str]:
-    """What the host has, and its root as an absolute path."""
-    out = subprocess.run([*ssh_command(), dest, "sh -s"], input=PROBE, capture_output=True, text=True, timeout=120)
+    """What the host has, and its root as an absolute path (made private there, or refused: PRIVATE_ROOT)."""
+    out = subprocess.run([*ssh_command(), dest, "sh -s"], input=private_root_script(root) + PROBE, capture_output=True,
+                         text=True, timeout=120)
     if out.returncode:
         raise HostError(f"could not reach {dest} (ssh exit {out.returncode}): {out.stderr.strip()[-500:]}")
     facts = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
