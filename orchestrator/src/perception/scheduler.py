@@ -148,6 +148,8 @@ class Coordinator:
         self._recover(run_id, graph)
         last_heartbeat = 0.0
         while True:
+            if self._canceled(run_id):
+                return self._stop_canceled(run_id)
             tasks = self._tasks(run_id)
             for t in tasks.values():
                 if t["state"] == "running" and t["lease_owner"] == self.owner:
@@ -164,14 +166,27 @@ class Coordinator:
                                       (time.time() + self.lease_s, run_id, self.owner))
                 last_heartbeat = time.time()
             if all(t["state"] in TERMINAL for t in tasks.values()):
-                # cancel() (perhaps from another process) has already recorded the run and said so: keep that
-                if self.store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()["status"] == "canceled":
-                    return "canceled"
+                if self._canceled(run_id):   # canceled since the top of this pass
+                    return self._stop_canceled(run_id)
                 status = "succeeded" if all(t["state"] in DONE for t in tasks.values()) else "failed"
                 self.store.db.execute("UPDATE runs SET status=?, finished_at=? WHERE id=?", (status, time.time(), run_id))
                 self.store.event(run_id, None, f"run.{status}")
                 return status
             await asyncio.sleep(self.tick_s)   # the loop's own pace: node processes run independently of it
+
+    def _canceled(self, run_id: str) -> bool:
+        return self.store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()["status"] == "canceled"
+
+    def _stop_canceled(self, run_id: str) -> str:
+        """The run was canceled, perhaps by another process (cancel() recorded it and said so). This coordinator works from
+        snapshots, so it may have retried or started a node since: stop what it has running, and leave every unfinished
+        task canceled."""
+        for t in self._tasks(run_id).values():
+            if t["state"] in ("running", "leased") and t["lease_owner"] == self.owner and t["handle"]:
+                self.backends[t["runner"].split(":")[0]].cancel(json.loads(t["handle"]))
+        self.store.db.execute("UPDATE tasks SET state='canceled', finished_at=COALESCE(finished_at, ?) WHERE run_id=? AND state NOT IN ('succeeded','cached','failed','canceled')",
+                              (time.time(), run_id))
+        return "canceled"
 
     def _tasks(self, run_id: str) -> dict[str, dict]:
         return {r["node_id"]: dict(r) for r in self.store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run_id,))}
@@ -279,6 +294,8 @@ class Coordinator:
             self._fail(run_id, node.id, "budget", f"estimated ${estimate.cost_usd:.2f} would exceed the run's cap of ${run['max_cost_usd']:.2f}")
             return
 
+        if self._canceled(run_id):   # the last moment before anything starts or is reserved
+            return
         attempt = t["attempt"] + 1
         attempt_dir = self.store.root / "work" / run_id / node.id / str(attempt)
         attempt_dir.mkdir(parents=True, exist_ok=False)

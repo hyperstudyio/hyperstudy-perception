@@ -196,7 +196,9 @@ def test_a_run_canceled_from_another_process_ends_canceled_not_failed(tmp_path, 
 
     async def go():
         running = asyncio.create_task(coord.run(run_id))
+        deadline = time.time() + 20
         while coord._tasks(run_id)["a"]["state"] != "running":   # waiting for the node to start
+            assert time.time() < deadline, "the node never started"
             await asyncio.sleep(0.02)
         coordinator(tmp_path).cancel(run_id)                     # another process (perception cancel) on the same store
         return await running
@@ -205,6 +207,18 @@ def test_a_run_canceled_from_another_process_ends_canceled_not_failed(tmp_path, 
     assert coord.store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()[0] == "canceled"
     kinds = [e["kind"] for e in coord.store.events(run_id)]
     assert "run.canceled" in kinds and "run.failed" not in kinds
+
+
+def test_after_a_cancel_nothing_more_runs_even_a_node_that_looked_ready_or_retryable(tmp_path, rec):
+    """The coordinator works from snapshots: a task it read before the cancel (a killed node's transient failure, a
+    node it found ready) must not be retried or started after it."""
+    coord = coordinator(tmp_path)
+    run_id = start(coord, graph_doc(tmp_path, [work("a", record_dir=rec, sleep=30), work("b", "$nodes.a.out", record_dir=rec)]))
+    coordinator(tmp_path).cancel(run_id)                          # canceled before this coordinator looked at all
+    coord._set(run_id, "a", state="pending")                      # as a stale snapshot's retry would write it
+    assert asyncio.run(coord.run(run_id)) == "canceled"
+    assert executions(Path(rec)) == []
+    assert {t["state"] for t in coord._tasks(run_id).values()} == {"canceled"}
 
 
 def test_retries_stop_at_the_policy_limit(tmp_path, rec):
