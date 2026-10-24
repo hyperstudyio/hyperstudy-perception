@@ -107,4 +107,15 @@ SkyPilot on AWS us-east-1 (`cloud/skypilot/`), always through `launch.sh`:
 - **First NVIDIA run** (`gpu-faces.yaml`, `graphs/faces.yaml`, OOO clip 2): on-demand `g6.xlarge` (L4, 4 vCPUs, driver 580, torch 2.14.1+cu130). There was no L4 or A10G spot capacity in any us-east-1 zone, and the account's G spot quota is 0 in other regions. About $0.12.
   - The face node ran on its new CUDA runner. Against the Mac's run: 185 of 186 tracks match (median box IoU 0.994), the same 52 shots, 97.9% agreement on which tracks are the same person, and 18 people in both. The Mac left 31 tracks unassigned and the L4 21: tiny numeric differences move borderline tracks across the clustering threshold.
   - Timing: decode 43 s (Mac 15 s); faces 141 s (detection 106 s), against 95 s on the Mac (detection 76 s). The batch size was the default 32, and GPU utilisation was not recorded. Next: record utilisation, sweep the batch size, and try a machine with more vCPUs, to find what limits it.
+- **What limits the face node on an L4** (`gpu-tune.yaml`, g6.2xlarge, 8 vCPUs, OOO clip 2, 2026-10-24, about $0.40).
+  - **Frame decoding in the detector's process was the bottleneck.** With `num_workers: 4`, detection took 57 s
+    instead of 99 s, and the whole face node 87 s instead of 128 s, faster than the Mac (95 s).
+  - **The thread count was a smaller factor.** Ray sets `OMP_NUM_THREADS=1` for SkyPilot jobs. At 8 threads, detection
+    took 99 s instead of 110 s.
+  - **Batch size barely matters:** 8, 16 and 32 are within 3 s of each other, and 64 runs out of GPU memory, because
+    py-feat feeds whole 1080p frames.
+  - **Output.** Workers do not change it: the boxes are byte-identical. Batch size changes boxes very slightly (GPU
+    kernels depend on batch shape), with the same 189 tracks and 18 people. Batch size is in the cache key.
+  - **Still idle.** The GPU is idle about 40% of the run: model loading, and thumbnails and crops cut by ffmpeg on the
+    CPU. Next: GPU frame decoding (torchcodec on CUDA), and a Linux default for `num_workers`.
 - **Thumbnails.** Each person's crop is chosen among shortlisted faces on exposure, colour cast, blur and blown-out pixels (`thumbnails.py`), instead of size and frontality alone (which picked a red-lit face on clip 2).
