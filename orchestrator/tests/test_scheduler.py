@@ -671,7 +671,10 @@ def test_a_cancel_during_submission_stops_the_node_and_keeps_it_canceled(tmp_pat
     assert asyncio.run(coord.run(run_id)) == "canceled"
     t = coord._tasks(run_id)["captions"]
     assert t["state"] == "canceled"
-    assert backend.poll(json.loads(t["handle"])) != "running"    # the process it had started was stopped
+    deadline = time.time() + 10                                     # the process it had started was stopped (SIGTERM
+    while backend.poll(json.loads(t["handle"])) == "running":       # lands asynchronously: a few ms on Linux CI)
+        assert time.time() < deadline, "the process it had started is still running"
+        time.sleep(0.05)
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent == pytest.approx(0.5)                             # charged its reservation, once
 
