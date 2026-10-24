@@ -7,6 +7,7 @@ config:
   usd: {type: number, default: 0.01, description: "what the node reports having spent"}
   model: {enum: [cheap, dear], default: cheap}
   fail_until: {type: integer, default: 0, description: "attempts up to this one spend `usd`, then fail (transient)"}
+  crash: {type: boolean, default: false, description: "fail by dying without a response instead"}
 runners:
   - {kind: self, entry: node.py}
 privacy: {external_upload: [frames]}

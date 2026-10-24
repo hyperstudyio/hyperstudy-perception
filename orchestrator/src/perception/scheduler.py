@@ -323,18 +323,19 @@ class Coordinator:
         backend.cleanup(attempt_dir)
         node = graph.nodes[t["node_id"]]
         if response is None:
+            # it reported nothing, so it may have spent up to what was reserved for it: charge that
             self._attempt_failed(run_id, graph, node.id, t["attempt"], "transient",
-                                 f"the node exited without a response (crashed or killed); see {attempt_dir / 'log.txt'}")
+                                 f"the node exited without a response (crashed or killed); see {attempt_dir / 'log.txt'}",
+                                 usd=t["cost_usd"] or 0.0)
             return
+        spent = float(response.get("usage", {}).get("usd", 0.0))   # what a failed attempt spent is still spent
         if not response["ok"]:
-            self._charge(run_id, response)   # what a failed attempt spent is still spent
             err = response["error"]
-            self._attempt_failed(run_id, graph, node.id, t["attempt"], err["code"], err["message"])
+            self._attempt_failed(run_id, graph, node.id, t["attempt"], err["code"], err["message"], usd=spent)
             return
         problems, outs = self._publish(node, backend.output_dir(attempt_dir), response)
         if problems:
-            self._charge(run_id, response)
-            self._attempt_failed(run_id, graph, node.id, t["attempt"], problems[0][0], "; ".join(p for _, p in problems))
+            self._attempt_failed(run_id, graph, node.id, t["attempt"], problems[0][0], "; ".join(p for _, p in problems), usd=spent)
             return
         usage = {**response.get("usage", {}), "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}
         cost = float(usage.get("usd", 0.0))
@@ -377,21 +378,22 @@ class Coordinator:
             return problems, {}
         return [], {name: self.store.publish(path, type_id) for name, (path, type_id) in ready.items()}
 
-    def _charge(self, run_id: str, response: dict):
-        self.store.db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?",
-                              (float(response.get("usage", {}).get("usd", 0.0)), run_id))
-
-    def _attempt_failed(self, run_id: str, graph: Graph, node_id: str, attempt: int, code: str, message: str):
+    def _attempt_failed(self, run_id: str, graph: Graph, node_id: str, attempt: int, code: str, message: str, usd: float = 0.0):
+        """Retry a transient failure within the policy, else fail. `usd`, what the attempt spent, is charged in the same
+        transaction: a coordinator that dies in between must not charge it again on resume."""
         retries = graph.spec.policy.retries
         first = self._tasks(run_id)[node_id]["first_attempt"]
         tried = attempt - first + 1
-        if code == "transient" and tried <= retries:
-            delay = self.backoff_s * 2 ** (tried - 1)
-            self._set(run_id, node_id, state="pending", not_before=time.time() + delay, lease_owner=None, lease_expires=None,
-                      handle=None, error_code=code, error=message)
-            self.store.event(run_id, node_id, "task.retry", f"attempt {attempt} failed ({message}); retry in {delay:.0f} s")
-        else:
-            self._fail(run_id, node_id, code, message)
+        with self.store.tx():
+            if usd:
+                self.store.db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (usd, run_id))
+            if code == "transient" and tried <= retries:
+                delay = self.backoff_s * 2 ** (tried - 1)
+                self._set(run_id, node_id, state="pending", not_before=time.time() + delay, lease_owner=None, lease_expires=None,
+                          handle=None, error_code=code, error=message)
+                self.store.event(run_id, node_id, "task.retry", f"attempt {attempt} failed ({message}); retry in {delay:.0f} s")
+            else:
+                self._fail(run_id, node_id, code, message)
 
     def _fail(self, run_id: str, node_id: str, code: str, message: str):
         self._set(run_id, node_id, state="failed", error_code=code, error=message, finished_at=time.time(), lease_owner=None, lease_expires=None)

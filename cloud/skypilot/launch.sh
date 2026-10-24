@@ -3,8 +3,9 @@
 #   [OUT=DIR] cloud/skypilot/launch.sh TASK.yaml CLUSTER [sky launch options, e.g. --env CLIP_SRC=/path/to/clip.mp4]
 # With OUT set, the machine's ~/out is copied into DIR before the machine is deleted (also when the job failed).
 # - SkyPilot reads sky.yaml as the project config: no credentials copied, and only the perception-node role.
-# - The workdir is a staged copy of the repository's files that git tracks or would track: .gitignore keeps out
-#   media, run outputs and .env files.
+# - The workdir is a staged copy of the files git tracks, nothing else: commit a new file before a launch that needs
+#   it. (Untracked files were staged too until 2026-10-24; .gitignore does not cover every image, crop or bundle
+#   folder that can sit in a working copy.)
 # - Once the instance exists, its OS shutdown is set to terminate it, so guard.sh's deadline deletes on-demand
 #   machines as well as spot ones.
 # - sky down runs on exit, whether the job succeeded, failed or was interrupted.
@@ -17,7 +18,7 @@ region=us-east-1
 export SKYPILOT_PROJECT_CONFIG=$repo/cloud/skypilot/sky.yaml
 
 stage=$(mktemp -d)
-git -C "$repo" ls-files -z --cached --others --exclude-standard | rsync -a --from0 --files-from=- "$repo/" "$stage/"
+git -C "$repo" ls-files -z | rsync -a --from0 --files-from=- "$repo/" "$stage/"
 finish() {
   kill "${watcher:-}" "${deadline:-}" 2>/dev/null || :
   if [ -n "${OUT:-}" ]; then mkdir -p "$OUT"; rsync -a "$cluster:out/" "$OUT/" || echo "launch.sh: could not fetch ~/out" >&2; fi
@@ -27,15 +28,20 @@ finish() {
 trap finish EXIT
 
 # SkyPilot provisions the instance a few seconds to minutes into `sky launch`; set its shutdown behaviour as soon as it
-# exists. Gives up loudly after 15 minutes (then only `sky down` or autodown deletes it).
+# exists. Gives up loudly after 15 minutes (then only `sky down`, autodown or MAX_MINUTES deletes it). Not under
+# set -e: one failed AWS call must not end the watcher silently.
 (
+  set +e
   for _ in $(seq 90); do
     ids=$(aws ec2 describe-instances --region "$region" --output text --query 'Reservations[].Instances[].InstanceId' \
           --filters "Name=tag:skypilot-cluster-name,Values=$cluster*" Name=instance-state-name,Values=pending,running)
     if [ -n "$ids" ]; then
       for id in $ids; do
-        aws ec2 modify-instance-attribute --region "$region" --instance-id "$id" --instance-initiated-shutdown-behavior terminate
-        echo "launch.sh: $id terminates on OS shutdown"
+        if aws ec2 modify-instance-attribute --region "$region" --instance-id "$id" --instance-initiated-shutdown-behavior terminate; then
+          echo "launch.sh: $id terminates on OS shutdown"
+        else
+          echo "launch.sh: WARNING could not make $id terminate on shutdown; its deadline will only stop it" >&2
+        fi
       done
       exit 0
     fi

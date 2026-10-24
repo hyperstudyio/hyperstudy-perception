@@ -447,6 +447,17 @@ def test_a_failed_attempt_is_charged_what_it_spent(tmp_path):
     assert spent == pytest.approx(0.02)                                          # the failed attempt and the retry
 
 
+def test_a_billable_node_that_dies_without_a_response_is_charged_its_reservation(tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    coord = coordinator(tmp_path)
+    # 1 shot x $0.5: the first attempt dies, so the retry would need $1.0 of a $0.6 cap
+    run_id, status = run(coord, refine_graph(video, {"fail_until": 1, "crash": True}, max_cost_usd=0.6, retries=1))
+    assert status == "failed" and coord._tasks(run_id)["captions"]["error_code"] == "budget"
+    spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    assert spent == pytest.approx(0.5)
+
+
 def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
     from perception import export
     video = tmp_path / "clip.mp4"
