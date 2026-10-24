@@ -9,6 +9,7 @@ Licence: py-feat's code is MIT, but the Detectorv2 multitask weights are non-com
 ArcFace weights are research-only, so this layer is academic-only.
 """
 
+import multiprocessing
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -61,9 +62,14 @@ with Node() as node:
     fps = media["fps"]
     device = {"mps": "mps", "cuda": "cuda"}.get(node.accelerator, "cpu")
 
+    if c["num_workers"] and multiprocessing.get_start_method() != "fork":
+        raise NodeError("input", f"num_workers needs forked workers; this platform starts them with "
+                                 f"{multiprocessing.get_start_method()!r}, which would run the node again in each")
+
     t0 = time.time()
     detector = Detectorv2(device=device)
-    fex = detector.detect(str(video), data_type="video", skip_frames=max(1, round(fps / c["fps"])), batch_size=c["batch_size"])
+    fex = detector.detect(str(video), data_type="video", skip_frames=max(1, round(fps / c["fps"])), batch_size=c["batch_size"],
+                          num_workers=c["num_workers"], pin_memory=device == "cuda")
     detect_s = round(time.time() - t0, 1)
     node.model("py-feat Detectorv2 (RetinaFace + multitask)", licence_mode="academic-only", source="hf://py-feat",
                licence="py-feat code MIT; v2 weights non-commercial")
