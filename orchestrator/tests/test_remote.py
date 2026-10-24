@@ -277,7 +277,7 @@ def test_a_host_lost_for_too_long_ends_the_attempt_as_a_crash_and_its_watchdog_e
     assert "could not be reached for 1 s" in log_of(coord, run_id, "a")
     attempt = host / "home" / ".cache" / "hp" / "work" / run_id / "a" / "1"
     deadline = time.time() + 20
-    while alive(pid) or attempt.exists():   # no driver asked about it for 2 s: stopped, and its folder (outputs) gone
+    while alive(pid) or attempt.parent.parent.exists():   # no driver asked about it for 2 s: stopped, its folder (outputs) gone
         assert time.time() < deadline, "the node was left running on the host"
         time.sleep(0.2)
 
@@ -410,7 +410,7 @@ def test_a_host_with_a_node_on_it_is_neither_removed_nor_cleaned(tmp_path, host,
     busy.mkdir(parents=True)
     assert main(["hosts", "clean", "lab"]) == 1
     assert "a node is running there" in capsys.readouterr().err
-    busy.parent.parent.parent.joinpath("r2").rename(tmp_path / "gone")
+    busy.rmdir()                                         # empty run folders (a cancel, a lost connection) do not count
     assert main(["hosts", "clean", "lab"]) == 0
     assert main(["hosts", "remove", "lab"]) == 0
 
@@ -528,6 +528,20 @@ def test_a_remote_identity_is_the_code_that_is_sent(tmp_path, host, monkeypatch)
     real = remote.code_hash
     monkeypatch.setattr(remote, "code_hash", lambda files: real(files) + "-changed")   # what is sent changed
     assert backend.identity(m, runner) != before
+
+
+def test_on_another_machine_every_weight_a_node_uses_counts_as_a_download(tmp_path, host, monkeypatch):
+    import perception.plan as plan_mod
+    from perception.manifests import ModelRef
+    monkeypatch.setattr(plan_mod, "hf_cached", lambda source: True)          # all on this machine
+    coord = coordinator(tmp_path, host)
+    graph = compile_graph(video_graph(tmp_path, place="ssh-lab:cpu"), coord.registry)
+    m = graph.nodes["shots"].manifest
+    monkeypatch.setattr(m, "models", [ModelRef(id="w", source="hf://org/weights", licence_mode="commercial-ok")])
+    planned = make_plan(coord, graph, allow_uploads=True)
+    assert [d.id for d in planned.nodes[0].downloads] == ["w"] and not planned.ok   # the host's cache is not known
+    here = make_plan(coord, compile_graph(video_graph(tmp_path), coord.registry), allow_uploads=True)
+    assert here.nodes[0].downloads == []
 
 
 def test_prosody_counts_as_transcript_too():

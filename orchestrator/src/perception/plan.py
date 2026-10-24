@@ -128,7 +128,10 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
             places[p.label] = {"title": p.backend.title, "remote": p.backend.remote, "accelerator": p.runner.accelerator}
         np.needs = sorted(node.upstream)
         np.place = placement.label if placement else None
-        np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://") and not hf_cached(x.source)]
+        # weights not in this machine's cache; on another machine its cache is not known, so every weight is a download
+        # there (a run never downloads silently: --allow-downloads)
+        np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://")
+                        and ((placement and placement.backend.remote) or not hf_cached(x.source))]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(m.models)

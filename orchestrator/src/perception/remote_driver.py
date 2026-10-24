@@ -69,6 +69,7 @@ while [ -d "$w" ]; do
       kill -s TERM -- "-$pid" 2>/dev/null; sleep 5; kill -s KILL -- "-$pid" 2>/dev/null
     fi
     rm -rf "$w"
+    rmdir "${w%/*}" "${w%/*/*}" 2>/dev/null   # the run's folders too, once empty (as fetch does)
     exit 0
   fi
 done"""
