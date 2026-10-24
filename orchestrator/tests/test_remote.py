@@ -439,6 +439,40 @@ def test_a_slow_fetch_keeps_the_heartbeat_so_the_watchdog_leaves_the_results(tmp
     assert coord._tasks(run_id)["a"]["attempt"] == 1
 
 
+def test_a_linked_video_is_sent_as_its_content(tmp_path, host):
+    coord = coordinator(tmp_path, host)
+    doc = video_graph(tmp_path, place="ssh-lab:cpu")
+    real = Path(doc["inputs"]["video"]["uri"])
+    link = tmp_path / "linked.mp4"
+    link.symlink_to(real)                                  # a graph input that points at the video (an external drive)
+    doc["inputs"]["video"]["uri"] = str(link)
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "shots")
+    [stored] = (host / "home" / ".cache" / "hp" / "objects").glob("*/data")
+    assert not stored.is_symlink() and stored.read_bytes() == real.read_bytes()
+
+
+def test_an_input_that_changed_since_the_run_read_it_is_not_filed_under_the_old_hash(tmp_path, host):
+    coord = coordinator(tmp_path, host)
+    doc = video_graph(tmp_path, place="ssh-lab:cpu")
+    run_id = start(coord, doc)                             # the run has the video's sha256 now
+    Path(doc["inputs"]["video"]["uri"]).write_bytes(b"another cut of the film")
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    assert "arrived as" in log_of(coord, run_id, "shots") and "it changed since the run read it" in log_of(coord, run_id, "shots")
+    objects = host / "home" / ".cache" / "hp" / "objects"
+    assert not [p for p in objects.iterdir() if not p.name.startswith(".")]   # nothing kept under that hash
+
+
+def test_a_host_unreachable_when_the_attempt_starts_is_waited_for(tmp_path, host, rec):
+    import threading
+    coord = coordinator(tmp_path, host)
+    (host / "unreachable").write_text("")                 # every command, for the first 4 s
+    threading.Timer(4, (host / "unreachable").unlink).start()
+    run_id = start(coord, work_graph(tmp_path, rec))
+    assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "a")
+    assert coord._tasks(run_id)["a"]["attempt"] == 1 and "cannot be reached" in log_of(coord, run_id, "a")
+
+
 def test_prosody_counts_as_transcript_too():
     from perception.artifacts import get
     assert set(get("bundle.prosody@0.1").kinds) == {"audio", "transcript"}   # each utterance's words

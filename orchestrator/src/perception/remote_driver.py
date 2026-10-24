@@ -133,7 +133,9 @@ class Driver:
         q = shlex.quote
         out = {}
         for name, entry in self.request["inputs"].items():
-            local = Path(entry["path"])
+            # the content, not a link to it: a graph input is often a link (to a video on an external drive), which rsync
+            # would send as a link pointing nowhere there (or somewhere else)
+            local = Path(entry["path"]).resolve()
             folder = f"{self.root}/objects/{entry['sha256']}"
             out[name] = {**entry, "path": f"{self.attempt}/in/{name}/{local.name}", "object": f"{folder}/data"}
             if self.sh(f"test -e {q(folder)}/.complete", check=False).returncode == 0:
@@ -143,7 +145,13 @@ class Driver:
             incoming = f"{self.root}/objects/.incoming-{self.tag}-{name}"
             self.sh(f"rm -rf {q(incoming)} && mkdir -p {q(incoming)}")
             self.rsync(f"{local}/" if local.is_dir() else str(local), f"{self.dest}:{incoming}/data" + ("/" if local.is_dir() else ""))
-            self.sh(f"{PUBLISH}\ntouch {q(incoming)}/.complete && publish {q(incoming)} {q(folder)}")
+            # filed under its sha256 only if that is what arrived (a file changed since the run hashed it is refused);
+            # a folder comes from the store, which checked it when it was published
+            verify = "" if local.is_dir() else (
+                f"got=$( (sha256sum {q(incoming)}/data 2>/dev/null || shasum -a 256 {q(incoming)}/data) | cut -d' ' -f1)\n"
+                f"[ \"$got\" = {q(entry['sha256'])} ] || {{ rm -rf {q(incoming)}; echo \"{name} arrived as $got, not {entry['sha256']}: "
+                f"it changed since the run read it\" >&2; exit 5; }}\n")
+            self.sh(f"{PUBLISH}\n{verify}touch {q(incoming)}/.complete && publish {q(incoming)} {q(folder)}")
         return out
 
     def start(self, inputs: dict[str, dict]):
@@ -156,7 +164,7 @@ class Driver:
             node = f"{q(s['uv'])} run --project {q(self.code + '/' + s['env'])} --frozen --no-dev python {q(s['entry'])}"
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
-        links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -s {q(v['object'])} {q(v['path'])}"
+        links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -sfn {q(v['object'])} {q(v['path'])}"
                           for name, v in inputs.items())
         lost = int(s["lost_after_s"] + min(60, s["lost_after_s"]))   # after the driver has given up
         every = max(1, min(30, lost // 4))
@@ -204,9 +212,9 @@ echo $pid
         time.sleep(POLL_S)
 
     def patiently(self, step, *args):
-        """A step that a dropped connection must not lose (bringing a finished node's results back): repeated while
-        the host cannot be reached, as watching is. A failed rsync is repeated only if the host is unreachable; any
-        other failure is the step's own."""
+        """A step repeated while the host cannot be reached (up to lost_after_s, as watching waits): a short outage
+        must not cost an attempt, nor a finished node's results. A failed rsync is repeated only if the host is
+        unreachable; any other failure is the step's own."""
         while True:
             try:
                 result = step(*args)
@@ -300,10 +308,12 @@ echo $pid
 
     def run(self) -> int:
         try:
-            self.check_root()
-            self.send_code()
-            inputs = self.send_inputs()
-            self.start(inputs)
+            # each repeated while the host cannot be reached: they can be (uploads go under the attempt's own names and
+            # are published in one step; starting stops this attempt's node if a lost answer hid that it had started)
+            self.patiently(self.check_root)
+            self.patiently(self.send_code)
+            inputs = self.patiently(self.send_inputs)
+            self.patiently(self.start, inputs)
             self.watch()
             self.fetch()
             return 0
