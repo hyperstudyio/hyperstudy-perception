@@ -248,7 +248,7 @@ class Coordinator:
     def place(self, manifest: Manifest, wanted: str = "auto") -> tuple[Placement | None, str]:
         """The backend and runner this node would use here. Native runners first (they reach the Apple GPU and need no
         transfer), then containers."""
-        kinds = [wanted] if wanted != "auto" else ["native", "self", "oci"]
+        kinds = [wanted] if wanted != "auto" else ["native", "self"]
         reasons = []
         for kind in kinds:
             backend = self.backends.get(kind)
@@ -319,7 +319,7 @@ class Coordinator:
         (attempt_dir / "request.json").write_text(json.dumps(request, indent=1))
         try:
             handle = placement.backend.submit(m, placement.runner, attempt_dir, child_env(m.secrets, self.secrets))
-        except Exception as e:   # could not even start (missing tool, docker error): transient, the retry policy decides
+        except Exception as e:   # could not even start (a missing tool): transient, the retry policy decides
             self._attempt_failed(run_id, graph, node.id, attempt, "transient", f"submit failed: {e}")
             return
         with self.store.tx():   # recorded running only if nothing (a cancel) changed the task while it was submitted

@@ -118,10 +118,10 @@ environments. Status of the chosen stack (2026-10-23):
 The py-feat organisation on Hugging Face is the natural home for the mirrors. Mirroring does not change any
 licence mode: weights trained on non-commercial data stay academic-tier.
 
-**Where it runs.** The same stage code in two forms: native uv environments on the user's machine (a Mac uses the
-Apple GPU; Docker on macOS cannot), and container images on NVIDIA. Cloud GPUs are reached through one SkyPilot
-backend (decided 2026-10-23, `docs/research/orchestration_frameworks.md`): the same pinned image runs on whichever
-provider is cheapest and available (RunPod, Lambda, Vast, AWS, GCP, Azure, Kubernetes, Slurm), using the user's own
+**Where it runs.** The same stage code in native uv environments everywhere: on the user's machine (a Mac uses the
+Apple GPU), on cloud machines and on lab servers. No containers (2026-10-24, `docs/plans/GRAPH_MVP_PLAN.md`). Cloud GPUs
+are reached through one SkyPilot backend (decided 2026-10-23, `docs/research/orchestration_frameworks.md`): the same
+locked environments run on whichever provider is cheapest and available (RunPod, Lambda, Vast, AWS, GCP, Azure, Kubernetes, Slurm), using the user's own
 accounts, with inputs passed as signed URLs and outputs returned as artifacts. Local runs schedule one
 heavy GPU stage at a time (overlapping SAM 3 and Sapiens2 pushed a 128 GB Mac into 45 GB of swap). Nothing has been
 timed on NVIDIA yet.
