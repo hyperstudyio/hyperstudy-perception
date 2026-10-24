@@ -1,7 +1,9 @@
 # `perception --json`
 
 What the annotator app reads when it drives the CLI as a sidecar (`docs/BACKEND_PLAN.md` step 2 in hyperstudy-annotator).
-Put `--json` before the command: `perception --json run graph.yaml --input video=clip.mp4`.
+Put `--json` before the command: `perception --json run graph.yaml --input video=clip.mp4`. `plan` and `run` also take
+`--place NODE=PLACE` (where a node runs; `plan` lists its options) and `--only NODE[,NODE]` (just those nodes and the
+nodes they need).
 
 **The protocol.**
 - Every line on stdout is one JSON object with `"v"` (the protocol version, now 1) and `"type"`. Nothing else is
@@ -14,7 +16,7 @@ Put `--json` before the command: `perception --json run graph.yaml --input video
 | type | from | fields |
 |---|---|---|
 | `doctor` | `doctor` | `platform`, `cpu_cores`, `memory_gb`, `accelerators`, `vram_gb`, `tools` (name → path or null), `store`, `nodes` [{`ref`, `stage`, `description`, `where` (or null), `why_not`}] |
-| `plan` | `plan`; `run` when it cannot start | `ok`, `estimated_usd`, `nodes` [{`id`, `uses`, `where`, `why_not`, `cached`, `downloads` [{`id`, `source`, `size_gb`, `gated`, `licence_mode`}], `missing_secrets`, `cost_usd`, `cost_note`, `uploads` (data kinds it sends off the machine: `video`, `audio`, `frames`, `faces`, `transcript`, `embeddings`), `place` (where it would run, `backend:accelerator`), `options` (every place it can run here, best first; `--place NODE=PLACE` chooses), `estimate_s` (seconds, or null), `estimate_basis` (what the estimate rests on, or why there is none)}] |
+| `plan` | `plan`; `run` when it cannot start | `ok`, `estimated_usd`, `nodes` [{`id`, `uses`, `where`, `why_not`, `cached`, `downloads` [{`id`, `source`, `size_gb`, `gated`, `licence_mode`}], `missing_secrets`, `cost_usd`, `cost_note`, `uploads` (data kinds it sends off the machine: `video`, `audio`, `frames`, `faces`, `transcript`, `embeddings`), `place` (where it would run, `backend:accelerator`), `options` (every place it can run here, best first; `--place NODE=PLACE` chooses), `estimate_s` (seconds, or null), `estimate_basis` (what the estimate rests on, or why there is none), `needs` (the nodes whose outputs it takes)}] |
 | `run.created` | `run`, `resume`, `rerun` | `run`, `store` |
 | `event` | the same, as they happen (`resume` and `rerun` stream only their own, not the run's history) | `run`, `node` (or null for the run), `kind` (`task.started`, `task.cached`, `task.retry`, `task.succeeded`, `task.failed`, `run.succeeded`, `run.failed`, ...), `message`, `at` |
 | `run.finished` | the same, last | `run`, `status` (`succeeded`, `failed`, `canceled`) |

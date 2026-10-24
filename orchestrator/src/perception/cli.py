@@ -71,9 +71,30 @@ def coordinator(args) -> Coordinator:
     return Coordinator(Store(home()), registry(args), backends(), load_secrets())
 
 
+def only(doc: dict, chosen: list[str]) -> dict:
+    """The graph with just the chosen nodes and the nodes they need (their inputs' $nodes.X, transitively); graph outputs
+    of nodes left out go too. The app's stage picker: run part of a graph."""
+    nodes = {n.get("id"): n for n in doc.get("nodes", [])}
+    keep, todo = set(), [c for item in chosen for c in item.split(",") if c]
+    while todo:
+        name = todo.pop()
+        if name not in nodes:
+            raise GraphError([f"--only {name}: the graph has no node {name!r}"])
+        if name in keep:
+            continue
+        keep.add(name)
+        for ref in nodes[name].get("inputs", {}).values():
+            if isinstance(ref, str) and ref.startswith("$nodes."):
+                todo.append(ref.split(".")[1])
+    outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (isinstance(v, str) and v.startswith("$nodes.") and v.split(".")[1] not in keep)}
+    return {**doc, "nodes": [n for n in doc["nodes"] if n.get("id") in keep], **({"outputs": outputs} if "outputs" in doc else {})}
+
+
 def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs: list[str] | None = None,
-               places: list[str] | None = None):
+               places: list[str] | None = None, chosen: list[str] | None = None):
     doc = yaml.safe_load(path.read_text())
+    if chosen:
+        doc = only(doc, chosen)
     for item in places or []:   # --place node=backend:accelerator chooses where a node runs (plan lists the options)
         name, _, place = item.partition("=")
         node = next((n for n in doc.get("nodes", []) if n.get("id") == name), None)
@@ -119,7 +140,8 @@ def plan_json(p) -> dict:
     nodes = [{"id": n.id, "uses": n.uses, "where": n.where, "why_not": n.why_not, "cached": n.cached,
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
               "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads,
-              "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis}
+              "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
+              "needs": n.needs}
              for n in p.nodes]
     return {"ok": p.ok, "nodes": nodes, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
 
@@ -210,7 +232,7 @@ def cmd_validate(args):
 def cmd_plan(args):
     reg = registry(args)
     try:
-        graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input, args.place)
+        graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input, args.place, args.only)
     except GraphError as e:
         return graph_error(args, e)
     p = make_plan(coordinator(args), graph)
@@ -265,7 +287,7 @@ def _run(coord: Coordinator, run_id: str, as_json: bool = False, after: int = 0)
 def cmd_run(args):
     coord = coordinator(args)
     try:
-        graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input, args.place)
+        graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input, args.place, args.only)
     except GraphError as e:
         return graph_error(args, e)
     p = make_plan(coord, graph, allow_downloads=args.allow_downloads)
@@ -423,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-cost-usd", type=float)
     p.add_argument("--input", action="append", metavar="NAME=PATH", help="set a graph input's file")
     p.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (plan lists its options)")
+    p.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
     p.set_defaults(fn=cmd_plan)
     r = sub.add_parser("run")
     r.add_argument("graph")
@@ -430,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--input", action="append", metavar="NAME=PATH", help="set a graph input's file")
     r.add_argument("--allow-downloads", action="store_true", help="let nodes fetch model weights that are not on this machine yet")
     r.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (plan lists its options)")
+    r.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
     r.set_defaults(fn=cmd_run)
     for name, fn in (("resume", cmd_resume), ("cancel", cmd_cancel), ("artifacts", cmd_artifacts)):
         x = sub.add_parser(name)

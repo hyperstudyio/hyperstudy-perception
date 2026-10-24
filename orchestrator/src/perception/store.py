@@ -8,7 +8,8 @@
 
 Publication is effectively-once: an output is copied into tmp/, hashed, and renamed into objects/ or trees/ under its
 hash. A second publication of the same content finds the object already there. Nothing reads an object before its
-row is committed, and a crash leaves at most an orphan file in tmp/ (cleared on open).
+row is committed, and a crash leaves at most an orphan file in tmp/. Staged files are named for their process, and
+opening the store clears those of processes that are gone (never a running coordinator's: any command opens the store).
 """
 
 from __future__ import annotations
