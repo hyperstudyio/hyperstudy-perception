@@ -30,12 +30,22 @@ if [ -e "$FAKE_HOST/slow" ]; then case "$*" in *"$(cat "$FAKE_HOST/slow")"*) sle
 cd "$FAKE_HOST/home" && HOME="$FAKE_HOST/home" exec /bin/sh -c "$*"
 """
 FAKE_SKY = r"""#!/bin/sh
+# SkyPilot's CLI as the driver uses it: a launch is submitted to its API server (--async) and followed by its request id
 echo "sky $* (config $SKYPILOT_PROJECT_CONFIG)" >> "$FAKE_HOST/events"
+R=11111111-2222-3333-4444-555555555555
+case "$1 $2" in
+  "launch --async") date +%s > "$FAKE_HOST/launched"; printf '\033[32mSubmitted sky.launch request: %s\033[0m\n' "$R"; exit 0;;
+  "api status")
+    if [ -e "$FAKE_HOST/canceled" ]; then st=CANCELLED
+    elif [ -e "$FAKE_HOST/launch-fails" ]; then st=FAILED
+    elif [ -e "$FAKE_HOST/launch-hangs" ]; then st=RUNNING            # a setup stuck on an apt lock
+    elif [ -e "$FAKE_HOST/launch-slow" ] && [ $(( $(date +%s) - $(cat "$FAKE_HOST/launched") )) -lt 5 ]; then st=RUNNING
+    else st=SUCCEEDED; fi
+    printf 'The flag is ignored because the server does not support it yet.\n[{"request_id": "%s", "name": "sky.launch", "status": "%s"}]\n' "$R" "$st"; exit 0;;
+  "api logs") echo "launch logs"; exit 0;;
+  "api cancel") touch "$FAKE_HOST/canceled"; exit 0;;
+esac
 case "$1" in
-  launch) [ -e "$FAKE_HOST/launch-fails" ] && { echo "no capacity"; exit 1; }
-          [ -e "$FAKE_HOST/launch-hangs" ] && { sleep 60; exit 0; }   # a setup stuck on an apt lock
-          [ -e "$FAKE_HOST/launch-slow" ] && sleep 5
-          echo "launched $3"; exit 0;;
   down) [ -e "$FAKE_HOST/down-fails" ] && exit 1
         # like SkyPilot, a program with its own signal handling: an ignored SIGTERM inherited from the driver does not protect it
         [ -e "$FAKE_HOST/down-slow" ] && { python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_DFL); time.sleep(3)' || exit 1
@@ -110,7 +120,7 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     cluster = cluster_name(run_id, "faces", 1)
     assert cluster.startswith("perception-")   # the only machines the perception-node role can end
     ev = events(machine)
-    launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch -c {cluster} -y --down -i 15 --env DEADLINE_MINUTES=30"))
+    launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch --async -c {cluster} -y --down -i 15 --env DEADLINE_MINUTES=30"))
     assert ev[launch].endswith(f"(config {CloudBackend.project_config})")   # no credentials, only perception-node
     guard = ev.index("guard 29")                 # the shutdown deadline: whole minutes left of the 30, counted from the launch
     first_send = next(i for i, e in enumerate(ev) if "objects" in e or "code/" in e)
@@ -158,6 +168,7 @@ def test_a_launch_that_hangs_is_stopped_and_the_machine_set_to_terminate_while_i
     assert t["error_code"] == "transient" and "not ready after" in t["error"]
     ev = events(machine)
     assert any("--instance-initiated-shutdown-behavior terminate" in e for e in ev)   # set during the launch
+    assert "sky api cancel -y 11111111-2222-3333-4444-555555555555" in " ".join(ev)   # stopped on SkyPilot's server too
     assert ev[-1].startswith("sky down -y perception-")
 
 
@@ -270,6 +281,28 @@ def test_nodes_whose_shortened_ids_agree_get_machines_of_their_own():
     assert cluster_name("20261024-1-abc123", "face_track_a", 1) != cluster_name("20261024-1-abc123", "face-track-a", 1)
     assert cluster_name("r-abc123", "face_track_aaaaaaaaaaa1", 1) != cluster_name("r-abc123", "face_track_aaaaaaaaaaa2", 1)
     assert cluster_name("r-abc123", "faces", 2).startswith("perception-abc123-faces-")
+
+
+def test_a_machine_that_cannot_be_set_to_terminate_is_not_used(tmp_path, machine, rec):
+    script(Path(os.environ["PERCEPTION_AWS"]), FAKE_AWS.replace('case "$*" in', 'case "$*" in *modify-instance-attribute*) exit 254;; esac\ncase "$*" in'))
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "failed"
+    t = coord._tasks(run_id)["faces"]
+    assert (t["error_code"], t["attempt"]) == ("internal", 1) and "terminate on shutdown" in t["error"]
+    assert not any("objects" in e or "code/" in e for e in events(machine))   # nothing was sent to it
+    assert events(machine)[-1].startswith("sky down -y perception-")
+
+
+def test_a_machine_with_no_gpu_fails_once_charged_its_time(tmp_path, machine, rec):
+    (machine / "home" / ".local" / "bin" / "nvidia-smi").unlink()
+    coord = coordinator(tmp_path)
+    doc = graph(tmp_path, rec)
+    doc["policy"]["retries"] = 2
+    run_id, status = run(coord, doc)
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "resources", 1)
+    assert coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0] < 0.01
 
 
 def test_the_deadline_follows_the_videos_length():

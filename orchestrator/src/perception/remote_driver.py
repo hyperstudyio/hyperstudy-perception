@@ -28,6 +28,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -408,34 +409,60 @@ echo $pid
     def provision(self, c: dict):
         """Start the machine. Its own deadline is set from the first moment, in case this laptop never comes back: the
         task's setup schedules the OS shutdown first (DEADLINE_MINUTES), and while the launch runs a watcher makes an OS
-        shutdown terminate the instance (EC2 would only stop it, its disk billing). The launch itself has a time limit
-        (launch_s): a setup that hangs is stopped here and the machine deleted."""
-        from .hosts import probe
+        shutdown terminate the instance (EC2 would only stop it, its disk billing). The launch has a time limit
+        (launch_s). SkyPilot runs a launch on its API server, where it goes on if its client is stopped: so it is
+        submitted (--async), followed by its id, and on a timeout or a cancel canceled there before the machine is
+        deleted."""
+        from .hosts import HostError, probe
         say(f"starting a cloud machine, {c['cluster']} (at most {c['deadline_s'] / 60:.0f} min at ${c['hourly_usd']}/h)")
         minutes = max(1, math.floor(c["deadline_s"] / 60))
-        launch = subprocess.Popen([c["sky"], "launch", "-c", c["cluster"], "-y", "--down", "-i", "15", "--env", f"DEADLINE_MINUTES={minutes}", c["task"]],
-                                  env=self.cloud_env(c), stdout=sys.stdout, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-        terminating = False
         try:
-            while launch.poll() is None:
+            submitted = subprocess.run([c["sky"], "launch", "--async", "-c", c["cluster"], "-y", "--down", "-i", "15",
+                                        "--env", f"DEADLINE_MINUTES={minutes}", c["task"]], env=self.cloud_env(c),
+                                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
+        except FileNotFoundError:
+            raise Refused("input", f"SkyPilot is not installed here ({c['sky']}): perception cloud on checks for it")
+        sys.stdout.write(submitted.stdout + submitted.stderr)
+        sys.stdout.flush()
+        found = re.search(r"request: ([0-9a-f]{8}-[0-9a-f-]{27,})", re.sub(r"\x1b\[[0-9;]*m", "", submitted.stdout))
+        if submitted.returncode or not found:
+            raise LaunchFailed(f"sky launch was not submitted (exit {submitted.returncode})")
+        request = found.group(1)
+        logs = subprocess.Popen([c["sky"], "api", "logs", request], env=self.cloud_env(c), stdout=sys.stdout,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        terminating, finished = False, False
+        try:
+            while True:
+                state = self.request_status(c, request)
+                if state == "SUCCEEDED":
+                    finished = True
+                    break
+                if state in ("FAILED", "CANCELLED"):
+                    finished = True
+                    raise LaunchFailed(f"sky launch {state.lower()}")
                 if not terminating:
                     terminating = self.terminate_on_shutdown(c, quiet=True)
                 if time.monotonic() - self.started > c["launch_s"]:
-                    raise LaunchFailed(f"the machine was not ready after {c['launch_s'] / 60:.0f} min (sky launch stopped)")
+                    raise LaunchFailed(f"the machine was not ready after {c['launch_s'] / 60:.0f} min (sky launch canceled)")
                 time.sleep(POLL_S)
         finally:
-            if launch.poll() is None:
-                launch.terminate()
-                launch.wait()
-        if launch.returncode:
-            raise LaunchFailed(f"sky launch exited {launch.returncode}")
-        # again now that it is up: the launch may have replaced the instance it first created (another zone)
-        self.terminate_on_shutdown(c)
-        caps, root = probe(c["cluster"])
+            if not finished:   # a timeout or a cancel: stop the launch on the API server, or sky down could miss it
+                subprocess.run([c["sky"], "api", "cancel", "-y", request], env=self.cloud_env(c), stdout=sys.stdout,
+                               stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+            logs.terminate()
+            logs.wait()
+        # again now that it is up: the launch may have replaced the instance it first created (another zone). A machine
+        # that would only stop at its deadline (its disk billing on) is not used.
+        if not self.terminate_on_shutdown(c):
+            raise Refused("internal", f"{c['cluster']} could not be set to terminate on shutdown (aws ec2 modify-instance-attribute): it is not used")
+        try:
+            caps, root = probe(c["cluster"])
+        except HostError as e:
+            raise LaunchFailed(f"{c['cluster']} started but could not be probed: {e}")
         self.at(c["cluster"], root)
         self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
         if "cuda" not in caps.accelerators:
-            raise RuntimeError(f"{c['cluster']} has no NVIDIA GPU that nvidia-smi can see")
+            raise Refused("resources", f"{c['cluster']} has no NVIDIA GPU that nvidia-smi can see")
         if not caps.tools.get("uv"):   # its setup installs uv: a download that failed
             raise LaunchFailed(f"{c['cluster']} has no uv: the machine's setup did not install it")
         # its OS shuts it down (and so terminates it) at the deadline, counted from the start of the launch
@@ -446,6 +473,17 @@ echo $pid
         if result.returncode:
             raise GuardRefused(f"guard.sh refused {c['cluster']} (exit {result.returncode}): nothing was sent; see the log")
         self.stop_at = self.started + c["deadline_s"] - min(300, c["deadline_s"] / 4)
+
+    def request_status(self, c: dict, request: str) -> str:
+        """A request's status on SkyPilot's API server (PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED), or "" when it
+        could not be read this time."""
+        out = subprocess.run([c["sky"], "api", "status", "-a", request, "-o", "json"], env=self.cloud_env(c),
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        try:
+            text = out.stdout[out.stdout.index("["):]
+            return next((r["status"] for r in json.loads(text) if r["request_id"] == request), "")
+        except (ValueError, KeyError, TypeError):
+            return ""
 
     def terminate_on_shutdown(self, c: dict, quiet: bool = False) -> bool:
         """EC2 only stops an on-demand machine on an OS shutdown (its disk keeps billing): make it terminate, so its
