@@ -169,6 +169,9 @@ def test_place_chooses_where_a_node_runs_and_a_place_it_cannot_run_is_a_plan_pro
 def test_only_keeps_the_chosen_nodes_and_what_they_need_and_drops_the_rest(home, capsys):
     # a -> b -> c, and d on its own
     g = graph(home, [work("a", home), work("b", home, a="$nodes.a.out"), work("c", home, a="$nodes.b.out"), work("d", home)])
+    assert cli("plan", str(g)) == 0
+    [plan] = lines(capsys)
+    assert {n["id"]: n["needs"] for n in plan["nodes"]} == {"a": [], "b": ["a"], "c": ["b"], "d": []}   # for a stage picker
     assert cli("plan", str(g), "--only", "b") == 0
     [plan] = lines(capsys)
     assert [n["id"] for n in plan["nodes"]] == ["a", "b"]

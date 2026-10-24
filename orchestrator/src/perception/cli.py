@@ -140,7 +140,8 @@ def plan_json(p) -> dict:
     nodes = [{"id": n.id, "uses": n.uses, "where": n.where, "why_not": n.why_not, "cached": n.cached,
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
               "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads,
-              "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis}
+              "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
+              "needs": n.needs}
              for n in p.nodes]
     return {"ok": p.ok, "nodes": nodes, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
 

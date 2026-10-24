@@ -35,6 +35,7 @@ class NodePlan:
     options: list[str] = field(default_factory=list)   # every place it can run here, best first
     estimate_s: float | None = None                    # seconds, from its measured runs here (estimates.py)
     estimate_basis: str = ""
+    needs: list[str] = field(default_factory=list)     # the nodes whose outputs it takes (a stage picker's edges)
 
 
 @dataclass
@@ -91,6 +92,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False) -> Pla
         placement, why = coord.place(m, node.spec.backend, node.spec.place)
         np = NodePlan(node.id, m.ref, f"{placement.backend.kind} ({placement.runner.accelerator})" if placement else None, why)
         np.options = [p.label for p in coord.placements(m, node.spec.backend)[0]]
+        np.needs = sorted(node.upstream)
         np.place = placement.label if placement else None
         np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://") and not hf_cached(x.source)]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
