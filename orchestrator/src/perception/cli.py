@@ -32,7 +32,6 @@ import yaml
 from . import export as export_mod
 from .backends.base import Backend
 from .backends.native import NativeBackend, SelfBackend
-from .backends.oci import OciBackend
 from .backends.probe import probe
 from .ir import GraphError, compile_graph
 from .manifests import Registry
@@ -60,7 +59,7 @@ def load_secrets() -> dict[str, str]:
 
 
 def backends() -> list[Backend]:
-    return [NativeBackend(), SelfBackend(), OciBackend()]
+    return [NativeBackend(), SelfBackend()]
 
 
 def registry(args) -> Registry:

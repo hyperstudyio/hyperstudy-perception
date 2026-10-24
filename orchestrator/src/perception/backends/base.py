@@ -4,7 +4,7 @@ a container, a remote job or an API call.
 
     probe_capabilities()   what this backend can run here (platform, accelerators, memory, tools)
     runner_for(manifest)   the manifest runner this backend would use, or why none fits
-    identity(manifest, r)  what makes this runner's results this runner's (env lock, code, image digest): cache key
+    identity(manifest, r)  what makes this runner's results this runner's (env lock, code, SDK): cache key
     estimate(...)          cost and time, before anything is reserved
     stage_inputs(...)      make the inputs readable where the node runs; returns the request's input entries
     submit(...)            start it; returns a JSON-able handle (kept in the run state, so a restarted coordinator
@@ -37,7 +37,7 @@ class Capabilities:
     memory_gb: float
     accelerators: set[str]             # cpu, mps, cuda
     vram_gb: float = 0                 # CUDA: total; Apple GPU: unified memory (memory_gb)
-    tools: dict[str, str | None] = field(default_factory=dict)   # uv, docker, ffmpeg -> path or None
+    tools: dict[str, str | None] = field(default_factory=dict)   # uv, ffmpeg, ffprobe -> path or None
 
 
 @dataclass

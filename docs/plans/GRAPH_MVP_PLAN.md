@@ -13,7 +13,7 @@ the bake-off stages). Search the code for `TODO: [PERCEPTION-GRAPH]` for unfinis
 | Time | Seconds (float, ms precision) in layers, as the bundle does today. `media.v1` records the container timebase, `r_frame_rate` vs `avg_frame_rate` and whether the stream is variable-rate, so the integer-µs mapping can be added without re-decoding. | Integer µs everywhere is a bundle major version; flagged as an open decision rather than smuggled in. |
 | Scheduler | Custom asyncio coordinator + SQLite, as the spec recommends. The Prefect spike is dropped (2026-10-23): a survey of 17 frameworks found none that meets per-node environments, the Apple GPU, a private cross-run cache, cost caps and Windows together (`docs/research/orchestration_frameworks.md`). | Every node runs in its own environment (py-feat, Parakeet-MLX, SAM 3 cannot share a lock), so a framework would mostly launch subprocesses; Prefect's task runners are per flow, not per task. |
 | Native runner | `uv run --project envs/<env> python -m <module>`: one uv project per environment group (`PLAN.md` §4). The runner hashes the env's `uv.lock` into the cache key. | uv environments are cheap and locked; this is what the bake-off already does. |
-| OCI runner | `docker run` with the image digest; linux/amd64 + CUDA. Built in Phase 1, exercised for real in Phase 2 (no NVIDIA box here). | Docker on macOS cannot reach the Apple GPU (spec agrees). |
+| No containers | uv is the only runner, everywhere: this machine, cloud machines, lab servers (2026-10-24; the spec's OCI runner was built, never run against a real image, and removed). The annotator app bundles uv. | Every node installs with uv (pip and Hugging Face, plus pinned research code for some bake-off stages); the L4 cloud runs used plain uv environments and matched the Mac. Docker on macOS cannot reach the Apple GPU, images would be per platform anyway, and weights that are non-commercial or gated cannot go into a published image. Revisit (a CUDA image built from the same uv locks, weights fetched at run time) only if a node cannot be installed with uv, or cloud start-up time matters. |
 | Node protocol | Files, not sockets: the coordinator writes `request.json` into a fresh attempt directory; the node writes outputs under `out/` and `response.json`. The coordinator validates, hashes and commits. A node never writes into the store. | Atomic commit and safe crash recovery (criterion 3) fall out of it: an orphaned attempt can only write into its own directory. The same contract works over SSH/HTTPS later (stage inputs, run, collect). |
 | Node SDK | `sdk/perception_node`: stdlib only, added as a path dependency of every env. Reads the request, resolves input paths, writes the response, maps exceptions to error codes (`transient`, `input`, `schema`, `privacy`, `licence`, `internal`). | Nodes stay plain scripts; no orchestrator code in model environments. |
 | GPU budget on a Mac | One `gpu: exclusive` node at a time; `gpu: shared` nodes up to the free unified memory. | Measured: SAM 3 overlapping Sapiens2 pushed a 128 GB Mac into 45 GB of swap. |
@@ -39,14 +39,14 @@ the bake-off stages). Search the code for `TODO: [PERCEPTION-GRAPH]` for unfinis
    records (type, hash, size, producer task) in SQLite. Atomic publish: write to a temp path, fsync, rename.
 2. Run state: runs, tasks (pending, ready, leased, running, succeeded, cached, failed, canceled), attempts,
    leases with expiry and heartbeat, events log. Resume reclaims expired leases.
-3. Cache: key = hash(manifest id@version, runner identity (env lock hash or image digest), canonical config,
+3. Cache: key = hash(manifest id@version, runner identity (env lock hash), canonical config,
    input artifact hashes, artifact schema versions, partition); a hit whose objects all exist marks the task
    `cached`.
 4. Coordinator: asyncio loop; ready = all inputs committed; placement by runner eligibility and resources;
    retries with backoff for `transient` only; `max_cost_usd` reservation (zero for local nodes).
-5. Backends: native subprocess (uv) and Docker, behind `probe_capabilities / estimate / stage_inputs / submit /
+5. Backends: native subprocess (uv), behind `probe_capabilities / estimate / stage_inputs / submit /
    poll / cancel / collect / cleanup`.
-6. `perception doctor` (OS, CPU, RAM, Apple GPU / CUDA / VRAM, Docker, uv, ffmpeg), `run`, `status`, `logs`,
+6. `perception doctor` (OS, CPU, RAM, Apple GPU / CUDA / VRAM, uv, ffmpeg), `run`, `status`, `logs`,
    `resume`, `rerun --from`, `artifacts`, `export --format bundle`.
 7. Nodes: `core.decode` (probe, sha256, timebase, shots, keyframes, 16 kHz mono audio), `vision.face-track`
    (py-feat + ArcFace clustering, from `pipeline/bakeoff/faces`), `audio.asr` (Parakeet-MLX on Apple silicon,
@@ -76,7 +76,7 @@ Done and tested:
 - **Export.** The exported bundle passes `validate.py`. The bake-off's NES bundle has 14 people because it came from the Oct 21 clustering, before the two-pass anchor clustering.
 
 Not done:
-- **OCI backend.** Written but not yet run against a real image. It needs a CUDA box or a CPU test image.
+- ~~**OCI backend.**~~ Removed 2026-10-24: uv is the only runner (see the decisions table).
 - **CUDA runner** for ASR (faces has one: native on Linux, first run 2026-10-24).
 - **`perception models pull`.**
 - **Cloud backend in the coordinator.** SkyPilot runs a whole graph on a cloud machine today (`cloud/skypilot/`); placing single nodes there from a local run is not built yet.

@@ -29,14 +29,6 @@ def _cuda_vram_gb() -> float:
     return max((float(x) / 1024 for x in out.stdout.split() if x.strip()), default=0.0)
 
 
-def _docker() -> str | None:
-    docker = shutil.which("docker")
-    if not docker:
-        return None
-    ok = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True)
-    return docker if ok.returncode == 0 else None   # the CLI without a running daemon cannot run anything
-
-
 def probe() -> Capabilities:
     plat = this_platform()
     memory = _memory_gb()
@@ -48,5 +40,5 @@ def probe() -> Capabilities:
         accelerators.add("mps")
         vram = vram or memory   # unified memory
     return Capabilities(platform=plat, cpu_cores=os.cpu_count() or 1, memory_gb=round(memory, 1), accelerators=accelerators,
-                        vram_gb=round(vram, 1), tools={"uv": shutil.which("uv"), "docker": _docker(),
-                                                       "ffmpeg": shutil.which("ffmpeg"), "ffprobe": shutil.which("ffprobe")})
+                        vram_gb=round(vram, 1), tools={"uv": shutil.which("uv"), "ffmpeg": shutil.which("ffmpeg"),
+                                                       "ffprobe": shutil.which("ffprobe")})

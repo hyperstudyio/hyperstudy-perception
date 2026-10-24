@@ -20,22 +20,15 @@ class Strict(BaseModel):
 
 
 class Runner(Strict):
-    """One way to run the node. `native`: a script in a uv environment on this machine. `oci`: a container image
-    pinned by digest. `self`: the coordinator's own interpreter (tests and trivial nodes only)."""
-    kind: Literal["native", "oci", "self"]
+    """One way to run the node. `native`: a script in a uv environment (on this machine, a cloud machine or a lab
+    server). `self`: the coordinator's own interpreter (tests and trivial nodes only). No containers (2026-10-24):
+    every node installs with uv, and Docker on macOS cannot reach the Apple GPU."""
+    kind: Literal["native", "self"]
     entry: str | None = None                 # native/self: script path, relative to the node directory
     env: str | None = None                   # native: uv project, relative to the repository root
-    image: str | None = None                 # oci: registry/name@sha256:...
     platforms: list[str] = Field(default_factory=lambda: ["darwin/arm64", "linux/amd64", "linux/arm64", "windows/amd64"])
     accelerator: Literal["cpu", "mps", "cuda"] = "cpu"
     minimum_vram_gb: float = 0
-
-    @field_validator("image")
-    @classmethod
-    def pinned(cls, v):
-        if v is not None and "@sha256:" not in v:
-            raise ValueError("container images must be pinned by digest (name@sha256:...)")
-        return v
 
 
 class Resources(Strict):

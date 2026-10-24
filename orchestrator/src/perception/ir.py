@@ -68,7 +68,7 @@ class NodeSpec(Strict):
     uses: str = Field(pattern=r"^[a-z0-9_.-]+@\d+\.\d+\.\d+$")
     inputs: dict[str, str] = Field(default_factory=dict)
     config: dict = Field(default_factory=dict)
-    backend: Literal["auto", "native", "oci", "self"] = "auto"
+    backend: Literal["auto", "native", "self"] = "auto"
 
 
 class GraphSpec(Strict):
