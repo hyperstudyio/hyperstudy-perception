@@ -1,0 +1,38 @@
+# Tests on every pull request and on main. Linux runners only (the repository is private, and macOS minutes cost ten
+# times as much); nothing here needs a GPU, model weights, study media or secrets.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  orchestrator:
+    name: Orchestrator (graph, store, coordinator, CLI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: pytest
+        working-directory: orchestrator
+        run: uv run --locked pytest -q tests
+
+  node-logic:
+    name: Node logic without models (thumbnail choice, decode workers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      # The face node's own environment pulls torch and py-feat (gigabytes); these tests need only numpy.
+      - name: pytest
+        run: uv run --no-project --with pytest --with numpy pytest -q nodes/vision/face-track/test_thumbnails.py nodes/vision/face-track/test_loader.py
