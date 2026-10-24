@@ -34,8 +34,14 @@ FAKE_SKY = r"""#!/bin/sh
 echo "sky $* (config $SKYPILOT_PROJECT_CONFIG)" >> "$FAKE_HOST/events"
 R=11111111-2222-3333-4444-555555555555
 case "$1 $2" in
-  "launch --async") date +%s > "$FAKE_HOST/launched"; printf '\033[32mSubmitted sky.launch request: %s\033[0m\n' "$R"; exit 0;;
+  "launch --async") date +%s > "$FAKE_HOST/launched"; echo "$4" > "$FAKE_HOST/cluster"
+                    [ -e "$FAKE_HOST/launch-garbled" ] && { echo "Request submitted (see the dashboard)"; exit 0; }   # no id to read
+                    printf '\033[32mSubmitted sky.launch request: %s\033[0m\n' "$R"; exit 0;;
   "api status")
+    if [ "$3" = "-v" ]; then   # every active request, with its cluster
+      [ -e "$FAKE_HOST/canceled" ] && { echo "[]"; exit 0; }
+      printf '[{"request_id": "%s", "name": "sky.launch", "status": "RUNNING", "cluster_name": "%s"}, {"request_id": "99999999-0000-0000-0000-000000000000", "name": "sky.launch", "status": "RUNNING", "cluster_name": "someone-elses"}]\n' "$R" "$(cat "$FAKE_HOST/cluster")"; exit 0
+    fi
     if [ -e "$FAKE_HOST/canceled" ]; then st=CANCELLED
     elif [ -e "$FAKE_HOST/launch-fails" ]; then st=FAILED
     elif [ -e "$FAKE_HOST/launch-hangs" ]; then st=RUNNING            # a setup stuck on an apt lock
@@ -58,6 +64,7 @@ echo "aws $*" >> "$FAKE_HOST/events"
 case "$*" in *describe-instances*) echo "i-0abc";; esac
 """
 GUARD_OK = 'echo "guard $1" >> "$FAKE_HOST/events"; echo "guard: ok"\n'
+SETUP_OK = 'echo "setup" >> "$FAKE_HOST/events"; echo "$HOME/.perception-uv/uv"\n'
 GUARD_REFUSES = 'echo "guard: the instance profile is skypilot-v1, not perception-node" >&2; exit 1\n'
 
 
@@ -83,9 +90,10 @@ def events(fake: Path) -> list[str]:
     return (fake / "events").read_text().splitlines() if (fake / "events").exists() else []
 
 
-def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60) -> Coordinator:
+def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60, setup=SETUP_OK) -> Coordinator:
     cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=launch_s,
-                         guard=script(tmp_path / "guard.sh", guard), task=tmp_path / "node-gpu.yaml")
+                         guard=script(tmp_path / "guard.sh", guard), setup=script(tmp_path / "node-setup.sh", setup),
+                         task=tmp_path / "node-gpu.yaml")
     return Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), cloud], tick_s=0.02, backoff_s=0.01)
 
 
@@ -123,9 +131,10 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     launch = next(i for i, e in enumerate(ev) if e.startswith(f"sky launch --async -c {cluster} -y --down -i 15 --env DEADLINE_MINUTES=30"))
     assert ev[launch].endswith(f"(config {CloudBackend.project_config})")   # no credentials, only perception-node
     guard = ev.index("guard 29")                 # the shutdown deadline: whole minutes left of the 30, counted from the launch
+    setup = ev.index("setup")                    # ffmpeg and uv, installed and waited for (SkyPilot's setup is detached)
     first_send = next(i for i, e in enumerate(ev) if "objects" in e or "code/" in e)
     down = next(i for i, e in enumerate(ev) if e.startswith(f"sky down -y {cluster}"))
-    assert launch < guard < first_send < down == len(ev) - 1
+    assert launch < guard < setup < first_send < down == len(ev) - 1
     assert any("--instance-initiated-shutdown-behavior terminate" in e for e in ev)
     t = coord._tasks(run_id)["faces"]
     usage = json.loads(t["usage"])
@@ -283,6 +292,17 @@ def test_nodes_whose_shortened_ids_agree_get_machines_of_their_own():
     assert cluster_name("r-abc123", "faces", 2).startswith("perception-abc123-faces-")
 
 
+def test_a_launch_whose_request_could_not_be_read_is_canceled_by_its_cluster_only(tmp_path, machine, rec):
+    (machine / "launch-garbled").touch()
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, graph(tmp_path, rec))
+    assert status == "failed" and coord._tasks(run_id)["faces"]["error_code"] == "transient"
+    ev = " ".join(events(machine))
+    assert "sky api cancel -y 11111111-2222-3333-4444-555555555555" in ev     # this attempt's launch
+    assert "99999999" not in ev.split("sky api cancel")[-1]                  # never another cluster's
+    assert events(machine)[-1].startswith("sky down -y perception-")
+
+
 def test_a_machine_that_cannot_be_set_to_terminate_is_not_used(tmp_path, machine, rec):
     script(Path(os.environ["PERCEPTION_AWS"]), FAKE_AWS.replace('case "$*" in', 'case "$*" in *modify-instance-attribute*) exit 254;; esac\ncase "$*" in'))
     coord = coordinator(tmp_path)
@@ -292,6 +312,16 @@ def test_a_machine_that_cannot_be_set_to_terminate_is_not_used(tmp_path, machine
     assert (t["error_code"], t["attempt"]) == ("internal", 1) and "terminate on shutdown" in t["error"]
     assert not any("objects" in e or "code/" in e for e in events(machine))   # nothing was sent to it
     assert events(machine)[-1].startswith("sky down -y perception-")
+
+
+def test_a_machine_whose_setup_fails_is_a_launch_failure_charged_its_time(tmp_path, machine, rec):
+    coord = coordinator(tmp_path, setup='echo "E: Could not get lock /var/lib/dpkg/lock-frontend" >&2; exit 100\n')
+    run_id, status = run(coord, graph(tmp_path, rec))
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"]) == ("failed", "transient") and "setting up" in t["error"]
+    assert not any("objects" in e or "code/" in e for e in events(machine))   # nothing sent to a machine not set up
+    assert "Could not get lock" in log_of(coord, run_id)
+    assert coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0] < 0.01
 
 
 def test_a_machine_with_no_gpu_fails_once_charged_its_time(tmp_path, machine, rec):

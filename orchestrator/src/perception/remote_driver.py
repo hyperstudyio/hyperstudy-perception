@@ -416,18 +416,22 @@ echo $pid
         from .hosts import HostError, probe
         say(f"starting a cloud machine, {c['cluster']} (at most {c['deadline_s'] / 60:.0f} min at ${c['hourly_usd']}/h)")
         minutes = max(1, math.floor(c["deadline_s"] / 60))
+        request = None
         try:
             submitted = subprocess.run([c["sky"], "launch", "--async", "-c", c["cluster"], "-y", "--down", "-i", "15",
                                         "--env", f"DEADLINE_MINUTES={minutes}", c["task"]], env=self.cloud_env(c),
                                        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
+            sys.stdout.write(submitted.stdout + submitted.stderr)
+            sys.stdout.flush()
+            found = re.search(r"request: ([0-9a-f]{8}-[0-9a-f-]{27,})", re.sub(r"\x1b\[[0-9;]*m", "", submitted.stdout))
+            if submitted.returncode or not found:
+                raise LaunchFailed(f"sky launch was not submitted, or did not say its request (exit {submitted.returncode})")
+            request = found.group(1)
         except FileNotFoundError:
             raise Refused("input", f"SkyPilot is not installed here ({c['sky']}): perception cloud on checks for it")
-        sys.stdout.write(submitted.stdout + submitted.stderr)
-        sys.stdout.flush()
-        found = re.search(r"request: ([0-9a-f]{8}-[0-9a-f-]{27,})", re.sub(r"\x1b\[[0-9;]*m", "", submitted.stdout))
-        if submitted.returncode or not found:
-            raise LaunchFailed(f"sky launch was not submitted (exit {submitted.returncode})")
-        request = found.group(1)
+        finally:
+            if request is None:   # interrupted, timed out or not understood: it may still have been submitted
+                self.cancel_launches(c)
         logs = subprocess.Popen([c["sky"], "api", "logs", request], env=self.cloud_env(c), stdout=sys.stdout,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
         terminating, finished = False, False
@@ -463,8 +467,6 @@ echo $pid
         self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
         if "cuda" not in caps.accelerators:
             raise Refused("resources", f"{c['cluster']} has no NVIDIA GPU that nvidia-smi can see")
-        if not caps.tools.get("uv"):   # its setup installs uv: a download that failed
-            raise LaunchFailed(f"{c['cluster']} has no uv: the machine's setup did not install it")
         # its OS shuts it down (and so terminates it) at the deadline, counted from the start of the launch
         minutes = max(1, math.floor((c["deadline_s"] - (time.monotonic() - self.started)) / 60))
         guard = Path(c["guard"]).read_bytes()
@@ -472,7 +474,35 @@ echo $pid
         sys.stdout.buffer.write(result.stdout + result.stderr)
         if result.returncode:
             raise GuardRefused(f"guard.sh refused {c['cluster']} (exit {result.returncode}): nothing was sent; see the log")
+        # what the node needs, installed now and waited for (SkyPilot's own setup runs detached: node-setup.sh)
+        say("installing ffmpeg and uv on the machine")
+        try:
+            done = self.sh(f"bash -s", check=False, data=Path(c["setup"]).read_bytes())
+        except subprocess.TimeoutExpired:
+            raise LaunchFailed(f"setting up {c['cluster']} took more than 10 min")
+        sys.stdout.buffer.write(done.stderr)
+        if done.returncode:
+            raise LaunchFailed(f"setting up {c['cluster']} failed (exit {done.returncode}): see the log")
+        uv = done.stdout.decode().strip().splitlines()[-1] if done.stdout.strip() else ""
+        self.spec["uv"] = uv or None
+        if not uv:
+            raise LaunchFailed(f"setting up {c['cluster']} did not say where uv is")
         self.stop_at = self.started + c["deadline_s"] - min(300, c["deadline_s"] / 4)
+
+    def cancel_launches(self, c: dict):
+        """Cancel, on SkyPilot's API server, any launch of this attempt's cluster still pending or running: found by its
+        cluster's name, which only this attempt uses (a launch whose request id was never read)."""
+        out = subprocess.run([c["sky"], "api", "status", "-v", "-o", "json"], env=self.cloud_env(c), capture_output=True,
+                             text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=120)
+        try:
+            ids = [r["request_id"] for r in json.loads(out.stdout[out.stdout.index("["):])
+                   if r.get("name") == "sky.launch" and r.get("cluster_name") == c["cluster"] and r.get("status") in ("PENDING", "RUNNING")]
+        except (ValueError, KeyError, TypeError):
+            say(f"WARNING: could not list SkyPilot's requests to cancel a launch of {c['cluster']}; sky down follows")
+            return
+        if ids:
+            subprocess.run([c["sky"], "api", "cancel", "-y", *ids], env=self.cloud_env(c), stdout=sys.stdout,
+                           stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
 
     def request_status(self, c: dict, request: str) -> str:
         """A request's status on SkyPilot's API server (PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED), or "" when it

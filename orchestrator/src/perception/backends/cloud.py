@@ -38,6 +38,7 @@ class CloudBackend(SshBackend):
     task = SKYPILOT / "node-gpu.yaml"
     project_config = SKYPILOT / "sky.yaml"
     guard = SKYPILOT / "guard.sh"
+    setup = SKYPILOT / "node-setup.sh"
     region = "us-east-1"
     machine_title = "AWS g6.2xlarge, NVIDIA L4"
     # on-demand, us-east-1, from SkyPilot's AWS catalogue on 2026-10-23 (spot had no L4 capacity there then)
@@ -76,7 +77,8 @@ class CloudBackend(SshBackend):
             return self.deadline_s
         if video_s is None:
             return 60 * 60
-        # whole 5 minutes: decode's media and ffprobe can disagree by a frame, and the plan's price should be the run's
+        # the plan (ffprobe) and the run (decode's media.v1, also ffprobe's format duration) read the same length, so they
+        # reserve the same; whole 5 minutes keep the price a round figure
         return max(30 * 60, math.ceil((20 * 60 + video_s) / 300) * 300)
 
     def estimate(self, manifest: Manifest, runner: Runner, inputs: dict[str, Artifact], video_s: float | None = None) -> Estimate:
@@ -88,7 +90,7 @@ class CloudBackend(SshBackend):
         request = json.loads((attempt_dir / "request.json").read_text())
         return {"host": "the cloud machine", "cloud": {
             "cluster": cluster_name(request["run"], request["node"], request["attempt"]),
-            "task": str(self.task), "project_config": str(self.project_config), "guard": str(self.guard),
+            "task": str(self.task), "project_config": str(self.project_config), "guard": str(self.guard), "setup": str(self.setup),
             "region": self.region, "hourly_usd": self.hourly_usd, "launch_s": self.launch_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values())),
             "sky": os.environ.get("PERCEPTION_SKY") or shutil.which("sky") or "sky",
