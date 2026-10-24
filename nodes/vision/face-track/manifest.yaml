@@ -8,9 +8,9 @@ config:
   fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 8, description: "frames sampled per second"}
   cluster_threshold: {type: number, minimum: 0, maximum: 2, default: 0.65}
   batch_size: {type: integer, minimum: 1, default: 32}
-  # Frame-decoding processes beside the detector (py-feat's DataLoader workers). Linux only: workers must be forked,
-  # since spawned ones re-import node.py and would run the node again.
-  num_workers: {type: integer, minimum: 0, default: 0}
+  # Frame-decoding processes beside the detector (py-feat's DataLoader workers); null is automatic: 4 where workers
+  # can be forked (Linux), none where they would be spawned (macOS). See loader.py. Workers do not change the output.
+  num_workers: {type: [integer, "null"], minimum: 0, default: null}
 runners:
   - {kind: native, env: envs/faces, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
   # The faces lock resolves PyPI's CUDA 13 torch wheels on Linux (needs an NVIDIA driver >= 580).
