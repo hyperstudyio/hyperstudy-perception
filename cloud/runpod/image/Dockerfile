@@ -1,19 +1,24 @@
-# The RunPod image for perception's CUDA nodes (RunPodBackend.image): software only. Built by
-# .github/workflows/runpod-image.yml from the context tag.py stages: these files, sdk/pyproject.toml and each CUDA
-# environment's pyproject.toml and uv.lock (envs.txt). No repository code, no weights, no data: it is public.
-FROM ubuntu:24.04
-ENV DEBIAN_FRONTEND=noninteractive NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility
+# The RunPod image for perception's nodes (RunPodBackend.image): software only, no repository code, weights or data
+# (it is public). Built by .github/workflows/runpod-image.yml from the context tag.py stages (these two files).
+#
+# On RunPod's own PyTorch image, which its hosts keep cached: our image's start then pulls only the small layers below
+# (measured: a 6.8 GB image of our own took 145 s to start, the cached one 12-32 s). The nodes' environments are not in
+# it: uv fetches them from PyPI in the datacenter faster than a host pulls them from GHCR. Its Python and torch are
+# not used (uv brings each node's own).
+FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04@sha256:2594f25beeef751aeebcc207ba4c45a382ba174655f01e15cbbfad0e2bdb5ef8
+ENV DEBIAN_FRONTEND=noninteractive
 
-# sshd (key only; each pod makes its own host keys at start: a public image must hold none), and what nodes and the
-# driver use: ffmpeg, rsync
+# what nodes and the driver use (setup then installs nothing); sshd takes keys only. Each pod makes its own host keys
+# at start (start.sh): the ones in the base image are public, and are never used
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-server ffmpeg rsync curl ca-certificates \
+ && apt-get install -y --no-install-recommends ffmpeg rsync \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
- && mkdir -p /run/sshd \
+ && mkdir -p /run/sshd /etc/ssh/sshd_config.d \
  && printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n' \
-      > /etc/ssh/sshd_config.d/perception.conf
+      > /etc/ssh/sshd_config.d/perception.conf \
+ && { grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config; }
 
-# runpodctl, for the pod's removal at its deadline with its own key (remote_driver.removal_at_boot)
+# runpodctl 3, for the pod's removal at its deadline with its own key (remote_driver.removal_at_boot)
 ARG RUNPODCTL=3.0.1
 ARG RUNPODCTL_SHA256=b66d11eca8cacbf18a2de6943c6e18a79ffbdc8a3c30aa13a49dc6cfc15d4239
 RUN curl -fsSL -o /usr/local/bin/runpodctl https://github.com/runpod/runpodctl/releases/download/v${RUNPODCTL}/runpodctl-linux-amd64 \
@@ -29,19 +34,6 @@ RUN curl -fsSL -o /tmp/uv.tgz https://github.com/astral-sh/uv/releases/download/
  && tar -xzf /tmp/uv.tgz -C /root/.perception-uv --strip-components=1 \
  && rm /tmp/uv.tgz \
  && /root/.perception-uv/uv --version
-
-# each CUDA node's environment, synced from its lock into a folder of its own: the driver points uv at it
-# (UV_PROJECT_ENVIRONMENT), so a pod's sync only adds the node's own package. Python goes in uv's own folder.
-COPY envs.txt /src/envs.txt
-COPY sdk /src/sdk
-COPY envs /src/envs
-RUN cd /src \
- && while read -r env; do \
-      UV_PROJECT_ENVIRONMENT=/opt/perception/venvs/$env /root/.perception-uv/uv sync --project "$env" --frozen --no-dev \
-        --no-install-package perception-node --link-mode copy || exit 1; \
-    done < envs.txt \
- && /root/.perception-uv/uv cache clean \
- && rm -rf /src
 
 COPY start.sh /perception-start.sh
 CMD ["/perception-start.sh"]

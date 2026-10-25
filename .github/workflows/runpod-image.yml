@@ -1,14 +1,11 @@
-# The RunPod image for perception's CUDA nodes (cloud/runpod/image), built when what goes into it changes and pushed
-# to GHCR under its tag (tag.py: from those files). Public: software only, no repository code, weights or data.
+# The RunPod image for perception's nodes (cloud/runpod/image), built when what goes into it changes and pushed to GHCR
+# under its tag (tag.py: from those files). Public: software only, no repository code, weights or data.
 name: RunPod image
 
 on:
   push:
     paths:
       - cloud/runpod/image/**
-      - envs/**/pyproject.toml
-      - envs/**/uv.lock
-      - sdk/pyproject.toml
       - .github/workflows/runpod-image.yml
   workflow_dispatch:
 
@@ -46,7 +43,7 @@ jobs:
           if docker manifest inspect "ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}" > /dev/null 2>&1; then
             echo "built=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Room for torch's CUDA wheels
+      - name: Room for the base image (RunPod's PyTorch image, about 15 GB unpacked)
         if: steps.have.outputs.built != 'true'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -58,7 +55,7 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}
           labels: |
-            org.opencontainers.image.description=Software for perception's CUDA nodes on RunPod (no code, weights or data)
+            org.opencontainers.image.description=Software for perception's nodes on RunPod (no code, weights or data)
       - name: Size
         if: steps.have.outputs.built != 'true'
         run: docker image ls "ghcr.io/${{ github.repository_owner }}/perception-runpod"

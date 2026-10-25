@@ -599,35 +599,14 @@ def test_the_backend_uses_the_image_built_from_the_repositorys_files():
     assert RunPodBackend.image.endswith(":" + RunPodBackend.image_tag)
 
 
-def test_the_image_holds_every_cuda_nodes_environment():
-    envs = set(image_tag_module().envs())
-    cuda = {r.env for m in Registry.load(Path(__file__).resolve().parents[2] / "nodes") for r in m.runners if r.accelerator == "cuda"}
-    assert cuda and cuda <= envs, f"add {sorted(cuda - envs)} to cloud/runpod/image/envs.txt"
-
-
 def test_the_images_context_holds_no_code_of_the_repositorys(tmp_path):
-    # it is public: its own files, and environments' pyproject.toml and uv.lock (sdk's too), nothing else
+    # it is public: its Dockerfile and start script, nothing else
     tag = image_tag_module()
     tag.stage(tmp_path)
-    staged = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file())
-    allowed = {"Dockerfile", "start.sh", "envs.txt", "sdk/pyproject.toml", *(f"{e}/{n}" for e in tag.envs() for n in ("pyproject.toml", "uv.lock"))}
-    assert set(staged) == allowed
+    assert sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file()) == ["Dockerfile", "start.sh"]
 
 
-def test_a_node_uses_the_images_environment_when_the_machine_has_one(tmp_path):
-    from perception.remote_driver import Driver
-    attempt = tmp_path / "attempt"
-    attempt.mkdir()
-    (attempt / "request.json").write_text(json.dumps({"run": "r", "node": "faces", "attempt": 1}))
-    venvs = tmp_path / "venvs"
-    spec = {"dest": "x", "root": "/r", "code": "c", "runner_kind": "native", "env": "envs/faces", "venvs": str(venvs)}
-    snippet = Driver(attempt / "request.json", spec).prebuilt_env()
-
-    def seen():
-        return subprocess.run(["sh", "-c", snippet + 'printf %s "$UV_PROJECT_ENVIRONMENT"'], capture_output=True, text=True,
-                              env={"PATH": "/usr/bin:/bin"}).stdout
-    assert seen() == ""   # none there: uv makes the environment itself
-    (venvs / "envs" / "faces").mkdir(parents=True)
-    assert seen() == str(venvs / "envs" / "faces")
-    assert Driver(attempt / "request.json", {**spec, "runner_kind": "self"}).prebuilt_env() == ""
-    assert Driver(attempt / "request.json", {k: v for k, v in spec.items() if k != "venvs"}).prebuilt_env() == ""
+def test_the_image_starts_on_runpods_cached_base_pinned_by_its_digest():
+    # its hosts keep that image: a pod then pulls only the small layers on top (an image of its own took 145 s to start)
+    first = next(l for l in (IMAGE / "Dockerfile").read_text().splitlines() if l.startswith("FROM "))
+    assert first.startswith("FROM runpod/pytorch:") and "@sha256:" in first
