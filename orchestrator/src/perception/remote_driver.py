@@ -51,6 +51,12 @@ class Unreachable(Exception):
     pass
 
 
+class PrepareFailed(Exception):
+    """The node's environment could not be synced, or its prepare script failed. Not retried: these fail the same way
+    again (no wheel for the machine, an import error, a model setting that is wrong), and on a cloud place each attempt
+    pays for a machine. The log says why; a run started again tries once more."""
+
+
 class Refused(Exception):
     """The host answered, and the attempt cannot go on: the same would happen again (an input that changed since the run
     read it, a root that is not the user's). It fails as the node's own error, not a crash to retry."""
@@ -140,10 +146,10 @@ class Driver:
 
     # --- commands on the host -----------------------------------------------------------------------------------
 
-    def sh(self, script: str, check: bool = True, data: bytes | None = None) -> subprocess.CompletedProcess:
+    def sh(self, script: str, check: bool = True, data: bytes | None = None, timeout: float = 600) -> subprocess.CompletedProcess:
         """Run a POSIX sh script on the host (through sh: the login shell may be zsh or fish). ssh's own failures (exit
         255: no connection) raise Unreachable."""
-        out = subprocess.run([*self.spec["ssh"], self.dest, f"sh -c {shlex.quote(script)}"], input=data, capture_output=True, timeout=600)
+        out = subprocess.run([*self.spec["ssh"], self.dest, f"sh -c {shlex.quote(script)}"], input=data, capture_output=True, timeout=timeout)
         if out.returncode == 255:
             raise Unreachable(out.stderr.decode(errors="replace").strip()[-300:])
         if check and out.returncode in REFUSALS:
@@ -377,6 +383,39 @@ echo $pid
         # the run's folders too once empty (another node of the run may still be using them)
         self.patiently(self.sh, f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true")
 
+    def prepare(self):
+        """What `perception setup` does for a node here, done on the host before it starts: its uv environment synced from
+        its lock, then its prepare script (its weights) run in it with its settings. A failure is the attempt's own and
+        final (PrepareFailed: not retried, since it would most likely fail again, at a cloud machine's cost)."""
+        q, s = shlex.quote, self.spec
+        path = ":".join(s["path"])
+        node_dir = f"{self.code}/{s['node_dir']}"
+        if s["runner_kind"] == "self":
+            python = q(s["python"])
+            sync = ""
+        else:
+            project = q(f"{self.code}/{s['env']}")
+            python = f"{q(s['uv'])} run --project {project} --frozen --no-dev python"
+            sync = f"{q(s['uv'])} sync --project {project} --frozen --no-dev"
+        steps = [x for x in (sync, f"{python} {q(s['prepare'])} {q(json.dumps(self.request.get('config', {})))}" if s.get("prepare") else "") if x]
+        if not steps:
+            return
+        say("preparing the node there (its environment, its weights)")
+        # within a cloud machine's deadline: past it, the node could not run anyway
+        limit = 3600 if self.stop_at is None else self.stop_at - time.monotonic()
+        if limit <= 0:
+            raise Deadline()
+        try:
+            done = self.patiently(self.sh, f"cd {q(node_dir)} && export PATH={q(path)}${{PATH:+:$PATH}} && " + " && ".join(steps),
+                                  False, None, limit)
+        except subprocess.TimeoutExpired:
+            if self.stop_at is not None:
+                raise Deadline()
+            raise PrepareFailed("preparing the node took more than an hour")
+        sys.stdout.buffer.write(done.stdout[-4000:] + done.stderr[-4000:])
+        if done.returncode:
+            raise PrepareFailed(f"preparing the node failed (exit {done.returncode}): see the end of the log")
+
     def stop(self):
         """Stop this attempt's node on the host, if it started (by its pid file: the driver may have been canceled
         between starting it and reading its pid)."""
@@ -402,8 +441,8 @@ echo $pid
 
     def publish_response(self):
         """The node's response, now that it is final: with what the cloud machine cost added to what the node spent, and
-        where the attempt's time went (usage.phases; `environment` is the run's time before the node's own work began:
-        its uv environment synced, its imports)."""
+        where the attempt's time went (usage.phases; `startup` is the run's time outside the node's own work: its imports,
+        and the driver's ssh round trips and polling)."""
         if self.phases:
             say("time: " + ", ".join(f"{k} {v:.0f} s" for k, v in self.phases.items()))
         part = self.local / "response.json.part"
@@ -416,7 +455,7 @@ echo $pid
             usage["machine_usd"] = self.extra_usd
         phases = dict(self.phases)
         if "run" in phases and isinstance(usage.get("seconds"), (int, float)):
-            phases["environment"] = round(max(0.0, phases["run"] - usage["seconds"]), 1)
+            phases["startup"] = round(max(0.0, phases["run"] - usage["seconds"]), 1)
         usage["phases"] = phases
         part.write_text(json.dumps(response, indent=1))
         part.replace(self.local / "response.json")
@@ -663,7 +702,9 @@ echo $pid
                 self.patiently(self.send_code)
             with self.phase("inputs"):
                 inputs = self.patiently(self.send_inputs)
-            with self.phase("run"):   # from starting the node to its end: its environment synced, then its own work
+            with self.phase("prepare"):   # its environment synced and its weights fetched, before it starts (setup.py)
+                self.prepare()
+            with self.phase("run"):   # from starting the node to its end
                 self.patiently(self.start, inputs)
                 self.watch()
             with self.phase("fetch"):
@@ -696,6 +737,10 @@ echo $pid
         except Refused as e:
             say(str(e))
             self.fail(e.code, str(e))
+            return 1
+        except PrepareFailed as e:
+            say(str(e))
+            self.fail("internal", str(e))   # not retried (see PrepareFailed); charged what it took
             return 1
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a cancel now must not skip deleting the machine or charging it

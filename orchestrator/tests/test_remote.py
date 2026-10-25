@@ -652,6 +652,28 @@ def test_a_cancel_during_an_upload_leaves_no_partial_copy_on_the_host(tmp_path, 
         time.sleep(0.1)
 
 
+def test_a_node_is_prepared_on_the_host_before_it_starts_and_the_time_is_reported(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host)
+    run_id = start(coord, work_graph(tmp_path, rec, add=5))
+    assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "a")
+    prepared = json.loads((Path(rec) / "prepared").read_text())
+    assert prepared["add"] == 5                            # with the node's own settings
+    phases = json.loads(coord._tasks(run_id)["a"]["usage"])["phases"]
+    assert {"code", "inputs", "prepare", "run", "fetch", "startup"} <= set(phases)
+
+
+def test_a_node_whose_prepare_fails_on_the_host_never_starts_and_is_not_retried(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host)
+    doc = work_graph(tmp_path, rec, fail="prepare")
+    doc["policy"]["retries"] = 2
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    t = coord._tasks(run_id)["a"]
+    assert (t["error_code"], t["attempt"]) == ("internal", 1) and "preparing the node failed" in t["error"]
+    assert "could not fetch the weights" in log_of(coord, run_id, "a")
+    assert not list(Path(rec).glob("a-*"))                 # the node itself never ran
+
+
 def test_prosody_counts_as_transcript_too():
     from perception.artifacts import get
     assert set(get("bundle.prosody@0.1").kinds) == {"audio", "transcript"}   # each utterance's words

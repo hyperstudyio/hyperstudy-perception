@@ -20,6 +20,8 @@ runners:
   # TODO: [PERCEPTION-GRAPH] Phase 1 step 7 - CUDA image for linux/amd64 (pinned digest), validated against MPS output
   # Plan: docs/plans/GRAPH_MVP_PLAN.md#phase-1--local-mvp
 resources: {cpu_cores: 4, memory_gb: 8, gpu: exclusive}
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
 models:
   # py-feat fetches its weights from hf://py-feat/* on first use, through its own fallback logic: `plan` cannot check
   # them repository by repository, so no hf:// source is declared here for the cache check.

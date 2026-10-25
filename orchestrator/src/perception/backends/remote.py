@@ -126,7 +126,7 @@ class SshBackend(NativeBackend):
             "dest": self.host.dest, "root": self.host.root, "host": self.host.name, "ssh": ssh_command(),
             "code": code_hash(files), "files": files,
             "node_dir": manifest.directory.resolve().relative_to(REPO).as_posix(), "entry": runner.entry, "env": runner.env,
-            "runner_kind": self.runner_kind, "python": self.python, "uv": caps.tools.get("uv"),
+            "runner_kind": self.runner_kind, "python": self.python, "uv": caps.tools.get("uv"), "prepare": manifest.prepare,
             # the folders of the tools it found: ssh commands get a minimal PATH (ffmpeg in /opt/homebrew/bin on a Mac)
             "path": sorted({str(Path(p).parent) for p in caps.tools.values() if p}),
             "lost_after_s": self.lost_after_s,

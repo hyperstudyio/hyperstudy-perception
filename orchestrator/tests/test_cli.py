@@ -2,6 +2,7 @@
 each with a protocol version, so the app never parses text meant for people."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -249,3 +250,65 @@ def test_a_run_with_only_runs_just_those_nodes_and_keeps_the_choice_for_resume(h
     assert cli("status", run) == 0
     [status] = lines(capsys)
     assert sorted(t["node"] for t in status["tasks"]) == ["a", "b"]   # d is not part of this run at all
+
+
+# --- perception setup ----------------------------------------------------------------------------------------------
+
+@pytest.fixture
+def tools(tmp_path, monkeypatch):
+    """ffmpeg and ffprobe on PATH, whatever this machine has (CI has neither)."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    for t in ("ffmpeg", "ffprobe"):
+        (bin_ / t).write_text("#!/bin/sh\nexit 0\n")
+        (bin_ / t).chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+
+
+def test_setup_prepares_what_a_graph_would_run_here_and_says_what_failed(home, capsys, tmp_path, tools, monkeypatch):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "never-for-a-node")   # a credential the node did not declare
+    rec = tmp_path / "rec"
+    g = graph(home, [work("a", home)])
+    doc = yaml.safe_load(g.read_text())
+    doc["nodes"][0]["config"] = {"record_dir": str(rec), "add": 3}
+    g.write_text(yaml.safe_dump(doc))
+    assert cli("setup", str(g)) == 0
+    out = lines(capsys)
+    steps = [o for o in out if o["type"] == "setup.step"]
+    assert [(s["what"], s["ok"]) for s in steps] == [("tools", True), ("models", True)]   # a self runner: no environment
+    assert out[-1]["type"] == "setup" and out[-1]["ok"] is True
+    assert json.loads((rec / "prepared").read_text())["add"] == 3   # with the graph's settings for it (one may choose the model)
+    assert json.loads((rec / "environment").read_text()).get("AWS_SECRET_ACCESS_KEY") is None   # as a run: no undeclared key
+    doc["nodes"][0]["config"] = {"record_dir": str(rec), "fail": "prepare"}
+    g.write_text(yaml.safe_dump(doc))
+    assert cli("setup", str(g)) == 1
+    out = lines(capsys)
+    failed = [o for o in out if o["type"] == "setup.step" and not o["ok"]]
+    assert len(failed) == 1 and "could not fetch the weights" in failed[0]["message"]
+
+
+def test_setup_syncs_a_native_nodes_environment_from_its_lock_then_runs_its_prepare(tmp_path):
+    from perception import setup
+    from perception.manifests import Registry
+    calls = tmp_path / "calls"
+    uv = tmp_path / "uv"
+    uv.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n[ -e {tmp_path}/sync-fails ] && [ "$1" = sync ] && {{ echo "lock out of date" >&2; exit 2; }}\nexit 0\n')
+    uv.chmod(0o755)
+    m = Registry.load(Path(__file__).resolve().parents[2] / "nodes").get("vision.face-track@1.0.0")
+    runner = next(r for r in m.runners if r.kind == "native")
+    steps = setup.setup_node(m, runner, uv=str(uv))
+    assert [(s.what, s.ok) for s in steps] == [("environment", True), ("models", True)]
+    sync, run = calls.read_text().splitlines()
+    assert sync.startswith("sync --project ") and sync.endswith("envs/faces --frozen --no-dev")
+    assert run.startswith("run --project ") and "prepare.py" in run
+    (tmp_path / "sync-fails").touch()
+    steps = setup.setup_node(m, runner, uv=str(uv))
+    assert [(s.what, s.ok) for s in steps] == [("environment", False)] and "lock out of date" in steps[0].message
+
+
+def test_setup_for_a_graph_with_a_node_that_cannot_run_here_is_not_ready(home, capsys, tools):
+    g = graph(home, [{**work("a", home), "place": "self:cuda"}])        # test.work has a CPU runner only
+    assert cli("setup", str(g)) == 1
+    out = lines(capsys)
+    [failed] = [o for o in out if o["type"] == "setup.step" and not o["ok"]]
+    assert failed["what"] == "place" and "cannot run here" in failed["message"] and out[-1]["ok"] is False

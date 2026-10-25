@@ -86,6 +86,9 @@ class Manifest(Strict):
     execution: Execution = Field(default_factory=Execution)
     privacy: Privacy = Field(default_factory=Privacy)
     models: list[ModelRef] = Field(default_factory=list)
+    # a script in the node's directory, run in its environment with its settings (JSON) before it is first needed, that
+    # fetches what the node would otherwise download on first use (its weights): `perception setup`, a remote run
+    prepare: str | None = None
     secrets: list[str] = Field(default_factory=list)
     licence: dict = Field(default_factory=dict)
     cost: Cost | None = None

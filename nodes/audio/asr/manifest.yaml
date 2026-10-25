@@ -13,6 +13,8 @@ runners:
   # Spec: same output on linux/amd64 + CUDA; validate word times against the MLX conversion on the OOO clip.
   # Plan: docs/plans/GRAPH_MVP_PLAN.md#phase-1--local-mvp
 resources: {cpu_cores: 2, memory_gb: 6, gpu: shared}
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
 models:
   - {id: mlx-community/parakeet-tdt-0.6b-v3, source: hf://mlx-community/parakeet-tdt-0.6b-v3, licence: CC-BY-4.0,
      licence_mode: commercial-ok, size_gb: 2.3}
