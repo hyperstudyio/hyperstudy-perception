@@ -39,9 +39,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Built already?
         id: have
+        # built only when GHCR says the tag does not exist: any other failure stops here, so a tag is never pushed over
         run: |
-          if docker manifest inspect "ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}" > /dev/null 2>&1; then
+          if out=$(docker manifest inspect "ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}" 2>&1); then
             echo "built=true" >> "$GITHUB_OUTPUT"
+          elif ! printf '%s' "$out" | grep -qi "manifest unknown"; then
+            echo "could not tell whether the tag exists: $out" >&2
+            exit 1
           fi
       - name: Room for the base image (RunPod's PyTorch image, about 15 GB unpacked)
         if: steps.have.outputs.built != 'true'

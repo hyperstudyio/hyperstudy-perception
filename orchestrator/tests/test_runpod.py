@@ -596,7 +596,9 @@ def image_tag_module():
 def test_the_backend_uses_the_image_built_from_the_repositorys_files():
     # a lock or image change needs a new build, under the tag its files give (.github/workflows/runpod-image.yml)
     assert RunPodBackend.image_tag == image_tag_module().tag(), "rebuild the image (push) and set RunPodBackend.image_tag to tag.py's"
-    assert RunPodBackend.image.endswith(":" + RunPodBackend.image_tag)
+    # pulled by its digest too: the bytes that were measured, whatever is pushed under the tag later
+    assert RunPodBackend.image.endswith(f":{RunPodBackend.image_tag}@{RunPodBackend.image_digest}")
+    assert RunPodBackend.image_digest.startswith("sha256:") and len(RunPodBackend.image_digest) == 71
 
 
 def test_the_images_context_holds_no_code_of_the_repositorys(tmp_path):

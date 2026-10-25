@@ -137,7 +137,9 @@ class RunPodBackend(CloudBackend):
     # perception's own image (cloud/runpod/image): RunPod's cached PyTorch image with ffmpeg, rsync, uv and runpodctl 3
     # added; software only. Its tag is tag.py's, from what goes into it (a test checks they agree)
     image_tag = "e92ef7a71b30"
-    image = f"ghcr.io/ljchang/perception-runpod:{image_tag}"
+    # and the digest of the build that was measured: a rebuild under the same tag (apt's versions move) is never pulled
+    image_digest = "sha256:09e6eb03f0ab44353e13b198e9f2b114b07c29af5613b33da42e2e122b7a74c4"
+    image = f"ghcr.io/ljchang/perception-runpod:{image_tag}@{image_digest}"
     start = "/perception-start.sh"   # its own start (host keys, PUBLIC_KEY, sshd), run after the pod's removal is set
     # Secure Cloud prices on 2026-10-24 (RunPod's gpuTypes securePrice), the order RunPod tries them in: the cheap ones
     # first, the dearer ones when none of those is free (capacity for any one type comes and goes). Ampere, Ada and
