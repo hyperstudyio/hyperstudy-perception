@@ -52,7 +52,9 @@ class Unreachable(Exception):
 
 
 class PrepareFailed(Exception):
-    """The node's environment could not be synced, or its prepare script failed (a download that broke): retried."""
+    """The node's environment could not be synced, or its prepare script failed. Not retried: these fail the same way
+    again (no wheel for the machine, an import error, a model setting that is wrong), and on a cloud place each attempt
+    pays for a machine. The log says why; a run started again tries once more."""
 
 
 class Refused(Exception):
@@ -399,14 +401,20 @@ echo $pid
         if not steps:
             return
         say("preparing the node there (its environment, its weights)")
+        # within a cloud machine's deadline: past it, the node could not run anyway
+        limit = 3600 if self.stop_at is None else self.stop_at - time.monotonic()
+        if limit <= 0:
+            raise Deadline()
         try:
             done = self.patiently(self.sh, f"cd {q(node_dir)} && export PATH={q(path)}${{PATH:+:$PATH}} && " + " && ".join(steps),
-                                  False, None, 3600)
+                                  False, None, limit)
         except subprocess.TimeoutExpired:
+            if self.stop_at is not None:
+                raise Deadline()
             raise PrepareFailed("preparing the node took more than an hour")
         sys.stdout.buffer.write(done.stdout[-4000:] + done.stderr[-4000:])
         if done.returncode:
-            raise PrepareFailed(f"preparing the node failed (exit {done.returncode}): see the log")
+            raise PrepareFailed(f"preparing the node failed (exit {done.returncode}): see the end of the log")
 
     def stop(self):
         """Stop this attempt's node on the host, if it started (by its pid file: the driver may have been canceled
@@ -732,7 +740,7 @@ echo $pid
             return 1
         except PrepareFailed as e:
             say(str(e))
-            self.fail("transient", str(e))   # a broken download may work next time; charged what it took
+            self.fail("internal", str(e))   # not retried (see PrepareFailed); charged what it took
             return 1
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a cancel now must not skip deleting the machine or charging it

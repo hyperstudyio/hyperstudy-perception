@@ -566,7 +566,7 @@ def cmd_setup(args):
             if not args.json:
                 print(f"  {'':12s} {m.ref:32s} runs on {placement.backend.title}: set up there when it runs")
             continue
-        for step in setup.setup_node(m, placement.runner, config=config):
+        for step in setup.setup_node(m, placement.runner, config=config, secrets=coord.secrets):
             report(step)
     if args.json:
         emit("setup", ok=result.ok, steps=[s.__dict__ for s in result.steps])

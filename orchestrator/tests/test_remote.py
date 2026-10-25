@@ -662,12 +662,14 @@ def test_a_node_is_prepared_on_the_host_before_it_starts_and_the_time_is_reporte
     assert {"code", "inputs", "prepare", "run", "fetch", "startup"} <= set(phases)
 
 
-def test_a_node_whose_prepare_fails_on_the_host_never_starts_and_fails_as_transient(tmp_path, host, rec):
+def test_a_node_whose_prepare_fails_on_the_host_never_starts_and_is_not_retried(tmp_path, host, rec):
     coord = coordinator(tmp_path, host)
-    run_id = start(coord, work_graph(tmp_path, rec, fail="prepare"))
+    doc = work_graph(tmp_path, rec, fail="prepare")
+    doc["policy"]["retries"] = 2
+    run_id = start(coord, doc)
     assert asyncio.run(coord.run(run_id)) == "failed"
     t = coord._tasks(run_id)["a"]
-    assert t["error_code"] == "transient" and "preparing the node failed" in t["error"]
+    assert (t["error_code"], t["attempt"]) == ("internal", 1) and "preparing the node failed" in t["error"]
     assert "could not fetch the weights" in log_of(coord, run_id, "a")
     assert not list(Path(rec).glob("a-*"))                 # the node itself never ran
 

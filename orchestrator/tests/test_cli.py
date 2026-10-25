@@ -2,6 +2,7 @@
 each with a protocol version, so the app never parses text meant for people."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -253,7 +254,19 @@ def test_a_run_with_only_runs_just_those_nodes_and_keeps_the_choice_for_resume(h
 
 # --- perception setup ----------------------------------------------------------------------------------------------
 
-def test_setup_prepares_what_a_graph_would_run_here_and_says_what_failed(home, capsys, tmp_path):
+@pytest.fixture
+def tools(tmp_path, monkeypatch):
+    """ffmpeg and ffprobe on PATH, whatever this machine has (CI has neither)."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    for t in ("ffmpeg", "ffprobe"):
+        (bin_ / t).write_text("#!/bin/sh\nexit 0\n")
+        (bin_ / t).chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+
+
+def test_setup_prepares_what_a_graph_would_run_here_and_says_what_failed(home, capsys, tmp_path, tools, monkeypatch):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "never-for-a-node")   # a credential the node did not declare
     rec = tmp_path / "rec"
     g = graph(home, [work("a", home)])
     doc = yaml.safe_load(g.read_text())
@@ -265,6 +278,7 @@ def test_setup_prepares_what_a_graph_would_run_here_and_says_what_failed(home, c
     assert [(s["what"], s["ok"]) for s in steps] == [("tools", True), ("models", True)]   # a self runner: no environment
     assert out[-1]["type"] == "setup" and out[-1]["ok"] is True
     assert json.loads((rec / "prepared").read_text())["add"] == 3   # with the graph's settings for it (one may choose the model)
+    assert json.loads((rec / "environment").read_text()).get("AWS_SECRET_ACCESS_KEY") is None   # as a run: no undeclared key
     doc["nodes"][0]["config"] = {"record_dir": str(rec), "fail": "prepare"}
     g.write_text(yaml.safe_dump(doc))
     assert cli("setup", str(g)) == 1
