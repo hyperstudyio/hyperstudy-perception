@@ -190,7 +190,10 @@ def test_a_node_runs_on_a_pod_made_for_it_checked_before_anything_is_sent_and_de
     assert f"-i {attempt / 'ssh' / 'id_ed25519'}" in options and "-p 2222" in options
     assert all(h.get("User-Agent") == "hyperstudy-perception" for h in pod.headers)   # Cloudflare refuses Python's own
     ev = events(pod.fake_host)
-    create, guard, setup = ev.index("api POST /pods"), ev.index("guard "), ev.index("setup")
+    # the guard is given the oldest NVIDIA driver the nodes' CUDA 13 torch runs on (RunPod's own CUDA filter is not used:
+    # it would exclude hosts that report 13.2)
+    assert "allowedCudaVersions" not in body
+    create, guard, setup = ev.index("api POST /pods"), ev.index("guard 580"), ev.index("setup")
     first_send = next(i for i, e in enumerate(ev) if "objects" in e or "code/" in e)
     delete = ev.index("api DELETE /pods/pod1")
     assert create < guard < setup < first_send < delete and ev[-1] == "api GET /pods/pod1" and not pod.pods
@@ -439,14 +442,15 @@ def guard_env(tmp_path):
     (t / "code").write_text("403")
     script(t / "bin" / "curl", f'#!/bin/sh\necho "curl $*" >> {t}/calls; cat {t}/code\n')
     script(t / "bin" / "runpodctl", f'#!/bin/sh\necho "runpodctl $* key=$RUNPOD_API_KEY" >> {t}/calls\n')
-    script(t / "bin" / "nvidia-smi", '#!/bin/sh\necho "NVIDIA RTX A5000"\n')
+    (t / "driver").write_text("595.91.07")
+    script(t / "bin" / "nvidia-smi", f'#!/bin/sh\ncase "$*" in *driver_version*) cat {t}/driver;; *) echo "NVIDIA RTX A5000";; esac\n')
     script(t / "bin" / "setsid", '#!/bin/sh\nexec "$@"\n')
     return t
 
 
-def guard(t: Path) -> subprocess.CompletedProcess:
+def guard(t: Path, min_driver: str = "580") -> subprocess.CompletedProcess:
     env = {"HOME": str(t / "home"), "PATH": f"{t / 'bin'}:/usr/bin:/bin", "PERCEPTION_POD_ENVIRON": str(t / "environ")}
-    return subprocess.run(["bash", "-s"], input=GUARD.read_bytes(), env=env, capture_output=True, timeout=60)
+    return subprocess.run(["bash", "-s", min_driver], input=GUARD.read_bytes(), env=env, capture_output=True, timeout=60)
 
 
 @pytest.fixture
@@ -472,7 +476,15 @@ def calls(t: Path) -> str:
 def test_the_guard_passes_a_pod_whose_removal_is_running_and_whose_key_reaches_nothing(guard_env, remover):
     out = guard(guard_env)
     assert out.returncode == 0, out.stderr
-    assert "NVIDIA RTX A5000 in US-TX-1; no key to the account; its removal at its deadline is running" in out.stdout.decode()
+    assert "NVIDIA RTX A5000 (driver 595.91.07) in US-TX-1; no key to the account; its removal at its deadline is running" in out.stdout.decode()
+
+
+@pytest.mark.parametrize("driver", ["570.172.08", "550.54.15", ""])
+def test_the_guard_says_a_pod_with_an_older_driver_is_not_this_ones_to_use(guard_env, remover, driver):
+    # the nodes' torch is built for CUDA 13 (driver 580 at least): another pod may have a newer one
+    (guard_env / "driver").write_text(driver)
+    out = guard(guard_env)
+    assert out.returncode == 75 and b"580" in out.stderr, out.stderr
 
 
 def test_the_guard_refuses_a_pod_whose_removal_is_not_running(guard_env):

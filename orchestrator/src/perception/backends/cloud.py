@@ -152,6 +152,8 @@ class RunPodBackend(CloudBackend):
                    "US-NC-1", "US-TX-1", "US-TX-3", "US-TX-4", "US-WA-1", "CA-MTL-1", "CA-MTL-2", "CA-MTL-3",
                    "EU-CZ-1", "EU-FR-1", "EU-NL-1", "EU-RO-1", "EU-SE-1", "EUR-IS-1", "EUR-IS-2", "EUR-IS-3", "EUR-NO-1"]
     disk_gb = 40   # the container's disk: the node's environment, weights and inputs
+    # the nodes' torch is PyPI's CUDA 13 build (envs/faces/uv.lock): an NVIDIA driver of 580 or later (guard.sh)
+    min_driver = 580
     region = "US, Canada, Europe (Secure Cloud)"
     machine_title = "RunPod, one of " + ", ".join(g.removeprefix("NVIDIA ").removeprefix("GeForce ") for g in gpus)
     hourly_usd = max(gpus.values())   # reserved at the dearest one it may get; charged at the price of the one it got
@@ -172,7 +174,7 @@ class RunPodBackend(CloudBackend):
         return {"host": "the RunPod pod", "cloud": {
             "provider": "runpod", "name": cluster_name(request["run"], request["node"], request["attempt"]),
             "api": api_base(), "image": self.image, "start": self.start, "gpus": list(self.gpus), "datacenters": self.datacenters,
-            "disk_gb": self.disk_gb, "guard": str(self.guard), "setup": str(self.setup), "hourly_usd": self.hourly_usd,
+            "disk_gb": self.disk_gb, "min_driver": self.min_driver, "guard": str(self.guard), "setup": str(self.setup), "hourly_usd": self.hourly_usd,
             "launch_s": self.launch_s, "down_s": self.down_s, "api_s": self.api_s, "unknown_s": self.unknown_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values()))}}
 
