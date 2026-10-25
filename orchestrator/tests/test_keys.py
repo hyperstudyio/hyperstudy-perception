@@ -213,3 +213,20 @@ def test_keys_set_at_the_same_time_all_stay_findable(home, chain):
         t.join()
     assert sorted(json.loads((home / "keys.json").read_text())) == sorted(names)
     assert set(names) <= set(Keys().load().values)
+
+
+@pytest.mark.parametrize("action", ["set", "remove"])
+def test_a_locked_keychain_is_said_plainly_and_nothing_half_done(home, chain, capsys, monkeypatch, action):
+    import io
+    from keyring.errors import KeyringLocked
+    Keys().set("HF_TOKEN", SECRET)
+
+    def locked(*a):
+        raise KeyringLocked("the keychain is locked")
+    monkeypatch.setattr(chain, "set_password", locked)
+    monkeypatch.setattr(chain, "delete_password", locked)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("new-value\n"))
+    assert cli.main(["keys", action, "HF_TOKEN"]) == 1
+    err = capsys.readouterr().err
+    assert "keychain" in err and "locked" in err and "Traceback" not in err
+    assert json.loads((home / "keys.json").read_text()) == ["HF_TOKEN"]   # the index still says what the keychain holds

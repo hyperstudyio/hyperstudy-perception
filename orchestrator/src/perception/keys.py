@@ -207,7 +207,11 @@ class Keys:
         kr = keyring_module()
         with self._locked():
             if kr is not None:
-                kr.set_password(SERVICE, name, value)
+                from keyring.errors import KeyringError
+                try:
+                    kr.set_password(SERVICE, name, value)
+                except KeyringError as e:   # locked, or access refused: nothing stored, said plainly
+                    raise ValueError(f"the keychain did not store {name} ({e or type(e).__name__}): unlock it and try again") from None
                 self._write_index([*self.stored_names(), name])
                 return "keychain"
             keys = self._file_keys()
@@ -225,12 +229,14 @@ class Keys:
         removed = []
         kr = keyring_module()
         if kr is not None and name in self.stored_names():
-            from keyring.errors import PasswordDeleteError
+            from keyring.errors import KeyringError, PasswordDeleteError
             try:
                 kr.delete_password(SERVICE, name)
                 removed.append("keychain")
             except PasswordDeleteError:
                 pass   # already gone from the keychain (removed there by hand)
+            except KeyringError as e:   # locked, or access refused: still stored, and still in the index
+                raise ValueError(f"the keychain did not remove {name} ({e or type(e).__name__}): unlock it and try again") from None
             self._write_index([n for n in self.stored_names() if n != name])
         keys = self._file_keys()
         if keys.pop(name, None) is not None:
