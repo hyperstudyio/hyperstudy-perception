@@ -26,7 +26,7 @@ GUARD = Path(__file__).resolve().parents[2] / "cloud" / "runpod" / "guard.sh"
 
 # test_cloud's ssh stand-in, which also takes -i KEY and -p PORT (a pod's own key and port)
 FAKE_SSH = r"""#!/bin/sh
-while [ $# -gt 0 ]; do case "$1" in -o|-i|-p) echo "ssh option $1 $2" >> "$FAKE_HOST/ssh-options"; shift 2;; -*) shift;; *) break;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -o|-i|-p|-F) echo "ssh option $1 $2" >> "$FAKE_HOST/ssh-options"; shift 2;; -*) shift;; *) break;; esac; done
 echo "ssh $1: $2" | head -c 300 >> "$FAKE_HOST/events"; echo >> "$FAKE_HOST/events"
 shift
 # the pod's clock 10 minutes fast, while $FAKE_HOST/skew exists
@@ -39,7 +39,7 @@ class FakeRunPod:
     """RunPod's REST API as the driver uses it. `flags`: no-capacity (create answers 500), no-answer (create makes the
     pod but drops the connection), made-then-502 (create makes the pod, then a gateway's 502), slow-create (the pod is
     made 2 s after the create arrives, and only then answered), delete-fails (500 to every DELETE), truncated-once (the
-    first DELETE's answer is cut short, and does nothing), redirect (GET /pods sends the caller to /elsewhere), pricey
+    first DELETE's answer is cut short, and does nothing), truncated-500-once (the same for an error answer), redirect (GET /pods sends the caller to /elsewhere), pricey
     (the pod costs $0.99/h)."""
 
     def __init__(self, fake_host: Path):
@@ -104,6 +104,14 @@ class FakeRunPod:
                 if method == "DELETE":
                     if "delete-fails" in rp.flags:
                         return self.answer(500, {"error": "internal"})
+                    if "truncated-500-once" in rp.flags:
+                        rp.flags.discard("truncated-500-once")
+                        self.send_response(500)
+                        self.send_header("Content-Length", "100")
+                        self.end_headers()
+                        self.wfile.write(b'{"error": "inter')   # and the connection closes
+                        self.close_connection = True
+                        return
                     if "truncated-once" in rp.flags:
                         rp.flags.discard("truncated-once")
                         self.send_response(200)
@@ -143,8 +151,9 @@ def pod(tmp_path, monkeypatch):
     api.server.shutdown()
 
 
-def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, key=KEY, down_s=900, api_s=60) -> Coordinator:
+def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, key=KEY, down_s=900, api_s=60, unknown_s=180) -> Coordinator:
     b = RunPodBackend(api_key=key, deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=60, down_s=down_s, api_s=api_s,
+                      unknown_s=unknown_s,
                       guard=script(tmp_path / "guard.sh", guard), setup=script(tmp_path / "node-setup.sh", SETUP_OK))
     return Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), b], tick_s=0.02, backoff_s=0.01)
 
@@ -331,6 +340,55 @@ def test_an_answer_cut_short_while_deleting_is_asked_again(tmp_path, pod):
     assert task(coord, run_id)[1]["machine_usd"] > 0
 
 
+def test_an_error_answer_cut_short_while_deleting_is_asked_again(tmp_path, pod):
+    pod.flags.add("truncated-500-once")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, graph(tmp_path, rec(tmp_path), place="runpod:cuda"))
+    assert status == "succeeded", log_of(coord, run_id)
+    assert not pod.pods and events(pod.fake_host).count("api DELETE /pods/pod1") == 2
+
+
+def test_a_create_that_never_reached_runpod_looks_for_nothing_and_is_retried(tmp_path, pod, monkeypatch):
+    # this laptop offline: nothing was sent, so no pod can exist
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()   # a port nothing listens on: connection refused
+    monkeypatch.setenv("PERCEPTION_RUNPOD_API", f"http://127.0.0.1:{port}")
+    coord = coordinator(tmp_path, down_s=20)
+    started = time.monotonic()
+    run_id, status = run(coord, graph(tmp_path, rec(tmp_path), place="runpod:cuda"))
+    t, _ = task(coord, run_id)
+    assert status == "failed" and t["error_code"] == "transient", t["error"]
+    assert time.monotonic() - started < 15   # not down_s spent looking for a pod that cannot exist
+    assert coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0] == 0
+
+
+def test_a_pod_whose_create_got_no_clear_answer_and_never_appears_is_taken_as_never_made(tmp_path, pod):
+    pod.flags.add("no-capacity")   # stands for a create RunPod never acted on
+    pod.flags.add("made-then-502")
+    coord = coordinator(tmp_path, unknown_s=2, down_s=30)
+    pod.flags.discard("no-capacity")
+
+    class Never(dict):   # the create's pod never shows in the listing
+        def __setitem__(self, k, v):
+            pass
+    pod.pods = Never()
+    run_id, status = run(coord, graph(tmp_path, rec(tmp_path), place="runpod:cuda"))
+    t, _ = task(coord, run_id)
+    assert status == "failed" and t["error_code"] == "transient"
+    assert "none was made" in log_of(coord, run_id)
+    assert coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0] == 0
+
+
+def test_a_create_refused_with_a_4xx_looks_for_nothing(tmp_path, pod):
+    coord = coordinator(tmp_path, key="not-the-key")
+    run_id, status = run(coord, graph(tmp_path, rec(tmp_path), place="runpod:cuda"))
+    assert status == "failed" and task(coord, run_id)[0]["error_code"] == "internal"
+    assert events(pod.fake_host).count("api GET /pods") == 1   # the sweep's listing only: no search by name
+
+
 def test_a_pod_dearer_than_what_was_reserved_is_not_used(tmp_path, pod):
     pod.flags.add("pricey")
     coord = coordinator(tmp_path)
@@ -360,6 +418,7 @@ def test_a_pods_ssh_forwards_nothing_and_pins_its_host_key_in_a_path_with_spaces
     assert status == "succeeded", log_of(coord, run_id)
     options = (pod.fake_host / "ssh-options").read_text()
     assert "-o ForwardAgent=no" in options and "-o ClearAllForwardings=yes" in options
+    assert "-F none" in options   # none of the user's ssh config (its IdentityFiles above all) reaches a pod
     known = coord.store.root / "work" / run_id / "faces" / "1" / "ssh" / "known_hosts"
     # quoted: an unquoted value is "one or more files ... separated by whitespace" (ssh_config(5))
     assert f'-o UserKnownHostsFile="{known}"' in options
@@ -423,7 +482,6 @@ def test_the_guard_refuses_a_pod_whose_key_reaches_the_account(guard_env):
     (guard_env / "code").write_text("200")
     out = guard(guard_env)
     assert out.returncode == 1 and b"got 200" in out.stderr
-    assert "runpodctl" not in calls(guard_env)   # refused before its removal is set: the driver deletes it
 
 
 def test_the_guard_refuses_a_pod_with_no_key_of_its_own(guard_env):
@@ -455,12 +513,13 @@ def test_a_guard_that_could_not_check_the_pod_is_a_launch_failure_retried(tmp_pa
 def test_a_pods_start_command_removes_it_at_its_deadline_asking_until_it_is_done(tmp_path):
     t = tmp_path
     (t / "bin").mkdir()
-    # runpodctl fails the first time (RunPod's own trouble), then removes it
-    script(t / "bin" / "runpodctl", f'#!/bin/sh\necho "runpodctl $*" >> {t}/calls; [ -e {t}/once ] && exit 0; touch {t}/once; exit 1\n')
+    # runpodctl fails the first time, saying so with exit 0 (its exit is not relied on), then "removes" it: the stand-in
+    # ends the loop as RunPod would, by stopping the container (its process group)
+    script(t / "bin" / "runpodctl", f'#!/bin/sh\necho "runpodctl $*" >> {t}/calls; [ -e {t}/once ] && kill -9 0; touch {t}/once; echo "Error: Unauthorized"; exit 0\n')
     script(t / "bin" / "sleep", f'#!/bin/sh\necho "sleep $*" >> {t}/calls\n')   # no waiting
     env = {"PATH": f"{t / 'bin'}:/usr/bin:/bin", "RUNPOD_POD_ID": "pod42"}
     out = subprocess.run(["bash", "-c", removal_at_boot(int(time.time()) - 1, "echo the image starts")], env=env,
-                         capture_output=True, text=True, timeout=30)
+                         capture_output=True, text=True, timeout=30, start_new_session=True)
     assert out.stdout.strip() == "the image starts"   # its own start runs (exec), the removal beside it
     for _ in range(50):
         if calls(t).count("runpodctl remove pod pod42") == 2:

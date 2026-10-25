@@ -126,8 +126,9 @@ def removal_at_boot(at: int, start: str) -> str:
     """A pod's start command: its removal at `at` (a Unix time), set before anything else runs on it and asked again
     until RunPod does it (runpodctl, with the pod's own key, scoped to that pod), then the image's own start (sshd).
     The backstop for a pod whose driver never comes back, from its first moment; perception-deadline names it (guard.sh)."""
+    # asked every 30 s until it happens, whatever runpodctl's exit says: the pod's removal ends this loop with it
     removal = (f"until [ $(date +%s) -ge {int(at)} ]; do sleep 15; done; "
-               'until runpodctl remove pod "$RUNPOD_POD_ID"; do sleep 30; done')
+               'while :; do runpodctl remove pod "$RUNPOD_POD_ID"; sleep 30; done')
     return f"nohup sh -c {shlex.quote(removal)} perception-deadline > /dev/null 2>&1 & exec {start}"
 
 
@@ -756,11 +757,12 @@ echo $pid
         try:
             pod = api.create_pod(body)
         except RunPodError as e:
-            # only a 4xx proves no pod was made, and RunPod's answer when none of the GPUs is free (a 500); any other
-            # failure may come after it was made (a gateway's 502): teardown looks for it by its name
+            # only a 4xx, a create never sent (this laptop offline) and RunPod's answer when none of the GPUs is free (a
+            # 500) prove no pod was made; any other failure may come after it was made (a gateway's 502): teardown looks
+            # for it by its name
             if e.nothing_done or "no instances currently available" in str(e):
                 self.pod_unknown = False
-            if e.nothing_done:
+            if e.nothing_done and e.sent:   # RunPod refused it: the same would happen again
                 raise Refused("internal", f"RunPod refused to create the pod: {e}")
             raise LaunchFailed(f"RunPod did not start a pod: {e}")
         self.pod, self.pod_unknown = pod["id"], False
@@ -784,9 +786,9 @@ echo $pid
                 raise LaunchFailed(f"pod {self.pod} had no SSH address after {c['launch_s'] / 60:.0f} min")
             time.sleep(POLL_S)
         # its host key is new: accepted the first time, in a file of this attempt's own, and held to after that
-        # (quoted: ssh reads an unquoted path with a space as two files). Nothing of this machine's is forwarded to it
-        # (an agent, ports, X11), whatever the user's ssh config says for every host
-        self.spec["ssh"] = [*ssh_command(), "-i", str(key), "-p", str(int(p["portMappings"]["22"])), "-o", "IdentitiesOnly=yes",
+        # (quoted: ssh reads an unquoted path with a space as two files). None of the user's ssh config applies (-F none:
+        # its IdentityFiles would be offered too), and nothing of this machine's is forwarded to it (an agent, ports, X11)
+        self.spec["ssh"] = [*ssh_command(), "-F", "none", "-i", str(key), "-p", str(int(p["portMappings"]["22"])), "-o", "IdentitiesOnly=yes",
                             "-o", f'UserKnownHostsFile="{keys / "known_hosts"}"', "-o", "StrictHostKeyChecking=accept-new",
                             "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-o", "ForwardX11=no"]
         dest = f"root@{p['publicIp']}"
@@ -881,8 +883,8 @@ echo $pid
                 "or delete it at https://console.runpod.io/pods")
         else:   # nothing ends it but someone: no other attempt starts another one
             self.extra_usd = round(price * c["deadline_s"] / 3600, 4)
-            message = (f"pod {self.pod or self.pod_name} could not be deleted ({problem or 'still there'}) and has no deadline "
-                       "of its own: it may still be running. Delete it at https://console.runpod.io/pods")
+            message = (f"pod {self.pod or self.pod_name} could not be deleted ({problem or 'still there'}), and its removal at "
+                       "its deadline was not confirmed: it may still be running. Delete it at https://console.runpod.io/pods")
             say(f"WARNING: {message}")
             self.fail("internal", message)
         say(f"the pod cost about ${self.extra_usd:.2f}" + ("" if gone else " (at least)"))

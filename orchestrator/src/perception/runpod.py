@@ -11,6 +11,7 @@ import http.client
 import json
 import os
 import re
+import socket
 import urllib.error
 import urllib.request
 
@@ -22,16 +23,17 @@ POD_NAME = re.compile(r"^perception-[a-z0-9-]+-d(\d{9,11})$")
 
 
 class RunPodError(Exception):
-    def __init__(self, status: int, message: str):
-        """`status`: RunPod's HTTP status, or 0 for no whole answer."""
+    def __init__(self, status: int, message: str, sent: bool = True):
+        """`status`: RunPod's HTTP status, or 0 for no whole answer. `sent`: whether the request may have reached RunPod
+        (not when its address could not be found or its connection was refused)."""
         super().__init__(f"RunPod answered {status}: {message}" if status else f"RunPod could not be reached: {message}")
-        self.status = status
+        self.status, self.sent = status, sent
 
     @property
     def nothing_done(self) -> bool:
-        """Whether the answer proves the request did nothing: a 4xx (not 429, a rate limit in front of it). A 5xx, from
-        RunPod or a gateway before it, may come after the work was done; no answer proves nothing either."""
-        return 400 <= self.status < 500 and self.status != 429
+        """Whether the request is known to have done nothing: never sent, or a 4xx (not 429, a rate limit in front of it).
+        A 5xx, from RunPod or a gateway before it, may come after the work was done; no answer proves nothing either."""
+        return not self.sent or (400 <= self.status < 500 and self.status != 429)
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -59,11 +61,17 @@ class RunPod:
             with OPENER.open(req, timeout=self.timeout) as r:
                 text = r.read().decode()
         except urllib.error.HTTPError as e:
-            raise RunPodError(e.code, e.read().decode(errors="replace").strip()[:300]) from None
+            try:   # its body may be cut short too: the status is what counts
+                detail = e.read().decode(errors="replace").strip()[:300]
+            except (OSError, http.client.HTTPException) as cut:
+                detail = f"(its message cut short: {type(cut).__name__})"
+            raise RunPodError(e.code, detail) from None
         # no whole answer (a timeout, a connection cut, an answer cut short: http.client's own errors are not OSErrors):
-        # the request may or may not have been done
+        # the request may or may not have been done, unless it never left (no address, a refused connection)
         except (urllib.error.URLError, OSError, http.client.HTTPException, UnicodeDecodeError) as e:
-            raise RunPodError(0, f"{type(e).__name__}: {getattr(e, 'reason', e)}") from None
+            reason = getattr(e, "reason", e)
+            raise RunPodError(0, f"{type(e).__name__}: {reason}",
+                              sent=not isinstance(reason, (socket.gaierror, ConnectionRefusedError))) from None
         try:
             return json.loads(text) if text.strip() else None
         except json.JSONDecodeError:
