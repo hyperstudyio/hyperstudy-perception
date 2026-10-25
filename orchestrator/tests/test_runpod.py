@@ -24,9 +24,10 @@ from test_cloud import GUARD_OK, GUARD_REFUSES, NODES, SETUP_OK, events, graph, 
 KEY = "rp-test-key-0123456789"
 GUARD = Path(__file__).resolve().parents[2] / "cloud" / "runpod" / "guard.sh"
 
-# test_cloud's ssh stand-in, which also takes -i KEY and -p PORT (a pod's own key and port)
+# test_cloud's ssh stand-in, which also takes -i KEY, -p PORT, -F CONFIG (a pod's own key, port and no config) and -l USER
+# (Linux's rsync passes root@host to ssh as -l root host)
 FAKE_SSH = r"""#!/bin/sh
-while [ $# -gt 0 ]; do case "$1" in -o|-i|-p|-F) echo "ssh option $1 $2" >> "$FAKE_HOST/ssh-options"; shift 2;; -*) shift;; *) break;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -o|-i|-p|-F|-l) echo "ssh option $1 $2" >> "$FAKE_HOST/ssh-options"; shift 2;; -*) shift;; *) break;; esac; done
 echo "ssh $1: $2" | head -c 300 >> "$FAKE_HOST/events"; echo >> "$FAKE_HOST/events"
 shift
 # the pod's clock 10 minutes fast, while $FAKE_HOST/skew exists
