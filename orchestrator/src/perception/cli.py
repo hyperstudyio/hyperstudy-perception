@@ -14,10 +14,12 @@
     perception export RUN_ID --format bundle --output DIR
     perception hosts add NAME USER@HOST [--root DIR] | list | check NAME | remove NAME | clean NAME
     perception cloud on | off | status [aws | runpod]
+    perception keys set NAME | list | remove NAME
     perception setup [GRAPH.yaml] [--only NODE[,NODE]] [--place NODE=PLACE]
 
-The store (artifacts, run state) lives in $PERCEPTION_HOME (default ~/.hyperstudy-perception). Secrets come from the
-environment and from ~/.config/hyperstudy/*.env; their values are never printed or written to run files.
+The store (artifacts, run state) lives in $PERCEPTION_HOME (default ~/.hyperstudy-perception). Keys come from the
+environment, the system keychain (`perception keys set`) and ~/.config/hyperstudy/*.env files only you can read (keys.py);
+their values are never printed or written to run files.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from .backends.probe import probe
 from .backends.cloud import Cloud, CloudBackend, RunPodBackend
 from .backends.remote import SshBackend
 from .hosts import HostError, Hosts, ssh_command
+from .keys import load_secrets
 from .ir import GraphError, compile_graph
 from .manifests import Registry
 from .plan import plan as make_plan
@@ -50,18 +53,6 @@ REPO = Path(__file__).resolve().parents[3]
 
 def home() -> Path:
     return Path(os.environ.get("PERCEPTION_HOME", Path.home() / ".hyperstudy-perception"))
-
-
-def load_secrets() -> dict[str, str]:
-    secrets = {}
-    conf = Path.home() / ".config" / "hyperstudy"
-    for f in sorted(conf.glob("*.env")) if conf.is_dir() else []:
-        for line in f.read_text().splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                secrets[k.strip()] = v.strip()
-    secrets.update({k: v for k, v in os.environ.items() if k in secrets or k.endswith(("_KEY", "_TOKEN"))})
-    return secrets
 
 
 def backends() -> list[Backend]:
@@ -558,6 +549,46 @@ def runpod_problem() -> str | None:
     return None
 
 
+def cmd_keys(args):
+    """Your keys for nodes and cloud places (keys.py). `set` reads the value from the terminal (not echoed) or from stdin,
+    never from the command line (shell history, the process list); `list` gives names and where each comes from."""
+    import getpass
+    from .keys import Keys
+    keys = Keys()
+    try:
+        if args.action == "set":
+            if not args.name:
+                raise ValueError("keys set NAME: which key?")
+            value = getpass.getpass(f"{args.name}: ") if sys.stdin.isatty() else sys.stdin.readline()
+            where = keys.set(args.name, value)
+            result = {"name": args.name, "stored": where}
+        elif args.action == "remove":
+            if not args.name:
+                raise ValueError("keys remove NAME: which key?")
+            result = {"name": args.name, "removed": keys.remove(args.name)}
+        else:
+            found = keys.load()
+            result = {"keys": [{"name": k, "source": found.sources[k]} for k in sorted(found.values)], "problems": found.problems}
+    except ValueError as e:
+        if args.json:
+            emit("error", problems=[str(e)])
+        else:
+            print(f"perception keys: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        emit("keys", **result)
+    elif args.action == "set":
+        print(f"{args.name} stored in {result['stored']}")
+    elif args.action == "remove":
+        print(f"{args.name} removed from {', '.join(result['removed'])}" if result["removed"] else f"{args.name} was not stored by perception keys")
+    else:
+        for k in result["keys"]:
+            print(f"{k['name']:28s} {k['source']}")
+        for p in result["problems"]:
+            print(f"refused: {p}")
+    return 0
+
+
 def cmd_setup(args):
     """Everything the nodes need here, ready before a run (setup.py): each environment synced from its lock, each node's
     weights fetched, the tools found. With a graph, the nodes it would run here (--only, --place as for run); without,
@@ -678,6 +709,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("action", choices=["on", "off", "status"])
     c.add_argument("provider", nargs="?", choices=Cloud.providers, default="aws")
     c.set_defaults(fn=cmd_cloud)
+    k = sub.add_parser("keys", help="your API keys and tokens: store one in the keychain, list where each comes from")
+    k.add_argument("action", choices=["set", "list", "remove"])
+    k.add_argument("name", nargs="?")
+    k.set_defaults(fn=cmd_keys)
     st = sub.add_parser("setup", help="install what nodes need here before a run: environments, weights, tools")
     st.add_argument("graph", nargs="?")
     st.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
