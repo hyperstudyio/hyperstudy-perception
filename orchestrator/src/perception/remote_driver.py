@@ -125,6 +125,7 @@ class Driver:
         self.started = time.monotonic()
         self.stop_at: float | None = None   # a cloud machine's deadline, less the time to bring results back and delete it
         self.extra_usd = 0.0
+        self.phases: dict[str, float] = {}   # seconds each part of the attempt took (in the response's usage, and the log)
         self.deadline_set = False   # the machine's own OS shutdown is scheduled (guard.sh): it cannot outlive its deadline
         self.launch_unstopped = False   # a launch whose cancel on SkyPilot's server was not confirmed: it may still make a machine
         self.at(spec["dest"], spec["root"])
@@ -390,17 +391,34 @@ echo $pid
         except (Unreachable, subprocess.TimeoutExpired) as e:
             say(f"could not reach {self.spec['host']} to stop it ({e}); it ends when the next attempt of this node starts there")
 
+    @contextlib.contextmanager
+    def phase(self, name: str):
+        """Time a part of the attempt (launch, setup, code, inputs, run, fetch, teardown): where its time goes."""
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            self.phases[name] = round(self.phases.get(name, 0.0) + time.monotonic() - start, 1)
+
     def publish_response(self):
-        """The node's response, now that it is final: with what the cloud machine cost added to what the node spent."""
+        """The node's response, now that it is final: with what the cloud machine cost added to what the node spent, and
+        where the attempt's time went (usage.phases; `environment` is the run's time before the node's own work began:
+        its uv environment synced, its imports)."""
+        if self.phases:
+            say("time: " + ", ".join(f"{k} {v:.0f} s" for k, v in self.phases.items()))
         part = self.local / "response.json.part"
         if not part.exists():
             return
+        response = json.loads(part.read_text())
+        usage = response.setdefault("usage", {})
         if self.extra_usd:
-            response = json.loads(part.read_text())
-            usage = response.setdefault("usage", {})
             usage["usd"] = round(float(usage.get("usd", 0.0)) + self.extra_usd, 4)
             usage["machine_usd"] = self.extra_usd
-            part.write_text(json.dumps(response, indent=1))
+        phases = dict(self.phases)
+        if "run" in phases and isinstance(usage.get("seconds"), (int, float)):
+            phases["environment"] = round(max(0.0, phases["run"] - usage["seconds"]), 1)
+        usage["phases"] = phases
+        part.write_text(json.dumps(response, indent=1))
         part.replace(self.local / "response.json")
 
     # --- a cloud machine ------------------------------------------------------------------------------------------
@@ -415,6 +433,12 @@ echo $pid
         (launch_s). SkyPilot runs a launch on its API server, where it goes on if its client is stopped: so it is
         submitted (--async), followed by its id, and on a timeout or a cancel canceled there before the machine is
         deleted."""
+        with self.phase("launch"):
+            self.launch(c)
+        with self.phase("setup"):
+            self.set_up(c)
+
+    def launch(self, c: dict):
         from .hosts import HostError, probe
         say(f"starting a cloud machine, {c['cluster']} (at most {c['deadline_s'] / 60:.0f} min at ${c['hourly_usd']}/h)")
         # a moment, not a delay: SkyPilot runs that setup detached, perhaps after guard.sh, and must not move the deadline on
@@ -483,6 +507,8 @@ echo $pid
         if result.returncode:
             raise GuardRefused(f"guard.sh refused {c['cluster']} (exit {result.returncode}): nothing was sent; see the log")
         self.deadline_set = True
+
+    def set_up(self, c: dict):
         # what the node needs, installed now and waited for (SkyPilot's own setup runs detached: node-setup.sh)
         say("installing ffmpeg and uv on the machine")
         try:
@@ -632,12 +658,16 @@ echo $pid
                 self.provision(cloud)
             # each repeated while the host cannot be reached: they can be (uploads go under the attempt's own names and
             # are published in one step; starting stops this attempt's node if a lost answer hid that it had started)
-            self.patiently(self.check_root)
-            self.patiently(self.send_code)
-            inputs = self.patiently(self.send_inputs)
-            self.patiently(self.start, inputs)
-            self.watch()
-            self.fetch()
+            with self.phase("code"):
+                self.patiently(self.check_root)
+                self.patiently(self.send_code)
+            with self.phase("inputs"):
+                inputs = self.patiently(self.send_inputs)
+            with self.phase("run"):   # from starting the node to its end: its environment synced, then its own work
+                self.patiently(self.start, inputs)
+                self.watch()
+            with self.phase("fetch"):
+                self.fetch()
             return 0
         except Canceled:
             self.stop()
@@ -671,7 +701,8 @@ echo $pid
             signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a cancel now must not skip deleting the machine or charging it
             self.discard_incoming()
             if cloud:
-                self.teardown(cloud)
+                with self.phase("teardown"):
+                    self.teardown(cloud)
             self.publish_response()
 
     def discard_incoming(self):

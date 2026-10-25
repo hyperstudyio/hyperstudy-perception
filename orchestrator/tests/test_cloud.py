@@ -150,6 +150,9 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     assert t["runner"] == "cloud:cuda" and usage["machine_usd"] > 0 and t["cost_usd"] == usage["usd"]
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent == pytest.approx(usage["usd"])
+    # where the time went, in the usage and the log
+    assert set(usage["phases"]) >= {"launch", "setup", "code", "inputs", "run", "fetch", "teardown", "environment"}
+    assert "[remote] time: launch" in log_of(coord, run_id)
 
 
 def test_a_machine_the_guard_refuses_gets_nothing_and_is_deleted(tmp_path, machine, rec):
