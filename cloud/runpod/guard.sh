@@ -28,7 +28,8 @@ case "$code" in
 esac
 # its removal at the deadline, which its start command set before anything else ran (remote_driver.removal_at_boot)
 pgrep -f perception-deadline > /dev/null || { echo "guard: the pod's removal at its deadline is not running" >&2; exit 1; }
-# a driver new enough for the nodes' CUDA (asked of RunPod too): exit 75, another pod may have one
+# a driver new enough for the nodes' CUDA, checked here only (RunPod's allowedCudaVersions is not used: see
+# remote_driver.runpod_launch): exit 75, another pod may have one
 driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2> /dev/null | head -1 || true)
 [ "${driver%%.*}" -ge "$min_driver" ] 2> /dev/null || {
   echo "guard: the pod's NVIDIA driver is ${driver:-not known}, older than $min_driver (the nodes' CUDA); another pod is tried" >&2; exit 75; }

@@ -515,12 +515,14 @@ def test_the_guard_says_its_check_could_not_be_made_apart_from_a_refusal(guard_e
 
 
 def test_a_guard_that_could_not_check_the_pod_is_a_launch_failure_retried(tmp_path, pod):
-    coord = coordinator(tmp_path, guard='echo "guard: could not check the pod\'s own key" >&2; exit 75\n')
+    coord = coordinator(tmp_path, guard='echo "guard: the pod\'s NVIDIA driver is 570.1, older than 580" >&2; exit 75\n')
     doc = graph(tmp_path, rec(tmp_path), place="runpod:cuda")
     doc["policy"]["retries"] = 1
     run_id, status = run(coord, doc)
     assert status == "failed" and len(pod.bodies) == 2 and not pod.pods
-    assert task(coord, run_id)[0]["error_code"] == "transient"
+    t = task(coord, run_id)[0]
+    # the guard's own reason, not a guess at it
+    assert t["error_code"] == "transient" and "NVIDIA driver is 570.1, older than 580" in t["error"]
 
 
 
