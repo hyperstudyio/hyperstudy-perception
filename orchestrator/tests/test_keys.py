@@ -115,7 +115,8 @@ def test_a_new_config_folder_is_made_private(tmp_path, monkeypatch):
     assert stat.S_IMODE((tmp_path / ".config" / "hyperstudy").stat().st_mode) == 0o700
 
 
-@pytest.mark.parametrize("name, value", [("runpod_key", SECRET), ("RUN POD", SECRET), ("OK_KEY", ""), ("OK_KEY", "a\nb")])
+@pytest.mark.parametrize("name, value", [("runpod_key", SECRET), ("RUN POD", SECRET), ("OK_KEY", ""), ("OK_KEY", "a\nb"),
+                                         ("OK_KEY", "abc\rOTHER_KEY=x"), ("OK_KEY", "abc\x85OTHER_KEY=x"), ("OK_KEY", "abc\u2028x")])
 def test_set_refuses_a_bad_name_or_value(home, name, value):
     with pytest.raises(ValueError):
         Keys().set(name, value)
@@ -156,3 +157,59 @@ def test_a_node_gets_a_key_from_the_keychain_and_only_the_keys_it_declares(home,
     Keys().set("RUNPOD_API_KEY", "rp-other")
     env = child_env(["ANTHROPIC_API_KEY"], keys_mod.load_secrets())
     assert env["ANTHROPIC_API_KEY"] == SECRET and "RUNPOD_API_KEY" not in env
+
+
+def test_on_windows_a_key_file_is_not_judged_by_posix_modes(home, monkeypatch):
+    # Windows reports 0o666 (0o444 read-only) for every file: no mode can be "private" there, and its profile folder is
+    # the user's own; refusing every file would leave keys unreachable, and chmod could not fix it
+    monkeypatch.setattr(keys_mod, "POSIX", False)
+    env_file(home / "openai.env", f"OPENAI_API_KEY={SECRET}\n", 0o644)
+    found = Keys().load()
+    assert found.values["OPENAI_API_KEY"] == SECRET and not found.problems
+
+
+def test_a_config_folder_others_can_write_to_is_refused_whole(home):
+    env_file(home / "a.env", f"A_KEY={SECRET}\n")
+    home.chmod(0o777)   # anyone could swap a file in there
+    found = Keys().load()
+    assert "A_KEY" not in found.values and "others can write" in found.problems[0]
+    # writing a key makes the user's own folder private first (0700), and then its files are read again
+    Keys().set("B_KEY", SECRET)
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+    assert Keys().load().values["A_KEY"] == SECRET
+
+
+def test_a_config_folder_that_is_a_link_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    env_file(real / "a.env", f"A_KEY={SECRET}\n")
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "hyperstudy").symlink_to(real)
+    found = Keys().load()
+    assert "A_KEY" not in found.values and "link" in found.problems[0]
+
+
+def test_an_existing_config_folder_is_made_private_when_a_key_is_written(home):
+    home.chmod(0o755)
+    Keys().set("HF_TOKEN", SECRET)
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+
+
+def test_a_leftover_temporary_file_does_not_loosen_the_key_file(home):
+    for name in ("keys.tmp", "keys.env.tmp", "keys.json.tmp"):
+        env_file(home / name, "", 0o644)
+    Keys().set("HF_TOKEN", SECRET)
+    assert stat.S_IMODE((home / "keys.env").stat().st_mode) == 0o600
+
+
+def test_keys_set_at_the_same_time_all_stay_findable(home, chain):
+    import threading
+    names = [f"K{i}_KEY" for i in range(16)]
+    threads = [threading.Thread(target=Keys().set, args=(n, SECRET)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(json.loads((home / "keys.json").read_text())) == sorted(names)
+    assert set(names) <= set(Keys().load().values)

@@ -11,11 +11,14 @@ there are kept in ~/.config/hyperstudy/keys.json (names only)."""
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import os
 import re
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,28 +37,57 @@ class Found:
     problems: list[str] = field(default_factory=list)
 
 
-def private_file_problem(path: Path) -> str | None:
-    """Why a key file is not used, or None: it must be the user's own, a regular file, and readable by no one else."""
+POSIX = os.name != "nt"   # Windows has no POSIX modes (every file reads 0o666): a user's profile folder is their own there
+
+
+def folder_problem(conf: Path) -> str | None:
+    """Why nothing in the config folder is used, or None: it must be a real folder (not a link), the user's own, and one
+    no one else can write to (else a file could be swapped in after it was checked)."""
     try:
-        st = path.lstat()
-    except OSError as e:
-        return f"{path} could not be read ({e})"
+        st = conf.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        return f"{conf} is not a folder (a link?): its key files are not used"
+    if POSIX and st.st_uid != os.getuid():
+        return f"{conf} is not yours: its key files are not used"
+    if POSIX and st.st_mode & 0o022:
+        return f"{conf} is a folder others can write to (mode {oct(stat.S_IMODE(st.st_mode))}): its key files are not used; chmod 700 it"
+    return None
+
+
+def file_problem(path: Path, st: os.stat_result) -> str | None:
+    """Why a key file is not used, or None: a regular file, the user's own, readable and writable by no one else."""
     if not stat.S_ISREG(st.st_mode):
-        return f"{path} is not a regular file (a link?): its keys are not used"
-    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        return f"{path} is not a regular file: its keys are not used"
+    if POSIX and st.st_uid != os.getuid():
         return f"{path} is not yours: its keys are not used"
-    if st.st_mode & 0o077:
+    if POSIX and st.st_mode & 0o077:
         return f"{path} can be read by others (mode {oct(stat.S_IMODE(st.st_mode))}): its keys are not used; chmod 600 it"
     return None
 
 
-def read_env_file(path: Path) -> dict[str, str]:
+def parse_env(text: str) -> dict[str, str]:
     out = {}
-    for line in path.read_text().splitlines():
+    for line in text.splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             k, v = line.split("=", 1)
             out[k.strip()] = v.strip()
     return out
+
+
+def read_private(path: Path) -> tuple[dict[str, str], str | None]:
+    """A key file's keys, or why it is refused: opened without following a link, and checked on that open file, so what
+    is checked is what is read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return {}, f"{path} is not a regular file (a link): its keys are not used"
+        return {}, f"{path} could not be read ({e.strerror})"
+    with os.fdopen(fd) as f:
+        problem = file_problem(path, os.fstat(f.fileno()))
+        return ({}, problem) if problem else (parse_env(f.read()), None)
 
 
 def keyring_module():
@@ -79,14 +111,46 @@ class Keys:
         except (OSError, ValueError, TypeError):
             return []
 
-    def _write(self, path: Path, text: str):
-        """Write a file in one step, 0600 from its first byte, in a folder only the user can enter."""
+    def _private_folder(self):
+        """The config folder, made if missing and made private if it is not (0700): refused if it is a link or not the
+        user's (folder_problem)."""
         self.conf.mkdir(mode=0o700, parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-        os.replace(tmp, path)
+        st = self.conf.lstat()
+        if POSIX and not stat.S_ISLNK(st.st_mode) and st.st_uid == os.getuid() and st.st_mode & 0o077:
+            os.chmod(self.conf, 0o700)
+        problem = folder_problem(self.conf)
+        if problem:
+            raise ValueError(problem)
+
+    def _write(self, path: Path, text: str):
+        """Write a file in one step through a new temporary file of its own (0600 from its first byte, never one left
+        over), in the private config folder."""
+        self._private_folder()
+        fd, tmp = tempfile.mkstemp(dir=self.conf, prefix=f".{path.name}.")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    @contextlib.contextmanager
+    def _locked(self):
+        """One change to keys.json and keys.env at a time (two `keys set` at once would drop a name otherwise)."""
+        self._private_folder()
+        try:
+            import fcntl
+        except ImportError:   # Windows: no flock; a single user's own commands
+            yield
+            return
+        fd = os.open(self.conf / ".keys.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
 
     def _write_index(self, names: list[str]):
         self._write(self.index, json.dumps(sorted(set(names))))
@@ -96,10 +160,10 @@ class Keys:
         path = self.conf / "keys.env"
         if not path.exists():
             return {}
-        problem = private_file_problem(path)
+        values, problem = read_private(path)
         if problem:
             raise ValueError(problem)
-        return read_env_file(path)
+        return values
 
     def _write_file_keys(self, keys: dict[str, str]):
         self._write(self.conf / "keys.env", "".join(f"{k}={v}\n" for k, v in sorted(keys.items())))
@@ -107,12 +171,14 @@ class Keys:
     def load(self) -> Found:
         found = Found()
         # 3. private files, lowest: what a keychain or the environment holds wins
-        for path in sorted(self.conf.glob("*.env")) if self.conf.is_dir() else []:
-            problem = private_file_problem(path)
-            if problem:
-                found.problems.append(problem)
-                continue
-            for k, v in read_env_file(path).items():
+        problem = folder_problem(self.conf)
+        if problem:
+            found.problems.append(problem)
+        for path in sorted(self.conf.glob("*.env")) if self.conf.is_dir() and not problem else []:
+            values, refused = read_private(path)
+            if refused:
+                found.problems.append(refused)
+            for k, v in values.items():
                 found.values[k], found.sources[k] = v, str(path)
         # 2. the keychain
         kr = keyring_module()
@@ -136,21 +202,26 @@ class Keys:
         if not NAME.match(name):
             raise ValueError(f"a key's name is upper-case letters, digits and _ (like RUNPOD_API_KEY): {name!r}")
         value = value.strip()
-        if not value or "\n" in value:
+        if not value or value.splitlines() != [value]:   # any line break (\r, \x85, \u2028...) would add a line to keys.env
             raise ValueError("a key is one non-empty line")
         kr = keyring_module()
-        if kr is not None:
-            kr.set_password(SERVICE, name, value)
-            self._write_index([*self.stored_names(), name])
-            return "keychain"
-        keys = self._file_keys()
-        keys[name] = value
-        self._write_file_keys(keys)
-        return str(self.conf / "keys.env")
+        with self._locked():
+            if kr is not None:
+                kr.set_password(SERVICE, name, value)
+                self._write_index([*self.stored_names(), name])
+                return "keychain"
+            keys = self._file_keys()
+            keys[name] = value
+            self._write_file_keys(keys)
+            return str(self.conf / "keys.env")
 
     def remove(self, name: str) -> list[str]:
         """Remove a key from the keychain and from keys.env (what `set` wrote); where it was. The user's own .env files
         are theirs to edit."""
+        with self._locked():
+            return self._remove(name)
+
+    def _remove(self, name: str) -> list[str]:
         removed = []
         kr = keyring_module()
         if kr is not None and name in self.stored_names():
