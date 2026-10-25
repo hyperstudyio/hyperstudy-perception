@@ -185,7 +185,7 @@ def test_a_node_runs_on_a_pod_made_for_it_checked_before_anything_is_sent_and_de
     assert body["env"] == {"PUBLIC_KEY": (attempt / "ssh" / "id_ed25519.pub").read_text().strip()}
     # its removal at its deadline (a minute early) set by its start command, before the image's own start
     deadline = int(body["name"].rsplit("-d", 1)[1])
-    assert body["dockerStartCmd"] == ["bash", "-c", removal_at_boot(deadline - 60, "/start.sh")]
+    assert body["dockerStartCmd"] == ["bash", "-c", removal_at_boot(deadline - 60, RunPodBackend.start)]
     options = (pod.fake_host / "ssh-options").read_text()
     assert f"-i {attempt / 'ssh' / 'id_ed25519'}" in options and "-p 2222" in options
     assert all(h.get("User-Agent") == "hyperstudy-perception" for h in pod.headers)   # Cloudflare refuses Python's own
@@ -538,10 +538,10 @@ def test_a_pods_start_command_removes_it_at_its_deadline_asking_until_it_is_done
                          capture_output=True, text=True, timeout=30, start_new_session=True)
     assert out.stdout.strip() == "the image starts"   # its own start runs (exec), the removal beside it
     for _ in range(50):
-        if calls(t).count("runpodctl remove pod pod42") == 2:
+        if calls(t).count("runpodctl pod delete pod42") == 2:
             break
         time.sleep(0.1)
-    assert calls(t).count("runpodctl remove pod pod42") == 2 and "sleep 30" in calls(t)
+    assert calls(t).count("runpodctl pod delete pod42") == 2 and "sleep 30" in calls(t)
 
 
 def test_a_pods_removal_waits_for_its_deadline(tmp_path):
@@ -578,3 +578,56 @@ def test_the_guard_refuses_a_pod_holding_an_accounts_config(guard_env, config):
     (guard_env / "home" / config).write_text("apikey = x\n")
     out = guard(guard_env)
     assert out.returncode == 1 and config.encode() in out.stderr
+
+
+# --- the image (cloud/runpod/image) -------------------------------------------------------------------------------
+
+IMAGE = Path(__file__).resolve().parents[2] / "cloud" / "runpod" / "image"
+
+
+def image_tag_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("runpod_image_tag", IMAGE / "tag.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_backend_uses_the_image_built_from_the_repositorys_files():
+    # a lock or image change needs a new build, under the tag its files give (.github/workflows/runpod-image.yml)
+    assert RunPodBackend.image_tag == image_tag_module().tag(), "rebuild the image (push) and set RunPodBackend.image_tag to tag.py's"
+    assert RunPodBackend.image.endswith(":" + RunPodBackend.image_tag)
+
+
+def test_the_image_holds_every_cuda_nodes_environment():
+    envs = set(image_tag_module().envs())
+    cuda = {r.env for m in Registry.load(Path(__file__).resolve().parents[2] / "nodes") for r in m.runners if r.accelerator == "cuda"}
+    assert cuda and cuda <= envs, f"add {sorted(cuda - envs)} to cloud/runpod/image/envs.txt"
+
+
+def test_the_images_context_holds_no_code_of_the_repositorys(tmp_path):
+    # it is public: its own files, and environments' pyproject.toml and uv.lock (sdk's too), nothing else
+    tag = image_tag_module()
+    tag.stage(tmp_path)
+    staged = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file())
+    allowed = {"Dockerfile", "start.sh", "envs.txt", "sdk/pyproject.toml", *(f"{e}/{n}" for e in tag.envs() for n in ("pyproject.toml", "uv.lock"))}
+    assert set(staged) == allowed
+
+
+def test_a_node_uses_the_images_environment_when_the_machine_has_one(tmp_path):
+    from perception.remote_driver import Driver
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    (attempt / "request.json").write_text(json.dumps({"run": "r", "node": "faces", "attempt": 1}))
+    venvs = tmp_path / "venvs"
+    spec = {"dest": "x", "root": "/r", "code": "c", "runner_kind": "native", "env": "envs/faces", "venvs": str(venvs)}
+    snippet = Driver(attempt / "request.json", spec).prebuilt_env()
+
+    def seen():
+        return subprocess.run(["sh", "-c", snippet + 'printf %s "$UV_PROJECT_ENVIRONMENT"'], capture_output=True, text=True,
+                              env={"PATH": "/usr/bin:/bin"}).stdout
+    assert seen() == ""   # none there: uv makes the environment itself
+    (venvs / "envs" / "faces").mkdir(parents=True)
+    assert seen() == str(venvs / "envs" / "faces")
+    assert Driver(attempt / "request.json", {**spec, "runner_kind": "self"}).prebuilt_env() == ""
+    assert Driver(attempt / "request.json", {k: v for k, v in spec.items() if k != "venvs"}).prebuilt_env() == ""

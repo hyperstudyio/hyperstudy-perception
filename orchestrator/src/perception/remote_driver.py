@@ -128,7 +128,7 @@ def removal_at_boot(at: int, start: str) -> str:
     The backstop for a pod whose driver never comes back, from its first moment; perception-deadline names it (guard.sh)."""
     # asked every 30 s until it happens, whatever runpodctl's exit says: the pod's removal ends this loop with it
     removal = (f"until [ $(date +%s) -ge {int(at)} ]; do sleep 15; done; "
-               'while :; do runpodctl remove pod "$RUNPOD_POD_ID"; sleep 30; done')
+               'while :; do RUNPOD_NO_UPDATE_CHECK=1 runpodctl pod delete "$RUNPOD_POD_ID"; sleep 30; done')
     return f"nohup sh -c {shlex.quote(removal)} perception-deadline > /dev/null 2>&1 & exec {start}"
 
 
@@ -291,6 +291,7 @@ mkdir -p {q(self.attempt)}/out
 {links}
 cat > {q(req)}
 {heartbeat_sh(self.attempt)}
+{self.prebuilt_env()}
 cd {q(self.code + '/' + s['node_dir'])}
 # its own session, so its whole process tree can be stopped (kill -s TERM -- -PID) and a closed connection does not
 # reach it: setsid on Linux, perl's on a Mac (no setsid command there). Not a group leader in the background, so
@@ -407,6 +408,15 @@ echo $pid
         # the run's folders too once empty (another node of the run may still be using them)
         self.patiently(self.sh, f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true")
 
+    def prebuilt_env(self) -> str:
+        """sh that points uv at the node's environment as the machine's image already holds it (RunPod's: synced from
+        the same lock, so syncing it only adds the node's own package), when it has one; else nothing (uv makes it)."""
+        s = self.spec
+        if s["runner_kind"] == "self" or not s.get("venvs"):
+            return ""
+        venv = shlex.quote(f"{s['venvs']}/{s['env']}")
+        return f"if [ -d {venv} ]; then export UV_PROJECT_ENVIRONMENT={venv}; fi; "
+
     def prepare(self):
         """What `perception setup` does for a node here, done on the host before it starts: its uv environment synced from
         its lock, then its prepare script (its weights) run in it with its settings. A failure is the attempt's own and
@@ -430,7 +440,7 @@ echo $pid
         if limit <= 0:
             raise Deadline()
         try:
-            done = self.patiently(self.sh, f"cd {q(node_dir)} && export PATH={q(path)}${{PATH:+:$PATH}} && " + " && ".join(steps),
+            done = self.patiently(self.sh, f"{self.prebuilt_env()}cd {q(node_dir)} && export PATH={q(path)}${{PATH:+:$PATH}} && " + " && ".join(steps),
                                   False, None, limit)
         except subprocess.TimeoutExpired:
             if self.stop_at is not None:

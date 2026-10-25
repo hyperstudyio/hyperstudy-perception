@@ -8,8 +8,10 @@ export DEBIAN_FRONTEND=noninteractive
 sudo=sudo; [ "$(id -u)" = 0 ] && sudo=   # a RunPod pod is root, with no sudo
 # a fresh Ubuntu machine runs its own updates at boot: wait for apt's lock rather than fail on it. rsync: the driver sends
 # with it (RunPod's image has none)
-$sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
-$sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq ffmpeg rsync > /dev/null
+if ! command -v ffmpeg > /dev/null || ! command -v ffprobe > /dev/null || ! command -v rsync > /dev/null; then   # an image may have them
+  $sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+  $sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq ffmpeg rsync > /dev/null
+fi
 # uv, the version the annotator app bundles, in a folder of its own (SkyPilot installs a uv of its own on the machine)
 dir="$HOME/.perception-uv"
 if [ ! -x "$dir/uv" ]; then

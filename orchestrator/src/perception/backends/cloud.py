@@ -134,9 +134,12 @@ class RunPodBackend(CloudBackend):
     else runs; guard.sh checks it), and the next RunPod launch deletes any perception pod past its deadline (the
     deadline is in its name)."""
     guard = REPO / "cloud" / "runpod" / "guard.sh"
-    # RunPod's image with sshd started from PUBLIC_KEY; the node's environment brings its own torch (uv)
-    image = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
-    start = "/start.sh"   # the image's own start command (sshd from PUBLIC_KEY), run after the pod's removal is set
+    # perception's own image (cloud/runpod/image): sshd, ffmpeg, rsync, uv, runpodctl and each CUDA node's environment,
+    # already synced; software only. Its tag is tag.py's, from what goes into it (a test checks they agree)
+    image_tag = "3359316fd7de"
+    image = f"ghcr.io/ljchang/perception-runpod:{image_tag}"
+    start = "/perception-start.sh"   # its own start (host keys, PUBLIC_KEY, sshd), run after the pod's removal is set
+    venvs = "/opt/perception/venvs"   # where those environments are, by their path in the repository
     # Secure Cloud prices on 2026-10-24 (RunPod's gpuTypes securePrice), the order RunPod tries them in: the cheap ones
     # first, the dearer ones when none of those is free (capacity for any one type comes and goes). Ampere, Ada and
     # Blackwell (the nodes' torch is built for CUDA 13, which has Blackwell's kernels); not MIG slices of one.
@@ -173,7 +176,7 @@ class RunPodBackend(CloudBackend):
         request = json.loads((attempt_dir / "request.json").read_text())
         return {"host": "the RunPod pod", "cloud": {
             "provider": "runpod", "name": cluster_name(request["run"], request["node"], request["attempt"]),
-            "api": api_base(), "image": self.image, "start": self.start, "gpus": list(self.gpus), "datacenters": self.datacenters,
+            "api": api_base(), "image": self.image, "start": self.start, "venvs": self.venvs, "gpus": list(self.gpus), "datacenters": self.datacenters,
             "disk_gb": self.disk_gb, "min_driver": self.min_driver, "guard": str(self.guard), "setup": str(self.setup), "hourly_usd": self.hourly_usd,
             "launch_s": self.launch_s, "down_s": self.down_s, "api_s": self.api_s, "unknown_s": self.unknown_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values()))}}
