@@ -404,7 +404,9 @@ def test_a_cancel_that_hangs_on_skypilots_server_does_not_keep_the_machine_from_
     started = time.time()
     run_id, status = run(coord, graph(tmp_path, rec))
     assert status == "failed" and time.time() - started < 40
-    assert events(machine)[-1].startswith("sky down -y perception-")
+    ev = events(machine)
+    down = next(i for i, e in enumerate(ev) if e.startswith("sky down -y perception-"))
+    assert any("terminate-instances" in e for e in ev[down:])   # and, the cancel unconfirmed, through EC2 too
 
 
 def test_a_launch_that_could_not_be_stopped_is_not_counted_as_deleted_and_stops_the_retries(tmp_path, machine, rec):
@@ -419,6 +421,18 @@ def test_a_launch_that_could_not_be_stopped_is_not_counted_as_deleted_and_stops_
     t = coord._tasks(run_id)["faces"]
     assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1)   # no second machine
     assert "still be created" in t["error"]
+
+
+def test_a_launch_that_could_not_be_stopped_stops_the_retries_even_when_sky_down_says_it_is_gone(tmp_path, machine, rec):
+    for f in ("launch-hangs", "cancel-hangs"):                # sky down exits 0: "Cluster(s) not found", not created yet
+        (machine / f).touch()
+    coord = coordinator(tmp_path, launch_s=1, aws_s=2)
+    doc = graph(tmp_path, rec)
+    doc["policy"]["retries"] = 2
+    run_id, status = run(coord, doc)
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1) and "still be created" in t["error"]
+    assert any("terminate-instances" in e for e in events(machine))   # what EC2 can see is ended all the same
 
 
 def test_setups_shutdown_is_the_minutes_left_and_never_later():

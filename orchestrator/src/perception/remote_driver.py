@@ -574,6 +574,9 @@ echo $pid
                                   timeout=c.get("down_s", 900)).returncode   # its own session: a cancel must not stop it
         except subprocess.TimeoutExpired:
             code = "timed out"
+        if code == 0 and self.launch_unstopped:
+            # sky down says "not found" (exit 0) for a cluster a launch has not made yet: that proves nothing either
+            code = "the launch was not stopped"
         if code != 0:   # SkyPilot could not delete it: end the instance through EC2 directly
             say(f"sky down: {code}; terminating {c['cluster']}'s instances through EC2")
             # no instance found proves nothing while a launch that was not stopped may still make one
