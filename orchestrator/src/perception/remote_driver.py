@@ -125,6 +125,8 @@ class Driver:
         self.started = time.monotonic()
         self.stop_at: float | None = None   # a cloud machine's deadline, less the time to bring results back and delete it
         self.extra_usd = 0.0
+        self.deadline_set = False   # the machine's own OS shutdown is scheduled (guard.sh): it cannot outlive its deadline
+        self.launch_unstopped = False   # a launch whose cancel on SkyPilot's server was not confirmed: it may still make a machine
         self.at(spec["dest"], spec["root"])
 
     def at(self, dest: str, root: str):
@@ -408,18 +410,20 @@ echo $pid
 
     def provision(self, c: dict):
         """Start the machine. Its own deadline is set from the first moment, in case this laptop never comes back: the
-        task's setup schedules the OS shutdown first (DEADLINE_MINUTES), and while the launch runs a watcher makes an OS
+        task's setup schedules the OS shutdown first (DEADLINE_EPOCH), and while the launch runs a watcher makes an OS
         shutdown terminate the instance (EC2 would only stop it, its disk billing). The launch has a time limit
         (launch_s). SkyPilot runs a launch on its API server, where it goes on if its client is stopped: so it is
         submitted (--async), followed by its id, and on a timeout or a cancel canceled there before the machine is
         deleted."""
         from .hosts import HostError, probe
         say(f"starting a cloud machine, {c['cluster']} (at most {c['deadline_s'] / 60:.0f} min at ${c['hourly_usd']}/h)")
-        minutes = max(1, math.floor(c["deadline_s"] / 60))
+        # a moment, not a delay: SkyPilot runs that setup detached, perhaps after guard.sh, and must not move the deadline on
+        # (a minute early: the machine's clock may be up to a minute behind this one's, which is checked)
+        deadline_at = int(time.time() + c["deadline_s"] - (time.monotonic() - self.started)) - 60
         request = None
         try:
             submitted = subprocess.run([c["sky"], "launch", "--async", "-c", c["cluster"], "-y", "--down", "-i", "15",
-                                        "--env", f"DEADLINE_MINUTES={minutes}", c["task"]], env=self.cloud_env(c),
+                                        "--env", f"DEADLINE_EPOCH={deadline_at}", c["task"]], env=self.cloud_env(c),
                                        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
             sys.stdout.write(submitted.stdout + submitted.stderr)
             sys.stdout.flush()
@@ -451,8 +455,7 @@ echo $pid
                 time.sleep(POLL_S)
         finally:
             if not finished:   # a timeout or a cancel: stop the launch on the API server, or sky down could miss it
-                subprocess.run([c["sky"], "api", "cancel", "-y", request], env=self.cloud_env(c), stdout=sys.stdout,
-                               stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+                self.sky_cancel(c, [request])
             logs.terminate()
             logs.wait()
         # again now that it is up: the launch may have replaced the instance it first created (another zone). A machine
@@ -467,6 +470,11 @@ echo $pid
         self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
         if "cuda" not in caps.accelerators:
             raise Refused("resources", f"{c['cluster']} has no NVIDIA GPU that nvidia-smi can see")
+        # setup schedules the shutdown at the deadline as a moment by this laptop's clock: the machine's must agree
+        skew = int(self.sh("date +%s").stdout.decode().strip()) - time.time()
+        if abs(skew) > 60:
+            raise Refused("internal", f"{c['cluster']}'s clock and this machine's differ by {skew:.0f} s: set this machine's "
+                                      "clock (its deadline is a moment by it)")
         # its OS shuts it down (and so terminates it) at the deadline, counted from the start of the launch
         minutes = max(1, math.floor((c["deadline_s"] - (time.monotonic() - self.started)) / 60))
         guard = Path(c["guard"]).read_bytes()
@@ -474,6 +482,7 @@ echo $pid
         sys.stdout.buffer.write(result.stdout + result.stderr)
         if result.returncode:
             raise GuardRefused(f"guard.sh refused {c['cluster']} (exit {result.returncode}): nothing was sent; see the log")
+        self.deadline_set = True
         # what the node needs, installed now and waited for (SkyPilot's own setup runs detached: node-setup.sh)
         say("installing ffmpeg and uv on the machine")
         try:
@@ -487,28 +496,51 @@ echo $pid
         self.spec["uv"] = uv or None
         if not uv:
             raise LaunchFailed(f"setting up {c['cluster']} did not say where uv is")
-        self.stop_at = self.started + c["deadline_s"] - min(300, c["deadline_s"] / 4)
+        # 5 minutes to bring results back and delete it, and 3 more: setup's shutdown may come that much early (a minute
+        # set early, a minute rounding down, a minute of clock skew)
+        self.stop_at = self.started + c["deadline_s"] - min(480, c["deadline_s"] / 4)
 
     def cancel_launches(self, c: dict):
         """Cancel, on SkyPilot's API server, any launch of this attempt's cluster still pending or running: found by its
         cluster's name, which only this attempt uses (a launch whose request id was never read)."""
-        out = subprocess.run([c["sky"], "api", "status", "-v", "-o", "json"], env=self.cloud_env(c), capture_output=True,
-                             text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=120)
+        try:
+            out = subprocess.run([c["sky"], "api", "status", "-v", "-o", "json"], env=self.cloud_env(c), capture_output=True,
+                                 text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            self.launch_unstopped = True   # not known to be stopped: teardown treats it as able to make a machine still
+            say(f"WARNING: SkyPilot did not list its requests in time to cancel a launch of {c['cluster']}; sky down follows")
+            return
         try:
             ids = [r["request_id"] for r in json.loads(out.stdout[out.stdout.index("["):])
                    if r.get("name") == "sky.launch" and r.get("cluster_name") == c["cluster"] and r.get("status") in ("PENDING", "RUNNING")]
         except (ValueError, KeyError, TypeError):
+            self.launch_unstopped = True
             say(f"WARNING: could not list SkyPilot's requests to cancel a launch of {c['cluster']}; sky down follows")
             return
         if ids:
-            subprocess.run([c["sky"], "api", "cancel", "-y", *ids], env=self.cloud_env(c), stdout=sys.stdout,
-                           stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+            self.sky_cancel(c, ids)
+
+    def sky_cancel(self, c: dict, requests: list[str]):
+        """Cancel launch requests on SkyPilot's API server, within a time limit: a server that hangs must not keep the
+        machine from being deleted (teardown follows whatever happens here)."""
+        try:
+            code = subprocess.run([c["sky"], "api", "cancel", "-y", *requests], env=self.cloud_env(c), stdout=sys.stdout,
+                                  stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                                  timeout=c.get("aws_s", 120)).returncode
+        except (subprocess.TimeoutExpired, OSError) as e:
+            code = str(e)
+        if code != 0:
+            self.launch_unstopped = True
+            say(f"WARNING: could not cancel the launch on SkyPilot's server ({code}); deleting the machine follows")
 
     def request_status(self, c: dict, request: str) -> str:
         """A request's status on SkyPilot's API server (PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED), or "" when it
         could not be read this time."""
-        out = subprocess.run([c["sky"], "api", "status", "-a", request, "-o", "json"], env=self.cloud_env(c),
-                             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        try:
+            out = subprocess.run([c["sky"], "api", "status", "-a", request, "-o", "json"], env=self.cloud_env(c),
+                                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        except subprocess.TimeoutExpired:
+            return ""   # not read this time: the launch's own time limit still applies
         try:
             text = out.stdout[out.stdout.index("["):]
             return next((r["status"] for r in json.loads(text) if r["request_id"] == request), "")
@@ -521,7 +553,7 @@ echo $pid
         still creating it."""
         aws = [c["aws"], "--region", c["region"], "--output", "text"]
         ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
-                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']}*",
+                              "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']},{c['cluster']}-*",
                               "Name=instance-state-name,Values=pending,running"], capture_output=True, text=True)
         found = ids.stdout.split() if ids.returncode == 0 else []
         done_all = bool(found)
@@ -538,16 +570,60 @@ echo $pid
     def teardown(self, c: dict):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # deleting the machine must not be interrupted
         say(f"deleting {c['cluster']}")
-        # its own session: a cancel signals the driver's whole process group, and must not stop the deletion
-        out = subprocess.run([c["sky"], "down", "-y", c["cluster"]], env=self.cloud_env(c), stdout=sys.stdout,
-                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
-        if out.returncode == 0:
-            self.extra_usd = round(c["hourly_usd"] * (time.monotonic() - self.started) / 3600, 4)
-        else:   # it lives until its deadline at most (guard.sh), and is charged that
+        try:   # a limit too: a SkyPilot server that hangs must not hold the run
+            code = subprocess.run([c["sky"], "down", "-y", c["cluster"]], env=self.cloud_env(c), stdout=sys.stdout,
+                                  stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                                  timeout=c.get("down_s", 900)).returncode   # its own session: a cancel must not stop it
+        except subprocess.TimeoutExpired:
+            code = "timed out"
+        if code == 0 and self.launch_unstopped:
+            # sky down says "not found" (exit 0) for a cluster a launch has not made yet: that proves nothing either
+            code = "the launch was not stopped"
+        if code != 0:   # SkyPilot could not delete it: end the instance through EC2 directly
+            say(f"sky down: {code}; terminating {c['cluster']}'s instances through EC2")
+            # no instance found proves nothing while a launch that was not stopped may still make one
+            code = 0 if self.terminate_instances(c) and not self.launch_unstopped else code
+        seconds = time.monotonic() - self.started
+        if code == 0:   # its time; never more than its deadline once its OS shutdown was set (it cannot outlive it then)
+            self.extra_usd = round(c["hourly_usd"] * (min(seconds, c["deadline_s"]) if self.deadline_set else seconds) / 3600, 4)
+        elif self.deadline_set:   # it lives until its deadline at most (guard.sh), and is charged that
             self.extra_usd = round(c["hourly_usd"] * c["deadline_s"] / 3600, 4)
-            say(f"WARNING: could not delete {c['cluster']} (sky down exited {out.returncode}): run `sky down {c['cluster']}`; "
-                "otherwise it shuts down at its deadline")
-        say(f"the machine cost about ${self.extra_usd:.2f}")
+            say(f"WARNING: could not delete {c['cluster']}: run `sky down {c['cluster']}`; otherwise it shuts down at its deadline")
+        else:   # no deadline on it either: nothing ends it but someone; no other attempt starts another one
+            self.extra_usd = round(c["hourly_usd"] * c["deadline_s"] / 3600, 4)
+            message = (f"{c['cluster']} could not be deleted and has no shutdown deadline (or its launch could not be stopped): "
+                       "it may still be running, or still be created. "
+                       f"Run `sky down {c['cluster']}`, or terminate its instance in the AWS console ({c['region']})")
+            say(f"WARNING: {message}")
+            self.fail("internal", message)
+        say(f"the machine cost about ${self.extra_usd:.2f}" + ("" if code == 0 else " (at least)"))
+
+    def terminate_instances(self, c: dict) -> bool:
+        """Terminate every instance of this attempt's cluster through EC2 (when SkyPilot could not): whether none is left.
+        An AWS call that fails or does not answer in time counts as not terminated (teardown then says so)."""
+        aws = [c["aws"], "--region", c["region"], "--output", "text"]
+        limit = c.get("aws_s", 120)
+        try:
+            ids = subprocess.run([*aws, "ec2", "describe-instances", "--query", "Reservations[].Instances[].InstanceId",
+                                  "--filters", f"Name=tag:skypilot-cluster-name,Values={c['cluster']},{c['cluster']}-*",
+                                  "Name=instance-state-name,Values=pending,running,stopping,stopped"],
+                                 capture_output=True, text=True, start_new_session=True, timeout=limit)
+            if ids.returncode:
+                say(f"could not list {c['cluster']}'s instances: {ids.stderr.strip()[-200:]}")
+                return False
+            found = ids.stdout.split()
+            if not found:
+                return True
+            done = subprocess.run([*aws, "ec2", "terminate-instances", "--instance-ids", *found], capture_output=True,
+                                  text=True, start_new_session=True, timeout=limit)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            say(f"could not reach EC2 to terminate {c['cluster']}'s instances ({e})")
+            return False
+        if done.returncode:
+            say(f"could not terminate {', '.join(found)}: {done.stderr.strip()[-200:]}")
+            return False
+        say(f"terminated {', '.join(found)}")
+        return True
 
     def run(self) -> int:
         cloud = self.spec.get("cloud")

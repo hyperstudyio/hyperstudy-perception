@@ -84,7 +84,9 @@ Not done:
   SSH backend for one attempt: the driver starts the machine (sky.yaml: no laptop credentials, only perception-node),
   makes an OS shutdown terminate it, probes it, runs guard.sh before anything is sent, and deletes it whatever happens.
   The price for the whole deadline (20 minutes plus the video's length) is reserved; the time the machine existed is
-  charged. Whole graphs still run through `cloud/skypilot/launch.sh`.
+  charged (at most the deadline once the machine's own shutdown is set; all of it before). If SkyPilot cannot
+  delete the machine, the driver terminates its instance through EC2; a machine with no shutdown set that neither could
+  delete fails the attempt without a retry, naming it. Whole graphs still run through `cloud/skypilot/launch.sh`.
 - ~~**Nodes on a lab server.**~~ Done 2026-10-24: `perception hosts add NAME USER@HOST` records a machine reached over SSH
   (probed once: platform, cores, memory, GPU, uv, ffmpeg), and its places (`ssh-NAME:cuda`) join each node's options.
   A local driver process per attempt (`remote_driver.py`) sends the node's git-tracked code and its inputs (by content:

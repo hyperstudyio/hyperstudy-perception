@@ -11,11 +11,15 @@ resources:
   disk_size: 60
 
 envs:
-  DEADLINE_MINUTES: null   # required: the driver passes the node's deadline
+  DEADLINE_EPOCH: null   # required: the driver passes the node's deadline, as a moment (Unix seconds)
 
 setup: |
   # SkyPilot runs setup detached (as a job: `sky launch` returns before it ends), so only what must come first is here:
   # the machine shuts itself down (terminating: the driver sets that while it launches) at the deadline, even if the
   # laptop that started it never comes back. guard.sh later sets it again, to what is left. What the node needs (ffmpeg,
   # uv) the driver installs itself and waits for: node-setup.sh.
-  sudo shutdown -h "+${DEADLINE_MINUTES}"
+  # Up to the moment, not a fixed delay: this runs detached, perhaps after guard.sh, and must not move the deadline later.
+  # Whole minutes left, rounded down; none (shut down now) once it has passed. (`shutdown HH:MM` would take a time
+  # already gone as tomorrow's.)
+  left=$(( (DEADLINE_EPOCH - $(date +%s)) / 60 )); [ "$left" -gt 0 ] || left=0
+  sudo shutdown -h "+$left"
