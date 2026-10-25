@@ -13,7 +13,7 @@
     perception artifacts RUN_ID
     perception export RUN_ID --format bundle --output DIR
     perception hosts add NAME USER@HOST [--root DIR] | list | check NAME | remove NAME | clean NAME
-    perception cloud on | off | status
+    perception cloud on | off | status [aws | runpod]
     perception setup [GRAPH.yaml] [--only NODE[,NODE]] [--place NODE=PLACE]
 
 The store (artifacts, run state) lives in $PERCEPTION_HOME (default ~/.hyperstudy-perception). Secrets come from the
@@ -36,7 +36,7 @@ from . import export as export_mod
 from .backends.base import Backend
 from .backends.native import NativeBackend, SelfBackend
 from .backends.probe import probe
-from .backends.cloud import Cloud, CloudBackend
+from .backends.cloud import Cloud, CloudBackend, RunPodBackend
 from .backends.remote import SshBackend
 from .hosts import HostError, Hosts, ssh_command
 from .ir import GraphError, compile_graph
@@ -67,7 +67,10 @@ def load_secrets() -> dict[str, str]:
 def backends() -> list[Backend]:
     """This machine's, then the hosts `perception hosts add` recorded (their places are only ever chosen, never a
     default: they receive a node's inputs)."""
-    cloud = [CloudBackend()] if Cloud(home()).enabled else []
+    offered = Cloud(home())
+    cloud = [CloudBackend()] if offered.enabled else []
+    if offered.runpod:   # its key for the driver alone (RunPodBackend.submit)
+        cloud.append(RunPodBackend(api_key=load_secrets().get("RUNPOD_API_KEY")))
     return [NativeBackend(), SelfBackend(), *(SshBackend(h) for h in Hosts(home()).load().values()), *cloud]
 
 
@@ -495,42 +498,64 @@ def cmd_hosts(args):
 
 
 def cmd_cloud(args):
-    """Whether nodes with a CUDA runner are offered a cloud GPU machine (started for the node, deleted after it). `on`
-    checks that SkyPilot can reach AWS with your credentials first."""
-    import shutil
-    import subprocess
+    """Whether nodes with a CUDA runner are offered a cloud GPU machine (started for the node, deleted after it): on AWS
+    (SkyPilot, your AWS credentials) or RunPod (an API key). `on` checks that the provider can be used first."""
     cloud = Cloud(home())
     problem = None
     if args.action == "on":
-        sky = os.environ.get("PERCEPTION_SKY") or shutil.which("sky")
-        if not sky:
-            problem = "SkyPilot is not installed (uv tool install 'skypilot[aws]')"
-        else:
-            check = subprocess.run([sky, "check", "aws"], capture_output=True, text=True, timeout=300)
-            import re
-            if check.returncode or not re.search(r"\bAWS: enabled", re.sub(r"\x1b\[[0-9;]*m", "", check.stdout)):
-                problem = f"SkyPilot cannot use AWS with your credentials yet (sky check aws): {(check.stdout + check.stderr).strip()[-400:]}"
+        problem = runpod_problem() if args.provider == "runpod" else aws_problem()
         if problem is None:
-            cloud.set(True)
+            cloud.set(True, args.provider)
     elif args.action == "off":
-        # a node on a cloud machine could no longer be stopped (cancel finds its place by `cloud`), nor its machine deleted
-        busy = Store(home()).db.execute("SELECT run_id, node_id FROM tasks WHERE state IN ('running', 'leased') AND runner LIKE 'cloud:%'").fetchone()
+        # a node on a cloud machine could no longer be stopped (cancel finds its place by its kind), nor its machine deleted
+        kind = "runpod" if args.provider == "runpod" else "cloud"
+        busy = Store(home()).db.execute("SELECT run_id, node_id FROM tasks WHERE state IN ('running', 'leased') AND runner LIKE ?",
+                                        (f"{kind}:%",)).fetchone()
         if busy:
             problem = f"run {busy['run_id']} has {busy['node_id']} on a cloud machine: cancel or finish it first (perception cancel {busy['run_id']})"
         else:
-            cloud.set(False)
+            cloud.set(False, args.provider)
     if problem:
         if args.json:
             emit("error", problems=[problem])
         else:
             print(f"perception cloud: {problem}", file=sys.stderr)
         return 1
-    b = CloudBackend()
+    aws, rp = CloudBackend(), RunPodBackend()
     if args.json:
-        emit("cloud", enabled=cloud.enabled, machine=b.machine_title, region=b.region, hourly_usd=b.hourly_usd)
+        emit("cloud", enabled=cloud.enabled, machine=aws.machine_title, region=aws.region, hourly_usd=aws.hourly_usd,
+             runpod={"enabled": cloud.runpod, "machine": rp.machine_title, "region": rp.region, "hourly_usd": rp.hourly_usd})
     else:
-        print(f"cloud {'on' if cloud.enabled else 'off'}: {b.machine_title}, {b.region}, ${b.hourly_usd}/h")
+        print(f"aws    {'on ' if cloud.enabled else 'off'}  {aws.machine_title}, {aws.region}, ${aws.hourly_usd}/h")
+        print(f"runpod {'on ' if cloud.runpod else 'off'}  {rp.machine_title}; {rp.region}, at most ${rp.hourly_usd}/h")
     return 0
+
+
+def aws_problem() -> str | None:
+    import re
+    import shutil
+    import subprocess
+    sky = os.environ.get("PERCEPTION_SKY") or shutil.which("sky")
+    if not sky:
+        return "SkyPilot is not installed (uv tool install 'skypilot[aws]')"
+    check = subprocess.run([sky, "check", "aws"], capture_output=True, text=True, timeout=300)
+    if check.returncode or not re.search(r"\bAWS: enabled", re.sub(r"\x1b\[[0-9;]*m", "", check.stdout)):
+        return f"SkyPilot cannot use AWS with your credentials yet (sky check aws): {(check.stdout + check.stderr).strip()[-400:]}"
+    return None
+
+
+def runpod_problem() -> str | None:
+    """A RunPod API key, which RunPod accepts (listing your pods: nothing is created)."""
+    from .runpod import RunPod, RunPodError
+    key = load_secrets().get("RUNPOD_API_KEY")
+    if not key:
+        return ("no RunPod API key: create one at https://console.runpod.io/user/settings and put RUNPOD_API_KEY=... in "
+                "~/.config/hyperstudy/runpod.env (chmod 600)")
+    try:
+        RunPod(key).pods()
+    except RunPodError as e:
+        return f"RunPod did not accept the key in RUNPOD_API_KEY ({e})" if e.status in (401, 403) else f"RunPod could not be checked: {e}"
+    return None
 
 
 def cmd_setup(args):
@@ -651,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     h.set_defaults(fn=cmd_hosts)
     c = sub.add_parser("cloud", help="offer a cloud GPU machine to nodes that can use one")
     c.add_argument("action", choices=["on", "off", "status"])
+    c.add_argument("provider", nargs="?", choices=Cloud.providers, default="aws")
     c.set_defaults(fn=cmd_cloud)
     st = sub.add_parser("setup", help="install what nodes need here before a run: environments, weights, tools")
     st.add_argument("graph", nargs="?")

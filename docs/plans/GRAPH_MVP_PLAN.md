@@ -87,6 +87,16 @@ Not done:
   charged (at most the deadline once the machine's own shutdown is set; all of it before). If SkyPilot cannot
   delete the machine, the driver terminates its instance through EC2; a machine with no shutdown set that neither could
   delete fails the attempt without a retry, naming it. Whole graphs still run through `cloud/skypilot/launch.sh`.
+- ~~**RunPod.**~~ Done 2026-10-25: `perception cloud on runpod` (an account, credit and `RUNPOD_API_KEY`) offers the place
+  `runpod:cuda`: a Secure Cloud pod in the US, the cheapest free GPU of seven with at least 20 GB ($0.25–0.59/h),
+  through RunPod's REST API directly (SkyPilot would copy `~/.runpod/config.toml` to every machine, AWS ones too). The
+  key stays in the driver's process; the pod gets a key made for the attempt, its own disk only (no volume: the inputs
+  go with it), and cloud/runpod/guard.sh (its own key refused by the API, no account config, its removal at the deadline
+  through `runpodctl` with its pod-scoped key). Deleted at the end and checked gone (404); a launch also deletes perception
+  pods past the deadline in their names. Reserved at $0.59/h for the deadline, charged at the pod's own price. First
+  real run, the face node on a 120 s synthetic video: an RTX A5000 at $0.27/h, 2 min 6 s in all (launch 22 s, setup 22,
+  prepare 60, run 13), about $0.01, its output byte-identical to the AWS L4's. Uploads from this laptop: 4 MB/s on one
+  stream, 6.6 MB/s on four.
 - ~~**Nodes on a lab server.**~~ Done 2026-10-24: `perception hosts add NAME USER@HOST` records a machine reached over SSH
   (probed once: platform, cores, memory, GPU, uv, ffmpeg), and its places (`ssh-NAME:cuda`) join each node's options.
   A local driver process per attempt (`remote_driver.py`) sends the node's git-tracked code and its inputs (by content:
