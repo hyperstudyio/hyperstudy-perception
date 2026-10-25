@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - cloud/runpod/image/**
+      - orchestrator/src/perception/backends/cloud.py
       - .github/workflows/runpod-image.yml
   workflow_dispatch:
 
@@ -63,3 +64,12 @@ jobs:
       - name: Size
         if: steps.have.outputs.built != 'true'
         run: docker image ls "ghcr.io/${{ github.repository_owner }}/perception-runpod"
+      # pods pull by tag and digest (RunPodBackend.image): the code must name the digest GHCR has under this tag, or
+      # pods would run an older build while the tag says otherwise
+      - name: The code pins this build's digest
+        run: |
+          image="ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}"
+          have=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          pinned=$(sed -n 's/^ *image_digest = "\(sha256:[0-9a-f]*\)".*/\1/p' orchestrator/src/perception/backends/cloud.py)
+          echo "GHCR: $have; RunPodBackend.image_digest: $pinned"
+          [ "$have" = "$pinned" ] || { echo "set RunPodBackend.image_digest to $have" >&2; exit 1; }
