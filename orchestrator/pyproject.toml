@@ -9,6 +9,7 @@ dependencies = [
   "jsonschema>=4.23",
   "referencing>=0.35",
   "perception-node",
+  "keyring>=25",
 ]
 
 [project.scripts]
