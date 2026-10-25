@@ -507,12 +507,14 @@ echo $pid
             out = subprocess.run([c["sky"], "api", "status", "-v", "-o", "json"], env=self.cloud_env(c), capture_output=True,
                                  text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=120)
         except subprocess.TimeoutExpired:
+            self.launch_unstopped = True   # not known to be stopped: teardown treats it as able to make a machine still
             say(f"WARNING: SkyPilot did not list its requests in time to cancel a launch of {c['cluster']}; sky down follows")
             return
         try:
             ids = [r["request_id"] for r in json.loads(out.stdout[out.stdout.index("["):])
                    if r.get("name") == "sky.launch" and r.get("cluster_name") == c["cluster"] and r.get("status") in ("PENDING", "RUNNING")]
         except (ValueError, KeyError, TypeError):
+            self.launch_unstopped = True
             say(f"WARNING: could not list SkyPilot's requests to cancel a launch of {c['cluster']}; sky down follows")
             return
         if ids:

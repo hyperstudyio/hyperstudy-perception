@@ -42,6 +42,7 @@ case "$1 $2" in
                     printf '\033[32mSubmitted sky.launch request: %s\033[0m\n' "$R"; exit 0;;
   "api status")
     if [ "$3" = "-v" ]; then   # every active request, with its cluster
+      [ -e "$FAKE_HOST/list-garbled" ] && { echo "Internal Server Error"; exit 0; }
       [ -e "$FAKE_HOST/canceled" ] && { echo "[]"; exit 0; }
       printf '[{"request_id": "%s", "name": "sky.launch", "status": "RUNNING", "cluster_name": "%s"}, {"request_id": "99999999-0000-0000-0000-000000000000", "name": "sky.launch", "status": "RUNNING", "cluster_name": "someone-elses"}]\n' "$R" "$(cat "$FAKE_HOST/cluster")"; exit 0
     fi
@@ -433,6 +434,18 @@ def test_a_launch_that_could_not_be_stopped_stops_the_retries_even_when_sky_down
     t = coord._tasks(run_id)["faces"]
     assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1) and "still be created" in t["error"]
     assert any("terminate-instances" in e for e in events(machine))   # what EC2 can see is ended all the same
+
+
+def test_a_launch_with_no_request_id_that_could_not_be_listed_stops_the_retries(tmp_path, machine, rec):
+    for f in ("launch-garbled", "list-garbled"):            # no request id, and SkyPilot's request list unreadable
+        (machine / f).touch()
+    script(Path(os.environ["PERCEPTION_AWS"]), FAKE_AWS.replace('echo "i-0abc"', ':'))   # EC2 shows nothing yet
+    coord = coordinator(tmp_path)
+    doc = graph(tmp_path, rec)
+    doc["policy"]["retries"] = 2
+    run_id, status = run(coord, doc)
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1) and "still be created" in t["error"]
 
 
 def test_setups_shutdown_is_the_minutes_left_and_never_later():
