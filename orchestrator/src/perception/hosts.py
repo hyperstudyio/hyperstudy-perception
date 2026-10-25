@@ -35,7 +35,7 @@ DEST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@%+:\[\]-]*$")
 # a path on the host: plain characters, no `..`; relative ones are under the host's home
 ROOT = re.compile(r"^[A-Za-z0-9_./~-]+$")
 DEFAULT_ROOT = ".cache/hyperstudy-perception"
-RESERVED = {"native", "self", "cloud", "local"}
+RESERVED = {"native", "self", "cloud", "runpod", "local"}
 
 # What the host has, as key=value lines. POSIX sh: Linux servers and Macs, no Python needed. Tools are looked for on the
 # PATH a login shell would add too (~/.local/bin is where uv installs itself), since ssh commands get a minimal PATH.
@@ -126,9 +126,10 @@ def private_root_script(root: str) -> str:
     return f"root={path}\n" + PRIVATE_ROOT
 
 
-def probe(dest: str, root: str = DEFAULT_ROOT) -> tuple[Capabilities, str]:
-    """What the host has, and its root as an absolute path (made private there, or refused: PRIVATE_ROOT)."""
-    out = subprocess.run([*ssh_command(), dest, "sh -s"], input=private_root_script(root) + PROBE, capture_output=True,
+def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None) -> tuple[Capabilities, str]:
+    """What the host has, and its root as an absolute path (made private there, or refused: PRIVATE_ROOT). `ssh`: the
+    command to reach it, when it needs options of its own (a RunPod pod's key and port)."""
+    out = subprocess.run([*(ssh or ssh_command()), dest, "sh -s"], input=private_root_script(root) + PROBE, capture_output=True,
                          text=True, timeout=120)
     if out.returncode:
         raise HostError(f"could not reach {dest} (ssh exit {out.returncode}): {out.stderr.strip()[-500:]}")
