@@ -151,7 +151,7 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     spent = coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0]
     assert spent == pytest.approx(usage["usd"])
     # where the time went, in the usage and the log
-    assert set(usage["phases"]) >= {"launch", "setup", "code", "inputs", "run", "fetch", "teardown", "environment"}
+    assert set(usage["phases"]) >= {"launch", "setup", "code", "inputs", "run", "fetch", "teardown", "startup"}
     assert "[remote] time: launch" in log_of(coord, run_id)
 
 

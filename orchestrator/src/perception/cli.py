@@ -14,6 +14,7 @@
     perception export RUN_ID --format bundle --output DIR
     perception hosts add NAME USER@HOST [--root DIR] | list | check NAME | remove NAME | clean NAME
     perception cloud on | off | status
+    perception setup [GRAPH.yaml] [--only NODE[,NODE]] [--place NODE=PLACE]
 
 The store (artifacts, run state) lives in $PERCEPTION_HOME (default ~/.hyperstudy-perception). Secrets come from the
 environment and from ~/.config/hyperstudy/*.env; their values are never printed or written to run files.
@@ -532,6 +533,48 @@ def cmd_cloud(args):
     return 0
 
 
+def cmd_setup(args):
+    """Everything the nodes need here, ready before a run (setup.py): each environment synced from its lock, each node's
+    weights fetched, the tools found. With a graph, the nodes it would run here (--only, --place as for run); without,
+    every node that can run here. A node placed on another machine is set up there when it runs."""
+    from . import setup
+    reg = registry(args)
+    coord = coordinator(args)
+    if args.graph:
+        try:
+            graph, _ = read_graph(Path(args.graph), reg, places=args.place, chosen=args.only)
+        except GraphError as e:
+            return graph_error(args, e)
+        chosen = [(n.manifest, coord.place(n.manifest, n.spec.backend, n.spec.place, graph.spec.policy)[0], n.config)
+                  for n in graph.nodes.values()]
+    else:
+        chosen = [(m, coord.place(m)[0], None) for m in reg]
+    result = setup.Setup()
+
+    def report(step):
+        result.steps.append(step)
+        if args.json:
+            emit("setup.step", node=step.node, what=step.what, ok=step.ok, seconds=step.seconds, message=step.message)
+        else:
+            print(f"  {step.what:12s} {step.node or 'this machine':32s} {'ok' if step.ok else 'FAILED':6s} {step.seconds:6.1f} s  {step.message}")
+
+    report(setup.tools())
+    for m, placement, config in chosen:
+        if placement is None or m.service:
+            continue   # cannot run here, or runs on its API's machines: nothing to set up here
+        if placement.backend.remote:
+            if not args.json:
+                print(f"  {'':12s} {m.ref:32s} runs on {placement.backend.title}: set up there when it runs")
+            continue
+        for step in setup.setup_node(m, placement.runner, config=config):
+            report(step)
+    if args.json:
+        emit("setup", ok=result.ok, steps=[s.__dict__ for s in result.steps])
+    else:
+        print("ready" if result.ok else "not ready: see the steps marked FAILED")
+    return 0 if result.ok else 1
+
+
 def cmd_export(args):
     coord = coordinator(args)
     out = export_mod.bundle(coord, args.run_id, Path(args.output))
@@ -605,6 +648,11 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("cloud", help="offer a cloud GPU machine to nodes that can use one")
     c.add_argument("action", choices=["on", "off", "status"])
     c.set_defaults(fn=cmd_cloud)
+    st = sub.add_parser("setup", help="install what nodes need here before a run: environments, weights, tools")
+    st.add_argument("graph", nargs="?")
+    st.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
+    st.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (as for run)")
+    st.set_defaults(fn=cmd_setup)
     ex = sub.add_parser("export")
     ex.add_argument("run_id")
     ex.add_argument("--format", choices=["bundle"], default="bundle")
