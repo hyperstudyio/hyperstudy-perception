@@ -88,14 +88,15 @@ Not done:
   delete the machine, the driver terminates its instance through EC2; a machine with no shutdown set that neither could
   delete fails the attempt without a retry, naming it. Whole graphs still run through `cloud/skypilot/launch.sh`.
 - ~~**RunPod.**~~ Done 2026-10-25: `perception cloud on runpod` (an account, credit and `RUNPOD_API_KEY`) offers the place
-  `runpod:cuda`: a Secure Cloud pod in the US, the cheapest free GPU of seven with at least 20 GB ($0.25–0.59/h),
+  `runpod:cuda`: a Secure Cloud pod in the US, Canada or Europe, the cheapest free GPU of sixteen with at least 20 GB, Ampere, Ada
+  or Blackwell ($0.25–1.19/h; widened 2026-10-25 after US capacity for the first seven ran out for minutes at a time),
   through RunPod's REST API directly (SkyPilot would copy `~/.runpod/config.toml` to every machine, AWS ones too). The
   key stays in the driver's process; the pod gets a key made for the attempt, its own disk only (no volume: the inputs
   go with it), and a start command that sets its removal at the deadline before anything else runs (`runpodctl` with
   its pod-scoped key, which can remove that pod and no other, nor list the account's). cloud/runpod/guard.sh checks that
   removal is running, the pod's own key is refused by the API and no account config is there. Deleted at the end and
   checked gone (404); a create with no clear answer (a 5xx, a timeout, a cancel) is looked for by its name; a launch
-  also deletes perception pods past the deadline in their names. Reserved at $0.59/h for the deadline, charged at the pod's own price. First
+  also deletes perception pods past the deadline in their names. Reserved at the dearest GPU's price for the deadline, charged at the pod's own price. First
   real run, the face node on a 120 s synthetic video: an RTX A5000 at $0.27/h, 2 min 6 s in all (launch 22 s, setup 22,
   prepare 60, run 13), about $0.01, its output byte-identical to the AWS L4's. Uploads from this laptop: 4 MB/s on one
   stream, 6.6 MB/s on four.

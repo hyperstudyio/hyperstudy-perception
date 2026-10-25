@@ -125,7 +125,7 @@ def cluster_name(run_id: str, node: str, attempt: int) -> str:
 
 
 class RunPodBackend(CloudBackend):
-    """A RunPod pod (Secure Cloud, in the US) for each attempt: an account, credit and an API key are all it needs.
+    """A RunPod pod (Secure Cloud, in the US, Canada or Europe) for each attempt: an account, credit and an API key are all it needs.
 
     Any of several GPUs with at least 20 GB, the cheapest available first: RunPod's capacity for any one type comes and
     goes. A pod is reached over SSH with a key made for its attempt, holds the node's inputs on its own disk only (no
@@ -137,13 +137,24 @@ class RunPodBackend(CloudBackend):
     # RunPod's image with sshd started from PUBLIC_KEY; the node's environment brings its own torch (uv)
     image = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
     start = "/start.sh"   # the image's own start command (sshd from PUBLIC_KEY), run after the pod's removal is set
-    # Secure Cloud prices on 2026-10-24 (RunPod's gpuTypes securePrice), the order RunPod tries them in
+    # Secure Cloud prices on 2026-10-24 (RunPod's gpuTypes securePrice), the order RunPod tries them in: the cheap ones
+    # first, the dearer ones when none of those is free (capacity for any one type comes and goes). Ampere, Ada and
+    # Blackwell (the nodes' torch is built for CUDA 13, which has Blackwell's kernels); not MIG slices of one.
     gpus = {"NVIDIA RTX A4500": 0.25, "NVIDIA RTX A5000": 0.27, "NVIDIA RTX 4000 Ada Generation": 0.28,
-            "NVIDIA GeForce RTX 3090": 0.50, "NVIDIA A40": 0.59, "NVIDIA L4": 0.59, "NVIDIA RTX A6000": 0.59}
-    datacenters = ["US-CA-2", "US-DE-1", "US-GA-1", "US-GA-2", "US-IL-1", "US-KS-2", "US-KS-3", "US-NC-1", "US-TX-1",
-                   "US-TX-3", "US-TX-4", "US-WA-1"]
+            "NVIDIA GeForce RTX 3090": 0.50, "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition": 0.50,
+            "NVIDIA RTX PRO 4000 Blackwell": 0.57, "NVIDIA A40": 0.59, "NVIDIA L4": 0.59, "NVIDIA RTX A6000": 0.59,
+            "NVIDIA RTX PRO 4500 Blackwell": 0.72, "NVIDIA L40": 0.82,
+            "NVIDIA GeForce RTX 4090": 0.89, "NVIDIA RTX PRO 5000 Blackwell": 0.96, "NVIDIA RTX 6000 Ada Generation": 0.99,
+            "NVIDIA L40S": 1.09, "NVIDIA GeForce RTX 5090": 1.19}
+    # datacenters in the US, Canada and Europe, whichever has a GPU free: those RunPod's REST API accepts (its schema's
+    # enum, 2026-10-25; gpus above are in its enum too)
+    datacenters = ["US-CA-2", "US-DE-1", "US-GA-1", "US-GA-2", "US-IL-1", "US-KS-2", "US-KS-3", "US-MD-1", "US-MO-1", "US-MO-2",
+                   "US-NC-1", "US-TX-1", "US-TX-3", "US-TX-4", "US-WA-1", "CA-MTL-1", "CA-MTL-2", "CA-MTL-3",
+                   "EU-CZ-1", "EU-FR-1", "EU-NL-1", "EU-RO-1", "EU-SE-1", "EUR-IS-1", "EUR-IS-2", "EUR-IS-3", "EUR-NO-1"]
     disk_gb = 40   # the container's disk: the node's environment, weights and inputs
-    region = "US (Secure Cloud)"
+    # the nodes' torch is PyPI's CUDA 13 build (envs/faces/uv.lock): an NVIDIA driver of 580 or later (guard.sh)
+    min_driver = 580
+    region = "US, Canada, Europe (Secure Cloud)"
     machine_title = "RunPod, one of " + ", ".join(g.removeprefix("NVIDIA ").removeprefix("GeForce ") for g in gpus)
     hourly_usd = max(gpus.values())   # reserved at the dearest one it may get; charged at the price of the one it got
     caps = Capabilities(platform="linux/amd64", cpu_cores=8, memory_gb=30, accelerators={"cpu", "cuda"}, vram_gb=20)
@@ -163,7 +174,7 @@ class RunPodBackend(CloudBackend):
         return {"host": "the RunPod pod", "cloud": {
             "provider": "runpod", "name": cluster_name(request["run"], request["node"], request["attempt"]),
             "api": api_base(), "image": self.image, "start": self.start, "gpus": list(self.gpus), "datacenters": self.datacenters,
-            "disk_gb": self.disk_gb, "guard": str(self.guard), "setup": str(self.setup), "hourly_usd": self.hourly_usd,
+            "disk_gb": self.disk_gb, "min_driver": self.min_driver, "guard": str(self.guard), "setup": str(self.setup), "hourly_usd": self.hourly_usd,
             "launch_s": self.launch_s, "down_s": self.down_s, "api_s": self.api_s, "unknown_s": self.unknown_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values()))}}
 

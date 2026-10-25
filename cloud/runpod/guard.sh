@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # First step on every RunPod pod, before anything is sent (remote_driver.py runs it over ssh):
-#   bash -s < cloud/runpod/guard.sh
+#   bash -s MIN_DRIVER < cloud/runpod/guard.sh       (the oldest NVIDIA driver the nodes' torch runs on, e.g. 580)
 # 1. The pod's removal at its deadline is running: its start command set it (runpodctl, with the pod's own key), the
 #    backstop if the laptop never comes back to delete it. That key is scoped to the pod: it removes the pod, and can
 #    neither list the account's pods nor remove another (both checked on RunPod, 2026-10-25).
 # 2. No key to the account on the pod: the pod's own key is refused by the API, and there is no RunPod or AWS config.
 set -euo pipefail
+min_driver=$1
 environ=${PERCEPTION_POD_ENVIRON:-/proc/1/environ}   # the container's own variables (ssh sessions do not inherit them)
 var() { tr '\0' '\n' < "$environ" | sed -n "s/^$1=//p"; }
 pod=$(var RUNPOD_POD_ID)
@@ -27,5 +28,10 @@ case "$code" in
 esac
 # its removal at the deadline, which its start command set before anything else ran (remote_driver.removal_at_boot)
 pgrep -f perception-deadline > /dev/null || { echo "guard: the pod's removal at its deadline is not running" >&2; exit 1; }
+# a driver new enough for the nodes' CUDA, checked here only (RunPod's allowedCudaVersions is not used: see
+# remote_driver.runpod_launch): exit 75, another pod may have one
+driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2> /dev/null | head -1 || true)
+[ "${driver%%.*}" -ge "$min_driver" ] 2> /dev/null || {
+  echo "guard: the pod's NVIDIA driver is ${driver:-not known}, older than $min_driver (the nodes' CUDA); another pod is tried" >&2; exit 75; }
 gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2> /dev/null | head -1 || true)
-echo "guard: ${gpu:-no GPU seen} in $(var RUNPOD_DC_ID); no key to the account; its removal at its deadline is running"
+echo "guard: ${gpu:-no GPU seen} (driver $driver) in $(var RUNPOD_DC_ID); no key to the account; its removal at its deadline is running"

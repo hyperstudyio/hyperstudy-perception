@@ -41,7 +41,7 @@ class FakeRunPod:
     pod but drops the connection), made-then-502 (create makes the pod, then a gateway's 502), slow-create (the pod is
     made 2 s after the create arrives, and only then answered), delete-fails (500 to every DELETE), truncated-once (the
     first DELETE's answer is cut short, and does nothing), truncated-500-once (the same for an error answer), redirect (GET /pods sends the caller to /elsewhere), pricey
-    (the pod costs $0.99/h)."""
+    (the pod costs $9.99/h)."""
 
     def __init__(self, fake_host: Path):
         self.fake_host, self.flags, self.pods, self.bodies, self.headers, self.elsewhere = fake_host, set(), {}, [], [], []
@@ -77,7 +77,7 @@ class FakeRunPod:
                     if "slow-create" in rp.flags:
                         time.sleep(2)
                     rp.seq += 1
-                    pod = {"id": f"pod{rp.seq}", "name": body["name"], "costPerHr": 0.99 if "pricey" in rp.flags else 0.27, "polls": 0}
+                    pod = {"id": f"pod{rp.seq}", "name": body["name"], "costPerHr": 9.99 if "pricey" in rp.flags else 0.27, "polls": 0}
                     rp.pods[pod["id"]] = pod
                     if "made-then-502" in rp.flags:
                         return self.answer(502, {"error": "bad gateway"})
@@ -174,8 +174,9 @@ def test_a_node_runs_on_a_pod_made_for_it_checked_before_anything_is_sent_and_de
     run_id, status = run(coord, graph(tmp_path, rec(tmp_path), place="runpod:cuda"))
     assert status == "succeeded", log_of(coord, run_id)
     body = pod.bodies[0]
-    # Secure Cloud in the US, any of the GPUs (the cheapest first), its own disk only: nothing outlives it
-    assert body["cloudType"] == "SECURE" and all(d.startswith("US-") for d in body["dataCenterIds"])
+    # Secure Cloud in the US, Canada or Europe (never elsewhere), any of the GPUs (the cheapest first), its own disk only
+    assert body["cloudType"] == "SECURE" and all(d.startswith(("US-", "CA-", "EU-", "EUR-")) for d in body["dataCenterIds"])
+    assert list(RunPodBackend.gpus.values()) == sorted(RunPodBackend.gpus.values())
     assert body["gpuTypeIds"] == list(RunPodBackend.gpus) and body["gpuTypePriority"] == "custom" and body["volumeInGb"] == 0
     # named for the attempt, with its deadline (a later launch deletes it once that has passed)
     assert body["name"].startswith("perception-") and abs(int(body["name"].rsplit("-d", 1)[1]) - (started + 1800)) < 30
@@ -189,7 +190,10 @@ def test_a_node_runs_on_a_pod_made_for_it_checked_before_anything_is_sent_and_de
     assert f"-i {attempt / 'ssh' / 'id_ed25519'}" in options and "-p 2222" in options
     assert all(h.get("User-Agent") == "hyperstudy-perception" for h in pod.headers)   # Cloudflare refuses Python's own
     ev = events(pod.fake_host)
-    create, guard, setup = ev.index("api POST /pods"), ev.index("guard "), ev.index("setup")
+    # the guard is given the oldest NVIDIA driver the nodes' CUDA 13 torch runs on (RunPod's own CUDA filter is not used:
+    # it would exclude hosts that report 13.2)
+    assert "allowedCudaVersions" not in body
+    create, guard, setup = ev.index("api POST /pods"), ev.index("guard 580"), ev.index("setup")
     first_send = next(i for i, e in enumerate(ev) if "objects" in e or "code/" in e)
     delete = ev.index("api DELETE /pods/pod1")
     assert create < guard < setup < first_send < delete and ev[-1] == "api GET /pods/pod1" and not pod.pods
@@ -305,7 +309,7 @@ def test_the_cli_turns_runpod_on_after_checking_the_key(tmp_path, pod, monkeypat
     assert cli.main(["cloud", "on", "runpod"]) == 0
     assert cli.main(["--json", "cloud", "status"]) == 0
     status = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert status["runpod"]["enabled"] is True and status["enabled"] is False and status["runpod"]["hourly_usd"] == 0.59
+    assert status["runpod"]["enabled"] is True and status["enabled"] is False and status["runpod"]["hourly_usd"] == 1.19
     assert [b.kind for b in cli.backends()][-1] == "runpod"
     assert cli.main(["cloud", "off", "runpod"]) == 0 and "runpod" not in [b.kind for b in cli.backends()]
 
@@ -398,7 +402,7 @@ def test_a_pod_dearer_than_what_was_reserved_is_not_used(tmp_path, pod):
     ev = events(pod.fake_host)
     assert not any("objects" in e or "code/" in e for e in ev) and "guard " not in ev
     t, _ = task(coord, run_id)
-    assert t["error_code"] == "internal" and "0.99" in t["error"]
+    assert t["error_code"] == "internal" and "9.99" in t["error"]
 
 
 def test_the_key_never_follows_a_redirect(tmp_path, pod):
@@ -438,14 +442,15 @@ def guard_env(tmp_path):
     (t / "code").write_text("403")
     script(t / "bin" / "curl", f'#!/bin/sh\necho "curl $*" >> {t}/calls; cat {t}/code\n')
     script(t / "bin" / "runpodctl", f'#!/bin/sh\necho "runpodctl $* key=$RUNPOD_API_KEY" >> {t}/calls\n')
-    script(t / "bin" / "nvidia-smi", '#!/bin/sh\necho "NVIDIA RTX A5000"\n')
+    (t / "driver").write_text("595.91.07")
+    script(t / "bin" / "nvidia-smi", f'#!/bin/sh\ncase "$*" in *driver_version*) cat {t}/driver;; *) echo "NVIDIA RTX A5000";; esac\n')
     script(t / "bin" / "setsid", '#!/bin/sh\nexec "$@"\n')
     return t
 
 
-def guard(t: Path) -> subprocess.CompletedProcess:
+def guard(t: Path, min_driver: str = "580") -> subprocess.CompletedProcess:
     env = {"HOME": str(t / "home"), "PATH": f"{t / 'bin'}:/usr/bin:/bin", "PERCEPTION_POD_ENVIRON": str(t / "environ")}
-    return subprocess.run(["bash", "-s"], input=GUARD.read_bytes(), env=env, capture_output=True, timeout=60)
+    return subprocess.run(["bash", "-s", min_driver], input=GUARD.read_bytes(), env=env, capture_output=True, timeout=60)
 
 
 @pytest.fixture
@@ -471,7 +476,15 @@ def calls(t: Path) -> str:
 def test_the_guard_passes_a_pod_whose_removal_is_running_and_whose_key_reaches_nothing(guard_env, remover):
     out = guard(guard_env)
     assert out.returncode == 0, out.stderr
-    assert "NVIDIA RTX A5000 in US-TX-1; no key to the account; its removal at its deadline is running" in out.stdout.decode()
+    assert "NVIDIA RTX A5000 (driver 595.91.07) in US-TX-1; no key to the account; its removal at its deadline is running" in out.stdout.decode()
+
+
+@pytest.mark.parametrize("driver", ["570.172.08", "550.54.15", ""])
+def test_the_guard_says_a_pod_with_an_older_driver_is_not_this_ones_to_use(guard_env, remover, driver):
+    # the nodes' torch is built for CUDA 13 (driver 580 at least): another pod may have a newer one
+    (guard_env / "driver").write_text(driver)
+    out = guard(guard_env)
+    assert out.returncode == 75 and b"580" in out.stderr, out.stderr
 
 
 def test_the_guard_refuses_a_pod_whose_removal_is_not_running(guard_env):
@@ -502,12 +515,14 @@ def test_the_guard_says_its_check_could_not_be_made_apart_from_a_refusal(guard_e
 
 
 def test_a_guard_that_could_not_check_the_pod_is_a_launch_failure_retried(tmp_path, pod):
-    coord = coordinator(tmp_path, guard='echo "guard: could not check the pod\'s own key" >&2; exit 75\n')
+    coord = coordinator(tmp_path, guard='echo "guard: the pod\'s NVIDIA driver is 570.1, older than 580" >&2; exit 75\n')
     doc = graph(tmp_path, rec(tmp_path), place="runpod:cuda")
     doc["policy"]["retries"] = 1
     run_id, status = run(coord, doc)
     assert status == "failed" and len(pod.bodies) == 2 and not pod.pods
-    assert task(coord, run_id)[0]["error_code"] == "transient"
+    t = task(coord, run_id)[0]
+    # the guard's own reason, not a guess at it
+    assert t["error_code"] == "transient" and "NVIDIA driver is 570.1, older than 580" in t["error"]
 
 
 

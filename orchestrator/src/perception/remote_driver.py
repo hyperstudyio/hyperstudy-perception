@@ -729,8 +729,8 @@ echo $pid
         return RunPod(self.runpod_key or "", c["api"], timeout=c.get("api_s", 60))
 
     def runpod_launch(self, c: dict):
-        """Create the pod (any GPU of the list, in any of the US datacenters: whichever RunPod has free), wait for its
-        SSH port, probe it like a host and run guard.sh there before anything is sent. The pod's name carries its
+        """Create the pod (any GPU of the list, in any of the US, Canadian and European datacenters: whichever RunPod
+        has free), wait for its SSH port, probe it like a host and run guard.sh there before anything is sent. The pod's name carries its
         deadline, so a later launch can delete it if this driver never does (runpod_sweep)."""
         from .hosts import HostError, probe, ssh_command
         from .runpod import RunPodError
@@ -752,6 +752,8 @@ echo $pid
                 # its own disk only: no volume, so nothing (the inputs above all) outlives the pod
                 "containerDiskInGb": c["disk_gb"], "volumeInGb": 0, "ports": ["22/tcp"],
                 "env": {"PUBLIC_KEY": (keys / "id_ed25519.pub").read_text().strip()},
+                # no allowedCudaVersions: its values stop at 13.0 and match a host's exactly, so it excludes the hosts that
+                # report 13.2 (driver 595; checked 2026-10-25). guard.sh checks the driver instead
                 "dockerStartCmd": ["bash", "-c", removal_at_boot(deadline_at - 60, c["start"])]}
         self.pod_unknown = True   # until RunPod answers, a pod may exist that only its name can find
         try:
@@ -812,10 +814,11 @@ echo $pid
             raise Refused("resources", f"pod {self.pod} has no NVIDIA GPU that nvidia-smi can see")
         self.check_clock(f"pod {self.pod}")   # it removes itself at its deadline, a moment by this laptop's clock
         # its removal at the deadline is running (its start command), and it holds no key to the account
-        result = self.sh("bash -s", check=False, data=Path(c["guard"]).read_bytes())
+        result = self.sh(f"bash -s {int(c['min_driver'])}", check=False, data=Path(c["guard"]).read_bytes())
         sys.stdout.buffer.write(result.stdout + result.stderr)
-        if result.returncode == 75:   # its checks could not be made this time: nothing known against the pod
-            raise LaunchFailed(f"guard.sh could not check pod {self.pod}: see the log")
+        if result.returncode == 75:   # not this pod (an old driver), or its checks could not be made: another may do
+            why = (result.stderr.decode(errors="replace").strip().splitlines() or ["see the log"])[-1]
+            raise LaunchFailed(f"pod {self.pod} was not used: {why.removeprefix('guard: ')}")
         if result.returncode:
             raise GuardRefused(f"guard.sh refused pod {self.pod} (exit {result.returncode}): nothing was sent; see the log")
         self.deadline_set = True
