@@ -62,7 +62,7 @@ class RunPod:
                 text = r.read().decode()
         except urllib.error.HTTPError as e:
             try:   # its body may be cut short too: the status is what counts
-                detail = e.read().decode(errors="replace").strip()[:300]
+                detail = e.read().decode(errors="replace").strip()[:1000]   # a schema refusal names the field late
             except (OSError, http.client.HTTPException) as cut:
                 detail = f"(its message cut short: {type(cut).__name__})"
             raise RunPodError(e.code, detail) from None

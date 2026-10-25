@@ -41,7 +41,7 @@ class FakeRunPod:
     pod but drops the connection), made-then-502 (create makes the pod, then a gateway's 502), slow-create (the pod is
     made 2 s after the create arrives, and only then answered), delete-fails (500 to every DELETE), truncated-once (the
     first DELETE's answer is cut short, and does nothing), truncated-500-once (the same for an error answer), redirect (GET /pods sends the caller to /elsewhere), pricey
-    (the pod costs $0.99/h)."""
+    (the pod costs $9.99/h)."""
 
     def __init__(self, fake_host: Path):
         self.fake_host, self.flags, self.pods, self.bodies, self.headers, self.elsewhere = fake_host, set(), {}, [], [], []
@@ -77,7 +77,7 @@ class FakeRunPod:
                     if "slow-create" in rp.flags:
                         time.sleep(2)
                     rp.seq += 1
-                    pod = {"id": f"pod{rp.seq}", "name": body["name"], "costPerHr": 0.99 if "pricey" in rp.flags else 0.27, "polls": 0}
+                    pod = {"id": f"pod{rp.seq}", "name": body["name"], "costPerHr": 9.99 if "pricey" in rp.flags else 0.27, "polls": 0}
                     rp.pods[pod["id"]] = pod
                     if "made-then-502" in rp.flags:
                         return self.answer(502, {"error": "bad gateway"})
@@ -174,8 +174,9 @@ def test_a_node_runs_on_a_pod_made_for_it_checked_before_anything_is_sent_and_de
     run_id, status = run(coord, graph(tmp_path, rec(tmp_path), place="runpod:cuda"))
     assert status == "succeeded", log_of(coord, run_id)
     body = pod.bodies[0]
-    # Secure Cloud in the US, any of the GPUs (the cheapest first), its own disk only: nothing outlives it
-    assert body["cloudType"] == "SECURE" and all(d.startswith("US-") for d in body["dataCenterIds"])
+    # Secure Cloud in the US, Canada or Europe (never elsewhere), any of the GPUs (the cheapest first), its own disk only
+    assert body["cloudType"] == "SECURE" and all(d.startswith(("US-", "CA-", "EU-", "EUR-")) for d in body["dataCenterIds"])
+    assert list(RunPodBackend.gpus.values()) == sorted(RunPodBackend.gpus.values())
     assert body["gpuTypeIds"] == list(RunPodBackend.gpus) and body["gpuTypePriority"] == "custom" and body["volumeInGb"] == 0
     # named for the attempt, with its deadline (a later launch deletes it once that has passed)
     assert body["name"].startswith("perception-") and abs(int(body["name"].rsplit("-d", 1)[1]) - (started + 1800)) < 30
@@ -305,7 +306,7 @@ def test_the_cli_turns_runpod_on_after_checking_the_key(tmp_path, pod, monkeypat
     assert cli.main(["cloud", "on", "runpod"]) == 0
     assert cli.main(["--json", "cloud", "status"]) == 0
     status = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert status["runpod"]["enabled"] is True and status["enabled"] is False and status["runpod"]["hourly_usd"] == 0.59
+    assert status["runpod"]["enabled"] is True and status["enabled"] is False and status["runpod"]["hourly_usd"] == 1.19
     assert [b.kind for b in cli.backends()][-1] == "runpod"
     assert cli.main(["cloud", "off", "runpod"]) == 0 and "runpod" not in [b.kind for b in cli.backends()]
 
@@ -398,7 +399,7 @@ def test_a_pod_dearer_than_what_was_reserved_is_not_used(tmp_path, pod):
     ev = events(pod.fake_host)
     assert not any("objects" in e or "code/" in e for e in ev) and "guard " not in ev
     t, _ = task(coord, run_id)
-    assert t["error_code"] == "internal" and "0.99" in t["error"]
+    assert t["error_code"] == "internal" and "9.99" in t["error"]
 
 
 def test_the_key_never_follows_a_redirect(tmp_path, pod):
