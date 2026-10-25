@@ -407,6 +407,20 @@ def test_a_cancel_that_hangs_on_skypilots_server_does_not_keep_the_machine_from_
     assert events(machine)[-1].startswith("sky down -y perception-")
 
 
+def test_a_launch_that_could_not_be_stopped_is_not_counted_as_deleted_and_stops_the_retries(tmp_path, machine, rec):
+    # SkyPilot's server hangs: the cancel times out and sky down too; EC2 shows no instance (not created yet)
+    for f in ("launch-hangs", "cancel-hangs", "down-hangs"):
+        (machine / f).touch()
+    script(Path(os.environ["PERCEPTION_AWS"]), FAKE_AWS.replace('echo "i-0abc"', ':'))   # describe finds nothing
+    coord = coordinator(tmp_path, launch_s=1, down_s=2, aws_s=2)
+    doc = graph(tmp_path, rec)
+    doc["policy"]["retries"] = 2
+    run_id, status = run(coord, doc)
+    t = coord._tasks(run_id)["faces"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1)   # no second machine
+    assert "still be created" in t["error"]
+
+
 def test_setups_shutdown_is_the_minutes_left_and_never_later():
     import re
     import yaml
