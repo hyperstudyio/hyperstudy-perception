@@ -385,8 +385,8 @@ echo $pid
 
     def prepare(self):
         """What `perception setup` does for a node here, done on the host before it starts: its uv environment synced from
-        its lock, then its prepare script (its weights) run in it with its settings. A failure is the attempt's own,
-        retried within the policy, not a crash."""
+        its lock, then its prepare script (its weights) run in it with its settings. A failure is the attempt's own and
+        final (PrepareFailed: not retried, since it would most likely fail again, at a cloud machine's cost)."""
         q, s = shlex.quote, self.spec
         path = ":".join(s["path"])
         node_dir = f"{self.code}/{s['node_dir']}"

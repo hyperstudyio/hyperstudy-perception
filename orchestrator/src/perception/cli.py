@@ -545,10 +545,10 @@ def cmd_setup(args):
             graph, _ = read_graph(Path(args.graph), reg, places=args.place, chosen=args.only)
         except GraphError as e:
             return graph_error(args, e)
-        chosen = [(n.manifest, coord.place(n.manifest, n.spec.backend, n.spec.place, graph.spec.policy)[0], n.config)
+        chosen = [(n.manifest, *coord.place(n.manifest, n.spec.backend, n.spec.place, graph.spec.policy), n.config)
                   for n in graph.nodes.values()]
-    else:
-        chosen = [(m, coord.place(m)[0], None) for m in reg]
+    else:   # every node: those that cannot run here are simply not this machine's to set up
+        chosen = [(m, coord.place(m)[0], "", None) for m in reg]
     result = setup.Setup()
 
     def report(step):
@@ -559,9 +559,13 @@ def cmd_setup(args):
             print(f"  {step.what:12s} {step.node or 'this machine':32s} {'ok' if step.ok else 'FAILED':6s} {step.seconds:6.1f} s  {step.message}")
 
     report(setup.tools())
-    for m, placement, config in chosen:
-        if placement is None or m.service:
-            continue   # cannot run here, or runs on its API's machines: nothing to set up here
+    for m, placement, why, config in chosen:
+        if m.service:
+            continue   # runs on its API's machines: nothing to set up here
+        if placement is None:
+            if args.graph:   # the graph would not run either: say so, not ready
+                report(setup.Step(m.ref, "place", False, 0.0, f"cannot run here: {why}"))
+            continue
         if placement.backend.remote:
             if not args.json:
                 print(f"  {'':12s} {m.ref:32s} runs on {placement.backend.title}: set up there when it runs")

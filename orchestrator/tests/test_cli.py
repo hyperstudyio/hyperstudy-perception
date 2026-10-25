@@ -304,3 +304,11 @@ def test_setup_syncs_a_native_nodes_environment_from_its_lock_then_runs_its_prep
     (tmp_path / "sync-fails").touch()
     steps = setup.setup_node(m, runner, uv=str(uv))
     assert [(s.what, s.ok) for s in steps] == [("environment", False)] and "lock out of date" in steps[0].message
+
+
+def test_setup_for_a_graph_with_a_node_that_cannot_run_here_is_not_ready(home, capsys, tools):
+    g = graph(home, [{**work("a", home), "place": "self:cuda"}])        # test.work has a CPU runner only
+    assert cli("setup", str(g)) == 1
+    out = lines(capsys)
+    [failed] = [o for o in out if o["type"] == "setup.step" and not o["ok"]]
+    assert failed["what"] == "place" and "cannot run here" in failed["message"] and out[-1]["ok"] is False
