@@ -1,0 +1,65 @@
+# The RunPod image for perception's nodes (cloud/runpod/image), built when what goes into it changes and pushed to GHCR
+# under its tag (tag.py: from those files). Public: software only, no repository code, weights or data.
+name: RunPod image
+
+on:
+  push:
+    paths:
+      - cloud/runpod/image/**
+      - .github/workflows/runpod-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:   # one build at a time per branch: a second waits, then finds the tag built
+  group: runpod-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push the RunPod image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Tag and context (exactly the files that go into it)
+        id: tag
+        run: |
+          echo "tag=$(python3 cloud/runpod/image/tag.py --context "$RUNNER_TEMP/context")" >> "$GITHUB_OUTPUT"
+          find "$RUNNER_TEMP/context" -type f
+      # third-party actions pinned to a commit (they hold a token that can write packages)
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f   # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Built already?
+        id: have
+        # built only when GHCR says the tag does not exist: any other failure stops here, so a tag is never pushed over
+        run: |
+          if out=$(docker manifest inspect "ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}" 2>&1); then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          elif ! printf '%s' "$out" | grep -qi "manifest unknown"; then
+            echo "could not tell whether the tag exists: $out" >&2
+            exit 1
+          fi
+      - name: Room for the base image (RunPod's PyTorch image, about 15 GB unpacked)
+        if: steps.have.outputs.built != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
+        if: steps.have.outputs.built != 'true'
+        with:
+          context: ${{ runner.temp }}/context
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.description=Software for perception's nodes on RunPod (no code, weights or data)
+      - name: Size
+        if: steps.have.outputs.built != 'true'
+        run: docker image ls "ghcr.io/${{ github.repository_owner }}/perception-runpod"

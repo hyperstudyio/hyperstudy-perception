@@ -128,7 +128,7 @@ def removal_at_boot(at: int, start: str) -> str:
     The backstop for a pod whose driver never comes back, from its first moment; perception-deadline names it (guard.sh)."""
     # asked every 30 s until it happens, whatever runpodctl's exit says: the pod's removal ends this loop with it
     removal = (f"until [ $(date +%s) -ge {int(at)} ]; do sleep 15; done; "
-               'while :; do runpodctl remove pod "$RUNPOD_POD_ID"; sleep 30; done')
+               'while :; do RUNPOD_NO_UPDATE_CHECK=1 runpodctl pod delete "$RUNPOD_POD_ID"; sleep 30; done')
     return f"nohup sh -c {shlex.quote(removal)} perception-deadline > /dev/null 2>&1 & exec {start}"
 
 

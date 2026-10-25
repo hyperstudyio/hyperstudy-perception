@@ -185,7 +185,7 @@ def test_a_node_runs_on_a_pod_made_for_it_checked_before_anything_is_sent_and_de
     assert body["env"] == {"PUBLIC_KEY": (attempt / "ssh" / "id_ed25519.pub").read_text().strip()}
     # its removal at its deadline (a minute early) set by its start command, before the image's own start
     deadline = int(body["name"].rsplit("-d", 1)[1])
-    assert body["dockerStartCmd"] == ["bash", "-c", removal_at_boot(deadline - 60, "/start.sh")]
+    assert body["dockerStartCmd"] == ["bash", "-c", removal_at_boot(deadline - 60, RunPodBackend.start)]
     options = (pod.fake_host / "ssh-options").read_text()
     assert f"-i {attempt / 'ssh' / 'id_ed25519'}" in options and "-p 2222" in options
     assert all(h.get("User-Agent") == "hyperstudy-perception" for h in pod.headers)   # Cloudflare refuses Python's own
@@ -538,10 +538,10 @@ def test_a_pods_start_command_removes_it_at_its_deadline_asking_until_it_is_done
                          capture_output=True, text=True, timeout=30, start_new_session=True)
     assert out.stdout.strip() == "the image starts"   # its own start runs (exec), the removal beside it
     for _ in range(50):
-        if calls(t).count("runpodctl remove pod pod42") == 2:
+        if calls(t).count("runpodctl pod delete pod42") == 2:
             break
         time.sleep(0.1)
-    assert calls(t).count("runpodctl remove pod pod42") == 2 and "sleep 30" in calls(t)
+    assert calls(t).count("runpodctl pod delete pod42") == 2 and "sleep 30" in calls(t)
 
 
 def test_a_pods_removal_waits_for_its_deadline(tmp_path):
@@ -578,3 +578,37 @@ def test_the_guard_refuses_a_pod_holding_an_accounts_config(guard_env, config):
     (guard_env / "home" / config).write_text("apikey = x\n")
     out = guard(guard_env)
     assert out.returncode == 1 and config.encode() in out.stderr
+
+
+# --- the image (cloud/runpod/image) -------------------------------------------------------------------------------
+
+IMAGE = Path(__file__).resolve().parents[2] / "cloud" / "runpod" / "image"
+
+
+def image_tag_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("runpod_image_tag", IMAGE / "tag.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_backend_uses_the_image_built_from_the_repositorys_files():
+    # a lock or image change needs a new build, under the tag its files give (.github/workflows/runpod-image.yml)
+    assert RunPodBackend.image_tag == image_tag_module().tag(), "rebuild the image (push) and set RunPodBackend.image_tag to tag.py's"
+    # pulled by its digest too: the bytes that were measured, whatever is pushed under the tag later
+    assert RunPodBackend.image.endswith(f":{RunPodBackend.image_tag}@{RunPodBackend.image_digest}")
+    assert RunPodBackend.image_digest.startswith("sha256:") and len(RunPodBackend.image_digest) == 71
+
+
+def test_the_images_context_holds_no_code_of_the_repositorys(tmp_path):
+    # it is public: its Dockerfile and start script, nothing else
+    tag = image_tag_module()
+    tag.stage(tmp_path)
+    assert sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file()) == ["Dockerfile", "start.sh"]
+
+
+def test_the_image_starts_on_runpods_cached_base_pinned_by_its_digest():
+    # its hosts keep that image: a pod then pulls only the small layers on top (an image of its own took 145 s to start)
+    first = next(l for l in (IMAGE / "Dockerfile").read_text().splitlines() if l.startswith("FROM "))
+    assert first.startswith("FROM runpod/pytorch:") and "@sha256:" in first
