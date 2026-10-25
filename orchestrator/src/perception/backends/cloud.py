@@ -130,11 +130,13 @@ class RunPodBackend(CloudBackend):
     Any of several GPUs with at least 20 GB, the cheapest available first: RunPod's capacity for any one type comes and
     goes. A pod is reached over SSH with a key made for its attempt, holds the node's inputs on its own disk only (no
     network volume: nothing stays after it is deleted), and is deleted through the API by the driver. Its backstops if
-    this laptop never comes back: the pod removes itself at its deadline (guard.sh), and the next RunPod launch deletes
-    any perception pod past its deadline (the deadline is in its name)."""
+    this laptop never comes back: the pod removes itself at its deadline (its start command sets that before anything
+    else runs; guard.sh checks it), and the next RunPod launch deletes any perception pod past its deadline (the
+    deadline is in its name)."""
     guard = REPO / "cloud" / "runpod" / "guard.sh"
     # RunPod's image with sshd started from PUBLIC_KEY; the node's environment brings its own torch (uv)
     image = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+    start = "/start.sh"   # the image's own start command (sshd from PUBLIC_KEY), run after the pod's removal is set
     # Secure Cloud prices on 2026-10-24 (RunPod's gpuTypes securePrice), the order RunPod tries them in
     gpus = {"NVIDIA RTX A4500": 0.25, "NVIDIA RTX A5000": 0.27, "NVIDIA RTX 4000 Ada Generation": 0.28,
             "NVIDIA GeForce RTX 3090": 0.50, "NVIDIA A40": 0.59, "NVIDIA L4": 0.59, "NVIDIA RTX A6000": 0.59}
@@ -146,8 +148,11 @@ class RunPodBackend(CloudBackend):
     hourly_usd = max(gpus.values())   # reserved at the dearest one it may get; charged at the price of the one it got
     caps = Capabilities(platform="linux/amd64", cpu_cores=8, memory_gb=30, accelerators={"cpu", "cuda"}, vram_gb=20)
 
-    def __init__(self, api_key: str | None = None, **kw):
+    def __init__(self, api_key: str | None = None, api_s: float = 60, unknown_s: float = 180, **kw):
+        """`api_s`: how long one API call may take. `unknown_s`: how long a pod whose create got no clear answer is
+        looked for by its name before it is taken as never made (within down_s)."""
         super().__init__(**kw)
+        self.api_s, self.unknown_s = api_s, unknown_s
         self.kind = "runpod"
         self.title = "Cloud GPU (RunPod)"
         self.api_key = api_key
@@ -157,9 +162,9 @@ class RunPodBackend(CloudBackend):
         request = json.loads((attempt_dir / "request.json").read_text())
         return {"host": "the RunPod pod", "cloud": {
             "provider": "runpod", "name": cluster_name(request["run"], request["node"], request["attempt"]),
-            "api": api_base(), "image": self.image, "gpus": list(self.gpus), "datacenters": self.datacenters,
+            "api": api_base(), "image": self.image, "start": self.start, "gpus": list(self.gpus), "datacenters": self.datacenters,
             "disk_gb": self.disk_gb, "guard": str(self.guard), "setup": str(self.setup), "hourly_usd": self.hourly_usd,
-            "launch_s": self.launch_s, "down_s": self.down_s,
+            "launch_s": self.launch_s, "down_s": self.down_s, "api_s": self.api_s, "unknown_s": self.unknown_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values()))}}
 
     def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str]) -> dict:

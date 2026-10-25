@@ -7,6 +7,7 @@ used only on this machine: never written to a file, never sent to a pod. RunPod'
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -22,8 +23,24 @@ POD_NAME = re.compile(r"^perception-[a-z0-9-]+-d(\d{9,11})$")
 
 class RunPodError(Exception):
     def __init__(self, status: int, message: str):
+        """`status`: RunPod's HTTP status, or 0 for no whole answer."""
         super().__init__(f"RunPod answered {status}: {message}" if status else f"RunPod could not be reached: {message}")
-        self.status = status   # 0: no answer
+        self.status = status
+
+    @property
+    def nothing_done(self) -> bool:
+        """Whether the answer proves the request did nothing: a 4xx (not 429, a rate limit in front of it). A 5xx, from
+        RunPod or a gateway before it, may come after the work was done; no answer proves nothing either."""
+        return 400 <= self.status < 500 and self.status != 429
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib would send the key on to wherever a redirect points (another host too): the API never redirects."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None   # the 3xx is then raised as an HTTPError
+
+
+OPENER = urllib.request.build_opener(NoRedirects)
 
 
 def api_base() -> str:
@@ -39,12 +56,14 @@ class RunPod:
                                      headers={"Authorization": f"Bearer {self.key}", "Content-Type": "application/json",
                                               "User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with OPENER.open(req, timeout=self.timeout) as r:
                 text = r.read().decode()
         except urllib.error.HTTPError as e:
             raise RunPodError(e.code, e.read().decode(errors="replace").strip()[:300]) from None
-        except (urllib.error.URLError, OSError) as e:   # no answer (a timeout too): the request may or may not have been done
-            raise RunPodError(0, str(getattr(e, "reason", e))) from None
+        # no whole answer (a timeout, a connection cut, an answer cut short: http.client's own errors are not OSErrors):
+        # the request may or may not have been done
+        except (urllib.error.URLError, OSError, http.client.HTTPException, UnicodeDecodeError) as e:
+            raise RunPodError(0, f"{type(e).__name__}: {getattr(e, 'reason', e)}") from None
         try:
             return json.loads(text) if text.strip() else None
         except json.JSONDecodeError:
