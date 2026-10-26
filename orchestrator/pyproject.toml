@@ -1,17 +1,21 @@
 [project]
 name = "hyperstudy-perception"
 version = "0.1.0"
-description = "Perception graph orchestrator: runs video perception nodes locally, on cloud GPUs and lab servers (uv environments) and through model APIs, and publishes track bundles"
+description = "Video perception pipeline: shots, speech, faces and captions from a video, as a versioned track bundle, run locally, on cloud GPUs or lab servers"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.8",
   "pyyaml>=6",
   "jsonschema>=4.23",
   "referencing>=0.35",
-  "perception-node",
   "keyring>=25",
   "av==16.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/hyperstudyio/hyperstudy-perception"
+Changelog = "https://github.com/hyperstudyio/hyperstudy-perception/releases"
 
 [project.scripts]
 perception = "perception.cli:main"
@@ -20,7 +24,9 @@ perception = "perception.cli:main"
 perception-node = { path = "../sdk", editable = true }
 
 [dependency-groups]
-dev = ["pytest>=8"]
+# the node SDK only for the tests' stand-in nodes, which run in this interpreter: real nodes get it in their own
+# environments (envs/*), from the copy the package carries
+dev = ["pytest>=8", "perception-node"]
 
 [build-system]
 requires = ["hatchling"]
@@ -28,6 +34,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/perception"]
+# the pipeline's files the package carries (scripts/build-dist.sh puts them there; ignored by git, so named here)
+artifacts = ["src/perception/_pipeline/**"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/perception", "README.md"]
+artifacts = ["src/perception/_pipeline/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

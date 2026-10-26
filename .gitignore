@@ -34,5 +34,7 @@ src-tauri/gen/
 *.env
 .env*
 
-# A copy made to ship with an app has one (scripts/export-release.sh); a checkout never does
+# the package carries one, in perception/_pipeline (scripts/build-dist.sh); a checkout never does
 RELEASE.json
+orchestrator/src/perception/_pipeline/
+orchestrator/dist/

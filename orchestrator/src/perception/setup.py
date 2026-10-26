@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .backends.base import child_env
-from .backends.native import REPO
+from .release import REPO, env_vars
 from .manifests import Manifest, Runner
 
 
@@ -55,6 +55,8 @@ def setup_node(m: Manifest, runner: Runner, uv: str | None = None, config: dict 
     model's token)."""
     uv = uv or shutil.which("uv") or "uv"
     env = child_env(m.secrets, secrets or {})
+    if runner.kind == "native" and runner.env:
+        env = {**env, **env_vars(runner.env)}   # where a run makes it (the package's: in the store)
     steps: list[Step] = []
     if runner.kind == "native" and runner.env:
         ok, seconds, tail = _run([uv, "sync", "--project", str(REPO / runner.env), "--frozen", "--no-dev"], REPO, env)

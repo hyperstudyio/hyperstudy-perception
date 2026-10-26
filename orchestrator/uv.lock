@@ -190,7 +190,6 @@ dependencies = [
     { name = "av" },
     { name = "jsonschema" },
     { name = "keyring" },
-    { name = "perception-node" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "referencing" },
@@ -198,6 +197,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "perception-node" },
     { name = "pytest" },
 ]
 
@@ -206,14 +206,16 @@ requires-dist = [
     { name = "av", specifier = "==16.1.0" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "keyring", specifier = ">=25" },
-    { name = "perception-node", editable = "../sdk" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "referencing", specifier = ">=0.35" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "perception-node", editable = "../sdk" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "iniconfig"

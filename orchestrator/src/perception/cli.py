@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import itertools
 import json
 import os
 import sys
@@ -48,11 +49,7 @@ from .plan import plan as make_plan
 from .scheduler import Coordinator
 from .store import Store
 
-REPO = Path(__file__).resolve().parents[3]
-
-
-def home() -> Path:
-    return Path(os.environ.get("PERCEPTION_HOME", Path.home() / ".hyperstudy-perception"))
+from .release import REPO, home, release
 
 
 def backends() -> list[Backend]:
@@ -91,6 +88,37 @@ def only(doc: dict, chosen: list[str]) -> dict:
                 todo.append(ref.split(".")[1])
     outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (isinstance(v, str) and v.startswith("$nodes.") and v.split(".")[1] not in keep)}
     return {**doc, "nodes": [n for n in doc["nodes"] if n.get("id") in keep], **({"outputs": outputs} if "outputs" in doc else {})}
+
+
+def graph_path(arg: str) -> Path:
+    """A graph argument: a file, or else one of the pipeline's own graphs by name (`perception graphs` lists them; an
+    installed package has no graphs/ folder of the user's to point at)."""
+    path = Path(arg)
+    named = REPO / "graphs" / arg
+    if not path.exists() and path.name == arg and named.is_file():
+        return named
+    return path
+
+
+def graphs() -> list[dict]:
+    """The pipeline's graphs: file name, pipeline name, the comment each starts with, and where it is."""
+    out = []
+    for path in sorted((REPO / "graphs").glob("*.yaml")):
+        lines = path.read_text().splitlines()
+        comment = itertools.takewhile(lambda l: l.startswith("#"), lines)
+        description = " ".join(c for c in (l.lstrip("#").strip() for l in comment) if c)
+        pipeline = next((l.split(":", 1)[1].strip() for l in lines if l.startswith("pipeline:")), "")
+        out.append({"file": path.name, "pipeline": pipeline, "description": description, "path": str(path)})
+    return out
+
+
+def cmd_graphs(args):
+    if args.json:
+        emit("graphs", graphs=graphs())
+    else:
+        for g in graphs():
+            print(f"{g['file']:20s} {g['description']}")
+    return 0
 
 
 def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs: list[str] | None = None,
@@ -161,6 +189,18 @@ def plan_json(p) -> dict:
 
 # --- commands -----------------------------------------------------------------------------------------------------
 
+def pipeline_version() -> dict:
+    """This pipeline: its package version (None in a checkout not installed), its commit (the package's, from
+    RELEASE.json; None in a checkout) and where its files are."""
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        v = version("hyperstudy-perception")
+    except PackageNotFoundError:
+        v = None
+    r = release()
+    return {"version": v, "commit": r["commit"] if r else None, "root": str(REPO)}
+
+
 def cmd_doctor(args):
     caps = probe()
     if args.json:
@@ -173,7 +213,8 @@ def cmd_doctor(args):
                           "where": f"{placement.backend.kind} ({placement.runner.accelerator})" if placement else None,
                           "why_not": "" if placement else why})
         emit("doctor", platform=caps.platform, cpu_cores=caps.cpu_cores, memory_gb=caps.memory_gb,
-             accelerators=sorted(caps.accelerators), vram_gb=caps.vram_gb, tools=caps.tools, store=str(home()), nodes=nodes)
+             accelerators=sorted(caps.accelerators), vram_gb=caps.vram_gb, tools=caps.tools, store=str(home()), nodes=nodes,
+             pipeline=pipeline_version())
         return 0
     print(f"platform     {caps.platform}")
     print(f"cpu          {caps.cpu_cores} cores")
@@ -226,7 +267,7 @@ def cmd_models(args):
 
 def cmd_validate(args):
     try:
-        graph, _ = read_graph(Path(args.graph), registry(args))
+        graph, _ = read_graph(graph_path(args.graph), registry(args))
     except GraphError as e:
         if args.json:
             emit("graph", valid=False, nodes=[], problems=e.problems)
@@ -245,7 +286,7 @@ def cmd_validate(args):
 def cmd_plan(args):
     reg = registry(args)
     try:
-        graph, _ = read_graph(Path(args.graph), reg, args.max_cost_usd, args.input, args.place, args.only, args.set)
+        graph, _ = read_graph(graph_path(args.graph), reg, args.max_cost_usd, args.input, args.place, args.only, args.set)
     except GraphError as e:
         return graph_error(args, e)
     p = make_plan(coordinator(args), graph)
@@ -300,7 +341,7 @@ def _run(coord: Coordinator, run_id: str, as_json: bool = False, after: int = 0)
 def cmd_run(args):
     coord = coordinator(args)
     try:
-        graph, doc = read_graph(Path(args.graph), coord.registry, args.max_cost_usd, args.input, args.place, args.only, args.set)
+        graph, doc = read_graph(graph_path(args.graph), coord.registry, args.max_cost_usd, args.input, args.place, args.only, args.set)
     except GraphError as e:
         return graph_error(args, e)
     p = make_plan(coord, graph, allow_downloads=args.allow_downloads, allow_uploads=args.allow_uploads)
@@ -598,7 +639,7 @@ def cmd_setup(args):
     coord = coordinator(args)
     if args.graph:
         try:
-            graph, _ = read_graph(Path(args.graph), reg, places=args.place, chosen=args.only)
+            graph, _ = read_graph(graph_path(args.graph), reg, places=args.place, chosen=args.only)
         except GraphError as e:
             return graph_error(args, e)
         chosen = [(n.manifest, *coord.place(n.manifest, n.spec.backend, n.spec.place, graph.spec.policy), n.config)
@@ -650,6 +691,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="machine-readable output: one JSON object per line, each with a protocol version (for the annotator app)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    sub.add_parser("graphs", help="the pipeline's graphs, which run and plan take by name").set_defaults(fn=cmd_graphs)
     sub.add_parser("nodes", help="every node, with where it can run here").set_defaults(fn=cmd_nodes)
     models = sub.add_parser("models")
     models.add_argument("action", choices=["list"])
