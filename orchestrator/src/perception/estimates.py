@@ -2,15 +2,14 @@
 from this store's finished runs. A node that has not run on this machine in that place gets no estimate, not a guess.
 
 The video's length comes from a run's media.v1 artifact (decode writes it), or for a run being planned, from its
-cached decode or ffprobe.
+cached decode or the file itself, read with PyAV as decode reads it (no ffprobe on the machine: an app started from
+the Finder has none on its PATH).
 """
 
 from __future__ import annotations
 
 import json
-import shutil
 import statistics
-import subprocess
 from pathlib import Path
 
 from .store import Artifact, Store
@@ -36,15 +35,16 @@ def run_seconds(store: Store, run_id: str) -> float | None:
 
 
 def probe_seconds(video: Path) -> float | None:
-    """A video's length by ffprobe (when no decode output says it yet)."""
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe or not video.is_file():
+    """A video's length, as decode's media.v1 will say it (the container's duration), when no decode output says it
+    yet; None for a file that is not a video."""
+    import av
+
+    if not video.is_file():
         return None
-    out = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
-                         capture_output=True, text=True)
     try:
-        return float(out.stdout.strip())
-    except ValueError:
+        with av.open(str(video)) as container:
+            return container.duration / av.time_base if container.duration else None
+    except av.FFmpegError:
         return None
 
 

@@ -25,7 +25,7 @@ jobs:
         run: uv run --locked pytest -q tests
 
   node-logic:
-    name: Node logic without models (thumbnail choice, decode workers)
+    name: Node logic without models (thumbnail choice, decode workers, media reading and crops)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -33,6 +33,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
-      # The face node's own environment pulls torch and py-feat (gigabytes); these tests need only numpy.
+      # The face node's own environment pulls torch and py-feat (gigabytes); these tests need only numpy, PyAV (the
+      # version the envs lock), Pillow and the node SDK. They run with nothing on PATH: no ffmpeg is needed.
       - name: pytest
-        run: uv run --no-project --with pytest --with numpy pytest -q nodes/vision/face-track/test_thumbnails.py nodes/vision/face-track/test_loader.py
+        run: uv run --no-project --with pytest --with numpy --with av==16.1.0 --with pillow --with-editable ./sdk pytest -q nodes
