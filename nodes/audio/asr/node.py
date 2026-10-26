@@ -7,7 +7,8 @@ every word's voice is null.
 
 import time
 
-from perception_node import Node
+from perception_node import Node, NodeError
+from wav import read_wav
 
 PAUSE_SPLIT = 0.25            # seconds of silence between words that starts a new utterance
 SENTENCE_END = (".", "?", "!")
@@ -48,11 +49,19 @@ def utterances(words: list[dict], shots: list[dict]) -> list[dict]:
 
 
 with Node() as node:
+    import mlx.core as mx
     from parakeet_mlx import from_pretrained
+    from parakeet_mlx.audio import get_logmel
 
     model_id = node.config["model"]
     t0 = time.time()
-    result = from_pretrained(model_id).transcribe(str(node.input("audio")))
+    model = from_pretrained(model_id)
+    # what model.transcribe(path) does with no chunking, from the samples read here (wav.py)
+    samples = read_wav(node.input("audio"), model.preprocessor_config.sample_rate)
+    if len(samples) < model.preprocessor_config.hop_length:
+        raise NodeError("input", f"the audio has {len(samples)} samples: too short to transcribe")
+    audio = mx.array(samples).astype(mx.float32) / 32768.0
+    result = model.generate(get_logmel(audio, model.preprocessor_config))[0]
     seconds = round(time.time() - t0, 1)
     node.model(model_id, licence_mode="commercial-ok", source=f"hf://{model_id}", licence="CC-BY-4.0")
 
