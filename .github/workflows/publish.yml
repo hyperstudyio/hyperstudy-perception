@@ -1,8 +1,7 @@
-# Publishing a release drafted by release.yml uploads its files, the ones built and checked there, to PyPI, then opens
-# a pull request on the HyperStudy docs adding its notes to the package's page (hyperstudy-bridge commits its notes
-# directly; here a person merges them). PyPI trusts this workflow in the `pypi` environment (trusted publishing: no
-# PyPI token is stored here). The pull request is opened with DOCS_REPO_TOKEN, a token for hyperstudyio/hyperstudy-docs
-# alone, with contents and pull requests write.
+# Publishing a release drafted by release.yml uploads its files, the ones built and checked there, to PyPI, then adds
+# its notes to the package's page in the HyperStudy docs (as hyperstudy-bridge does). PyPI trusts this workflow in the
+# `pypi` environment (trusted publishing: no PyPI token is stored here). The docs are written with DOCS_REPO_TOKEN, the
+# organization's token for hyperstudyio/hyperstudy-docs' contents.
 name: Publish
 
 on:
@@ -37,7 +36,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   docs:
-    name: Propose the notes for the docs
+    name: Add the notes to the docs
     needs: pypi
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -62,23 +61,20 @@ jobs:
             echo
             echo "---"
           } > entry.md
-      - name: Open a pull request on the docs with it, after the page's marker
+      - name: Insert it after the page's marker, once
         env:
           GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
           DOCS: hyperstudyio/hyperstudy-docs
           PAGE: docs/experimenters/hyperstudy-perception.md
         run: |
-          branch="release-notes/hyperstudy-perception-$TAG"
           gh api "repos/$DOCS/contents/$PAGE" > page.json
           jq -r .content page.json | base64 -d > page.md
           grep -q '<!-- RELEASE_NOTES_START -->' page.md || { echo "$PAGE has no <!-- RELEASE_NOTES_START --> marker" >&2; exit 1; }
           if grep -qxF "### $TAG" page.md; then echo "$TAG is already in the docs"; exit 0; fi
           awk 'FNR == NR { entry = entry $0 "\n"; next } { print } /<!-- RELEASE_NOTES_START -->/ { printf "\n%s", entry }' entry.md page.md > new.md
-          main=$(gh api "repos/$DOCS/git/ref/heads/main" --jq .object.sha)
-          gh api --method POST "repos/$DOCS/git/refs" -f ref="refs/heads/$branch" -f sha="$main" > /dev/null
-          gh api --method PUT "repos/$DOCS/contents/$PAGE" -f branch="$branch" \
+          gh api --method PUT "repos/$DOCS/contents/$PAGE" \
             -f message="hyperstudy-perception $TAG release notes" \
-            -f content="$(base64 -w0 new.md)" -f sha="$(jq -r .sha page.json)" > /dev/null
-          gh pr create --repo "$DOCS" --base main --head "$branch" --title "hyperstudy-perception $TAG release notes" \
-            --body "The notes of [hyperstudy-perception $TAG](https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG), as published, for $PAGE."
+            -f content="$(base64 -w0 new.md)" -f sha="$(jq -r .sha page.json)" \
+            -f "committer[name]=github-actions[bot]" -f "committer[email]=github-actions[bot]@users.noreply.github.com" > /dev/null
+          echo "added $TAG to $PAGE"

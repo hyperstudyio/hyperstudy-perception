@@ -22,9 +22,8 @@ installs the newest one compatible with it, and so does `uv tool install hyperst
    - It drafts a GitHub release with the wheel and the sdist attached. The notes list the pull requests merged since
      the last release.
 4. Read the draft and edit the notes if needed. Then **publish** it. Publishing is the approval: **Publish**
-   (`.github/workflows/publish.yml`) uploads those same files to PyPI. It then opens a pull request on hyperstudy-docs
-   that adds the notes to the `docs/experimenters/hyperstudy-perception.md` page. Merge that pull request to put them
-   on the docs site.
+   (`.github/workflows/publish.yml`) uploads those same files to PyPI. It then adds the notes to the
+   `docs/experimenters/hyperstudy-perception.md` page of hyperstudy-docs, as hyperstudy-bridge does for its page.
 
 A version on PyPI cannot be replaced. To fix a bad release, release the next patch version.
 
@@ -42,8 +41,7 @@ These need the account owners, not the workflows. `CLAUDE_CODE_OAUTH_TOKEN` (pul
 
   The first publish creates the project. No PyPI token is stored anywhere.
 - **The `pypi` environment** in this repository's settings. Optionally, add yourself as a required reviewer.
-- **`DOCS_REPO_TOKEN`**, an organization secret shared with hyperstudy-bridge: a fine-grained token for
-  `hyperstudyio/hyperstudy-docs`. This workflow opens a pull request, so the token needs *Pull requests* read and
-  write as well as *Contents*.
+- **`DOCS_REPO_TOKEN`**, an organization secret shared with hyperstudy-bridge: a fine-grained token with *Contents*
+  read and write on `hyperstudyio/hyperstudy-docs`.
 - **The docs page** `docs/experimenters/hyperstudy-perception.md` in hyperstudy-docs, with a
   `<!-- RELEASE_NOTES_START -->` line where entries go, newest first.
