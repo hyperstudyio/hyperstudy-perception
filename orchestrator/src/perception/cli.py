@@ -591,7 +591,7 @@ def cmd_keys(args):
 
 def cmd_setup(args):
     """Everything the nodes need here, ready before a run (setup.py): each environment synced from its lock, each node's
-    weights fetched, the tools found. With a graph, the nodes it would run here (--only, --place as for run); without,
+    weights fetched. With a graph, the nodes it would run here (--only, --place as for run); without,
     every node that can run here. A node placed on another machine is set up there when it runs."""
     from . import setup
     reg = registry(args)

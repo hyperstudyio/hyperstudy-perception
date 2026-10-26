@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 dest=${1:?usage: scripts/export-release.sh DEST}
 # what runs read: the CLI and its lock, the nodes, their environments' locks, the node SDK, the graphs, the layer schemas
 # and the cloud scripts nodes run with on other machines. Not the tests, plans, evaluations or bake-off code.
-paths=(cloud envs graphs nodes orchestrator/pyproject.toml orchestrator/uv.lock orchestrator/src schema sdk)
+paths=(cloud envs graphs nodes orchestrator/.python-version orchestrator/pyproject.toml orchestrator/uv.lock orchestrator/src schema sdk)
 
 [ -z "$(git status --porcelain -- "${paths[@]}")" ] || { echo "commit first: the copy is HEAD, and says which commit it is" >&2; exit 1; }
 [ ! -e "$dest" ] || [ -z "$(ls -A "$dest")" ] || { echo "$dest is not empty" >&2; exit 1; }
