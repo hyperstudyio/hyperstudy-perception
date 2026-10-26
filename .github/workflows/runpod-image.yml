@@ -13,7 +13,7 @@ on:
     inputs:
       copy_from:
         description: "An image to copy under this tag instead of building, digest and all (moving it to another owner),
-          e.g. ghcr.io/ljchang/perception-runpod:TAG@sha256:..."
+          by digest: ghcr.io/OWNER/perception-runpod@sha256:..."
         required: false
         default: ""
 
@@ -59,12 +59,19 @@ jobs:
             exit 1
           fi
       # moving the image to another owner: the same build (the measured one), copied, not a rebuild (apt's versions move)
+      # read without credentials (a public image of another owner, which this repository's token may not read: docker
+      # would send it and be refused) and written with this repository's; skopeo keeps the digest
       - name: Copy instead of building
         if: inputs.copy_from != ''
         env:
           FROM: ${{ inputs.copy_from }}
           TO: ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}
-        run: docker buildx imagetools create --tag "$TO" "$FROM"
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          case "$FROM" in ghcr.io/*/perception-runpod@sha256:*) ;; *) echo "copy_from must be ghcr.io/OWNER/perception-runpod@sha256:..." >&2; exit 1 ;; esac
+          skopeo --version
+          skopeo copy --all --preserve-digests --src-no-creds --dest-creds "$ACTOR:$TOKEN" "docker://$FROM" "docker://$TO"
       - name: Room for the base image (RunPod's PyTorch image, about 15 GB unpacked)
         if: steps.have.outputs.built != 'true' && inputs.copy_from == ''
         run: |
