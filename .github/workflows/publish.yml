@@ -21,6 +21,7 @@ jobs:
       name: pypi
       url: https://pypi.org/project/hyperstudy-perception/
     permissions:
+      contents: read    # the release's files (a job's permissions replace the workflow's)
       id-token: write   # trusted publishing
     steps:
       - name: The release's files, as release.yml built them

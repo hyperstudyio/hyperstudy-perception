@@ -216,6 +216,8 @@ def cmd_doctor(args):
              accelerators=sorted(caps.accelerators), vram_gb=caps.vram_gb, tools=caps.tools, store=str(home()), nodes=nodes,
              pipeline=pipeline_version())
         return 0
+    v = pipeline_version()
+    print(f"pipeline     {v['version'] or 'not installed'}" + (f" ({v['commit'][:7]})" if v["commit"] else " (checkout)") + f", {v['root']}")
     print(f"platform     {caps.platform}")
     print(f"cpu          {caps.cpu_cores} cores")
     print(f"memory       {caps.memory_gb} GB")
