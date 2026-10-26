@@ -24,6 +24,22 @@ jobs:
       contents: read    # the release's files (a job's permissions replace the workflow's)
       id-token: write   # trusted publishing
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # PyPI keeps what it is given for good: only a release release.yml made, from a tag on main, after building and
+      # smoke-testing its files, is uploaded (not one drafted by hand, or a wheel attached to it by hand)
+      - name: The release is release.yml's, of a tag on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main || { echo "$TAG is not a commit of main" >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release.json
+          jq -e '.author.login == "github-actions[bot]" and (.assets | length) > 0
+                 and all(.assets[]; .uploader.login == "github-actions[bot]")' release.json > /dev/null \
+            || { echo "$TAG's release or its files were not made by release.yml" >&2; jq '{author: .author.login, assets: [.assets[] | {name, uploader: .uploader.login}]}' release.json >&2; exit 1; }
       - name: The release's files, as release.yml built them
         env:
           GH_TOKEN: ${{ github.token }}
