@@ -34,8 +34,6 @@ src-tauri/gen/
 *.env
 .env*
 
-# the package carries one, in perception/_pipeline (scripts/build-dist.sh); a checkout never does
+# the package carries one (scripts/build-dist.sh builds it in a staging folder); a checkout never does
 RELEASE.json
-orchestrator/src/perception/_pipeline/
 orchestrator/dist/
-orchestrator/LICENSE

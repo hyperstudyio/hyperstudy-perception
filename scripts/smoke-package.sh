@@ -34,6 +34,16 @@ with av.open(sys.argv[1], "w") as out:
         out.mux(a.encode(frame))
     out.mux(a.encode())
 PY
+# every requirement exact (scripts/build-dist.sh pins the lock's versions): an install gets what CI tested
+python3 - "$wheel" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as w:
+    meta = w.read(next(n for n in w.namelist() if n.endswith(".dist-info/METADATA"))).decode()
+reqs = [l.split(":", 1)[1].strip() for l in meta.splitlines() if l.startswith("Requires-Dist:")]
+loose = [r for r in reqs if "==" not in r.split(";")[0]]
+assert reqs and not loose, f"requirements not pinned exactly: {loose}"
+print(f"requirements: {len(reqs)}, all exact")
+PY
 in_app uv tool install --quiet --python 3.12 "$wheel"
 in_app "$work/bin/perception" --json doctor | python3 -c '
 import json, sys
