@@ -1,0 +1,97 @@
+# Publishing a release drafted by release.yml uploads its files, the ones built and checked there, to PyPI, then adds
+# its notes to the package's page in the HyperStudy docs (as hyperstudy-bridge does). PyPI trusts this workflow in the
+# `pypi` environment (trusted publishing: no PyPI token is stored here). The docs are written with DOCS_REPO_TOKEN, the
+# organization's token for hyperstudyio/hyperstudy-docs' contents.
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  pypi:
+    name: Upload to PyPI
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/hyperstudy-perception/
+    permissions:
+      contents: read       # the release's files (a job's permissions replace the workflow's)
+      attestations: read   # their build provenance
+      id-token: write      # trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # PyPI keeps what it is given for good: only the files release.yml built and smoke-tested, from this tag of a commit
+      # on main, are uploaded (not a release drafted by hand, or a file attached or swapped by hand). The files checked
+      # are the ones downloaded: their build provenance, signed by release.yml, names the tag and commit.
+      - name: The release's files, built by release.yml from this tag on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main || { echo "$TAG is not a commit of main" >&2; exit 1; }
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'hyperstudy_perception-*' --dir dist
+          version=${TAG#v}
+          ls dist
+          [ "$(ls dist | wc -l)" -eq 2 ] && [ -f "dist/hyperstudy_perception-$version-py3-none-any.whl" ] \
+            && [ -f "dist/hyperstudy_perception-$version.tar.gz" ] \
+            || { echo "the release does not hold exactly version $version's wheel and sdist" >&2; exit 1; }
+          for f in dist/*; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --deny-self-hosted-runners \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$TAG" --source-digest "$(git rev-parse HEAD)"
+          done
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  docs:
+    name: Add the notes to the docs
+    needs: pypi
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The notes, as an entry of the docs page
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body,publishedAt > release.json
+          # The notes list pull request titles, anyone's once the repository is public, and the docs are MDX, where {...}
+          # runs as code when the site is built and <...> is a component: they go in as text only, as character references
+          # (a backslash cannot undo these, and backslashes are one too), and no scheme that runs a script is left, wherever
+          # it stands (a link target can follow a line break; a scheme starts a word, so metadata: is left alone). Headings move under
+          # the entry's ### heading.
+          {
+            echo "### $TAG"
+            echo
+            echo "**Released:** $(jq -r '.publishedAt[:10]' release.json)"
+            echo
+            jq -r .body release.json | perl -pe 's/^(#{1,4}) /$1## /; s/&/&amp;/g; s/\\/&#92;/g; s/\{/&#123;/g; s/\}/&#125;/g; s/</&lt;/g;
+              s/\b(javascript|vbscript|data):/$1-link-removed:/gi'
+            echo
+            echo "---"
+          } > entry.md
+      - name: Insert it after the page's marker, once
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          DOCS: hyperstudyio/hyperstudy-docs
+          PAGE: docs/experimenters/hyperstudy-perception.md
+        run: |
+          gh api "repos/$DOCS/contents/$PAGE" > page.json
+          jq -r .content page.json | base64 -d > page.md
+          grep -q '<!-- RELEASE_NOTES_START -->' page.md || { echo "$PAGE has no <!-- RELEASE_NOTES_START --> marker" >&2; exit 1; }
+          if grep -qxF "### $TAG" page.md; then echo "$TAG is already in the docs"; exit 0; fi
+          awk 'FNR == NR { entry = entry $0 "\n"; next } { print } /<!-- RELEASE_NOTES_START -->/ { printf "\n%s", entry }' entry.md page.md > new.md
+          gh api --method PUT "repos/$DOCS/contents/$PAGE" \
+            -f message="hyperstudy-perception $TAG release notes" \
+            -f content="$(base64 -w0 new.md)" -f sha="$(jq -r .sha page.json)" \
+            -f "committer[name]=github-actions[bot]" -f "committer[email]=github-actions[bot]@users.noreply.github.com" > /dev/null
+          echo "added $TAG to $PAGE"

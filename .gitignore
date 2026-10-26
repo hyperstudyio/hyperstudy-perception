@@ -34,5 +34,6 @@ src-tauri/gen/
 *.env
 .env*
 
-# A copy made to ship with an app has one (scripts/export-release.sh); a checkout never does
+# the package carries one (scripts/build-dist.sh builds it in a staging folder); a checkout never does
 RELEASE.json
+orchestrator/dist/

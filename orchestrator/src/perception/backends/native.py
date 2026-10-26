@@ -23,7 +23,7 @@ from ..store import Artifact
 from .base import Backend, Capabilities
 from .probe import probe
 
-REPO = Path(__file__).resolve().parents[4]
+from ..release import REPO, env_vars
 
 
 def sdk_hash() -> str:
@@ -72,6 +72,7 @@ class NativeBackend(Backend):
     def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str]) -> dict:
         request = attempt_dir / "request.json"
         log = open(attempt_dir / "log.txt", "ab")
+        env = {**env, **(env_vars(runner.env) if self.kind == "native" and runner.env else {})}   # the package's: in the store
         proc = subprocess.Popen(self.command(manifest, runner, request), cwd=manifest.directory, env=env,
                                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 start_new_session=True)   # its own process group: cancel stops the whole tree

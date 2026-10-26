@@ -17,7 +17,9 @@ from typing import Callable, Literal
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-SCHEMA_DIR = Path(__file__).resolve().parents[3] / "schema"
+from .release import REPO
+
+SCHEMA_DIR = REPO / "schema"
 BUNDLE_SCHEMA = SCHEMA_DIR / "bundle-0.1.schema.json"
 BUNDLE_LAYERS = ("shots", "transcript", "speakers", "faces", "bodies", "hands", "gestures", "facing", "gaze", "objects",
                  "sounds", "text", "prosody", "waveform")

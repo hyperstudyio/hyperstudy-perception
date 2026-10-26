@@ -120,7 +120,7 @@ licence mode: weights trained on non-commercial data stay academic-tier.
 
 **Where it runs.** The same stage code in native uv environments everywhere: on the user's machine (a Mac uses the
 Apple GPU), on cloud machines and on lab servers. No containers (2026-10-24, `docs/plans/GRAPH_MVP_PLAN.md`). Cloud GPUs
-are reached through one SkyPilot backend (decided 2026-10-23, `docs/research/orchestration_frameworks.md`): the same
+are reached through one SkyPilot backend (decided 2026-10-23, after a survey of orchestration frameworks): the same
 locked environments run on whichever provider is cheapest and available (RunPod, Lambda, Vast, AWS, GCP, Azure, Kubernetes, Slurm), using the user's own
 accounts, with inputs passed as signed URLs and outputs returned as artifacts. Local runs schedule one
 heavy GPU stage at a time (overlapping SAM 3 and Sapiens2 pushed a 128 GB Mac into 45 GB of swap). Nothing has been
@@ -133,7 +133,7 @@ spec cites RunPod serverless from $0.69/h for 24 GB GPUs (not yet checked). Plan
 NVIDIA GPU through SkyPilot, then price the measured stage timings across providers and pick. Modal is not reachable
 through SkyPilot; it would need its own adapter, worth writing only if a measurement favours it.
 
-**Chosen models (academic tier).** See `docs/research/Agent video perception audio and objects/measured_bakeoff_results.md`.
+**Chosen models (academic tier).** From the bake-off's measured results (kept with the lab's research notes, not in this repository).
 
 ## 5. Annotator app (new repo)
 
