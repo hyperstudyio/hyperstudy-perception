@@ -30,7 +30,8 @@ A version on PyPI cannot be replaced. To fix a bad release, release the next pat
 ## One-time setup
 
 These need the account owners, not the workflows. `CLAUDE_CODE_OAUTH_TOKEN` (pull request reviews) and
-`DOCS_REPO_TOKEN` are hyperstudyio organization secrets, so they already reach this repository.
+`DOCS_REPO_TOKEN` are hyperstudyio organization secrets, so they already reach this repository. Build provenance
+(release.yml attests its files; publish.yml verifies them before uploading) needs nothing set up in a public repository.
 
 - **The PyPI publisher.** On pypi.org, under *Your projects → Publishing → Add a new pending publisher*, enter:
   - PyPI project name: `hyperstudy-perception`
