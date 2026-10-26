@@ -12,7 +12,8 @@ vendor/
 data/
 runs/
 *.mp4
-!nodes/testdata/*.mp4   # tiny synthetic clips the node tests read (nodes/testdata/README.md)
+# but the tiny synthetic clips the node tests read (nodes/testdata/README.md)
+!nodes/testdata/*.mp4
 *.mov
 *.wav
 *.npz
