@@ -10,6 +10,12 @@ on:
       - orchestrator/src/perception/backends/cloud.py
       - .github/workflows/runpod-image.yml
   workflow_dispatch:
+    inputs:
+      copy_from:
+        description: "An image to copy under this tag instead of building, digest and all (moving it to another owner),
+          e.g. ghcr.io/ljchang/perception-runpod:TAG@sha256:..."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -41,7 +47,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Built already?
         id: have
-        # built only when GHCR says the tag does not exist: any other failure stops here, so a tag is never pushed over
+        # built only when GHCR says the tag does not exist: any other failure stops here, so a tag is never pushed over.
+        # Not asked when copying: the copy is the very digest the code pins, so whatever the tag held, it ends up holding
+        # that (the last step checks), and before an owner's first push GHCR answers "denied" rather than "unknown".
+        if: inputs.copy_from == ''
         run: |
           if out=$(docker manifest inspect "ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}" 2>&1); then
             echo "built=true" >> "$GITHUB_OUTPUT"
@@ -49,13 +58,20 @@ jobs:
             echo "could not tell whether the tag exists: $out" >&2
             exit 1
           fi
+      # moving the image to another owner: the same build (the measured one), copied, not a rebuild (apt's versions move)
+      - name: Copy instead of building
+        if: inputs.copy_from != ''
+        env:
+          FROM: ${{ inputs.copy_from }}
+          TO: ghcr.io/${{ github.repository_owner }}/perception-runpod:${{ steps.tag.outputs.tag }}
+        run: docker buildx imagetools create --tag "$TO" "$FROM"
       - name: Room for the base image (RunPod's PyTorch image, about 15 GB unpacked)
-        if: steps.have.outputs.built != 'true'
+        if: steps.have.outputs.built != 'true' && inputs.copy_from == ''
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
-        if: steps.have.outputs.built != 'true'
+        if: steps.have.outputs.built != 'true' && inputs.copy_from == ''
         with:
           context: ${{ runner.temp }}/context
           push: true
@@ -63,7 +79,7 @@ jobs:
           labels: |
             org.opencontainers.image.description=Software for perception's nodes on RunPod (no code, weights or data)
       - name: Size
-        if: steps.have.outputs.built != 'true'
+        if: steps.have.outputs.built != 'true' && inputs.copy_from == ''
         run: docker image ls "ghcr.io/${{ github.repository_owner }}/perception-runpod"
       # pods pull by tag and digest (RunPodBackend.image): the code must name the digest GHCR has under this tag, or
       # pods would run an older build while the tag says otherwise
