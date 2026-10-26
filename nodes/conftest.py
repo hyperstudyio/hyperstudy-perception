@@ -1,6 +1,7 @@
 """A small synthetic video for the node tests that read one (decode's media.py, face-track's frames.py)."""
 
 from fractions import Fraction
+from pathlib import Path
 from types import SimpleNamespace
 
 import av
@@ -47,6 +48,13 @@ def decoded(path) -> list[tuple[float, np.ndarray]]:
 def nth(path, i: int) -> np.ndarray:
     """Frame i of the video stream, counted from its first: the frame a detector sampling frame i saw."""
     return [rgb for _, rgb in decoded(path)][i]
+
+
+@pytest.fixture
+def rotated():
+    """A clip stored sideways with a 90° rotation, as phones record (nodes/testdata/README.md): shown 32x64, blue on top
+    and red below."""
+    return Path(__file__).parent / "testdata" / "rotated-90.mp4"
 
 
 @pytest.fixture(scope="session")

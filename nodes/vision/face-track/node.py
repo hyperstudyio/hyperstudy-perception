@@ -64,12 +64,11 @@ with Node() as node:
     assets = node.path("crops", "assets")
     crops = assets / "crops"
     crops.mkdir(parents=True, exist_ok=True)
-    W, H = media["width"], media["height"]
     t0 = time.time()
     members = {label: [t for t, l in zip(tracks, labels) if l == label] for label in order}
     candidates = {label: shortlist(members[label]) for label in order}
     flat = [(label, r) for label in order for r in candidates[label]]
-    raw = run_jobs([partial(crop_pixels, video, r["t"], r["box"], 0.0, W, H, QUALITY_PX) for _, r in flat])   # the face box only
+    raw = run_jobs([partial(crop_pixels, video, r["t"], r["box"], 0.0, QUALITY_PX) for _, r in flat])   # the face box only
     images = {label: [] for label in order}
     for (label, _), pixels in zip(flat, raw):
         images[label].append(pixels)
@@ -81,7 +80,7 @@ with Node() as node:
         best = candidates[label][index]
         thumbnail_measures[names[label]] = {"t": best["t"], **measures[index]}
         name = f"person_{names[label].replace(' ', '_')}.jpg"
-        jobs.append(partial(save_crop, video, best["t"], best["box"], PERSON_CROP_PAD, W, H, crops / name, longest_side(PERSON_CROP_PX)))
+        jobs.append(partial(save_crop, video, best["t"], best["box"], PERSON_CROP_PAD, crops / name, longest_side(PERSON_CROP_PX)))
         people.append({"id": f"person:{names[label]}", "first_seen": round(first_seen[label], 3),
                        "seconds_on_screen": round(sum(len(t["rows"]) for t in members[label]) / c["fps"], 1),
                        "crop": f"assets/crops/{name}", "shots": [f"shot:{s}" for s in sorted({t["shot"] for t in members[label]})]})
@@ -90,7 +89,7 @@ with Node() as node:
     for i, (track, label) in enumerate(zip(tracks, labels)):
         rs = track["rows"]
         biggest = max(rs, key=lambda r: r["box"][2] * r["box"][3])
-        jobs.append(partial(save_crop, video, biggest["t"], biggest["box"], TRACK_CROP_PAD, W, H, crops / f"face_{i}.jpg", width(TRACK_CROP_WIDTH)))
+        jobs.append(partial(save_crop, video, biggest["t"], biggest["box"], TRACK_CROP_PAD, crops / f"face_{i}.jpg", width(TRACK_CROP_WIDTH)))
         mean_emotions = {col: float(np.mean([r["emotions"][col] for r in rs])) for col in emotion_cols}
         out_tracks.append({
             "id": f"face:{i}", "person": f"person:{names[label]}" if label != -1 else None, "shot": f"shot:{track['shot']}",

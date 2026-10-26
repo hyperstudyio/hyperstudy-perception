@@ -54,3 +54,12 @@ def test_audio(clip, tmp_path):
         assert w.getnframes() == pytest.approx(16000 * clip.seconds, abs=1600)
         samples = np.frombuffer(w.readframes(w.getnframes()), np.int16)
     assert np.abs(samples).max() > 5000   # the tone, downmixed, not silence
+
+
+def test_keyframes_are_upright(rotated, tmp_path):
+    shots = [{"index": 0, "start": 0.0, "end": 1.0}]
+    keyframes(rotated, shots, tmp_path, 16)
+    img = np.asarray(Image.open(tmp_path / "shot0000_50.jpg")).astype(int)
+    assert img.shape[:2] == (32, 16)   # 16 wide, as ffmpeg shows it: 32x64 upright
+    top, bottom = img[:12].mean((0, 1)), img[20:].mean((0, 1))
+    assert top[2] > 200 > top[0] and bottom[0] > 200 > bottom[2], (top, bottom)

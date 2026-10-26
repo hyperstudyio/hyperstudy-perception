@@ -26,13 +26,21 @@ def test_sizes_are_ffmpegs():
 
 
 def test_crop_pixels(clip):
-    pixels = crop_pixels(clip.path, 0.4, [8, 8, 16, 16], 0.0, clip.w, clip.h, 64)
+    pixels = crop_pixels(clip.path, 0.4, [8, 8, 16, 16], 0.0, 64)
     assert pixels.shape == (64, 64, 3) and pixels.dtype == np.uint8
     assert abs(pixels.mean() - clip.nth(4)[8:24, 8:24].mean()) < 1
 
 
 def test_save_crop(clip, tmp_path):
-    save_crop(clip.path, 1.2, [8, 8, 30, 20], 0.0, clip.w, clip.h, tmp_path / "c.jpg", longest_side(256))
+    save_crop(clip.path, 1.2, [8, 8, 30, 20], 0.0, tmp_path / "c.jpg", longest_side(256))
     img = Image.open(tmp_path / "c.jpg")
     assert img.size == (256, 170)
     assert abs(np.asarray(img).mean() - clip.nth(12)[8:28, 8:38].mean()) < 1
+
+
+def test_a_crop_is_cut_from_the_upright_frame_the_detector_saw(rotated):
+    # torchcodec, which reads the detector's frames, turns a rotated clip upright: 32x64 here, so its boxes are in that
+    # frame. The crop of the bottom half is red, of the top half blue, and a box past the stored 64x32 still fits.
+    bottom = crop_pixels(rotated, 0.5, [0, 40, 32, 24], 0.0, 16).astype(int).mean((0, 1))
+    top = crop_pixels(rotated, 0.5, [0, 0, 32, 24], 0.0, 16).astype(int).mean((0, 1))
+    assert bottom[0] > 200 > bottom[2] and top[2] > 200 > top[0], (bottom, top)

@@ -12,6 +12,7 @@ vendor/
 data/
 runs/
 *.mp4
+!nodes/testdata/*.mp4   # tiny synthetic clips the node tests read (nodes/testdata/README.md)
 *.mov
 *.wav
 *.npz

@@ -33,6 +33,13 @@ def frame_at(container, t: float) -> av.VideoFrame:
     raise NodeError("input", f"the video has no frame at {t:.3f} s")
 
 
+def upright(frame: av.VideoFrame) -> np.ndarray:
+    """The frame as RGB, turned the way players show it. Phone recordings store the picture sideways with a rotation
+    to apply: ffmpeg applied it, and so does torchcodec, which reads the frames face-track's detector sees; PyAV only
+    reports it. The decode node has the same function."""
+    return np.ascontiguousarray(np.rot90(frame.to_ndarray(format="rgb24"), round((frame.rotation or 0) / 90) % 4))
+
+
 def crop_box(box, pad: float, frame_w: int, frame_h: int) -> tuple[int, int, int, int]:
     """x, y, width, height of the padded box within the frame; even, as ffmpeg's crop makes them on 4:2:0 video."""
     x, y, w, h = box
@@ -46,11 +53,12 @@ def even(n: Fraction) -> int:
     return max(2, round(n / 2) * 2)
 
 
-def crop(video: Path, t: float, box, pad: float, frame_w: int, frame_h: int, size) -> av.VideoFrame:
-    """The padded box at `t`, scaled (bicubic, as ffmpeg's scale) to size(width, height) -> (width, height)."""
+def crop(video: Path, t: float, box, pad: float, size) -> av.VideoFrame:
+    """The padded box at `t` (in the upright frame, as the detector saw it, and within it), scaled (bicubic, as
+    ffmpeg's scale) to size(width, height) -> (width, height)."""
     with av.open(str(video)) as container:
-        rgb = frame_at(container, t).to_ndarray(format="rgb24")
-    x, y, w, h = crop_box(box, pad, frame_w, frame_h)
+        rgb = upright(frame_at(container, t))
+    x, y, w, h = crop_box(box, pad, rgb.shape[1], rgb.shape[0])
     out_w, out_h = size(w, h)
     return av.VideoFrame.from_ndarray(np.ascontiguousarray(rgb[y:y + h, x:x + w]), format="rgb24").reformat(
         width=out_w, height=out_h, interpolation="BICUBIC")
@@ -71,10 +79,10 @@ def square(px: int):
     return lambda w, h: (px, px)
 
 
-def save_crop(video: Path, t: float, box, pad: float, frame_w: int, frame_h: int, out: Path, size) -> None:
-    crop(video, t, box, pad, frame_w, frame_h, size).to_image().save(out, quality=90)
+def save_crop(video: Path, t: float, box, pad: float, out: Path, size) -> None:
+    crop(video, t, box, pad, size).to_image().save(out, quality=90)
 
 
-def crop_pixels(video: Path, t: float, box, pad: float, frame_w: int, frame_h: int, px: int) -> np.ndarray:
+def crop_pixels(video: Path, t: float, box, pad: float, px: int) -> np.ndarray:
     """The crop as px x px x 3 RGB, for scoring."""
-    return crop(video, t, box, pad, frame_w, frame_h, square(px)).to_ndarray(format="rgb24")
+    return crop(video, t, box, pad, square(px)).to_ndarray(format="rgb24")

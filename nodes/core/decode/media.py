@@ -7,6 +7,7 @@ from fractions import Fraction
 from pathlib import Path
 
 import av
+import numpy as np
 
 from perception_node import NodeError
 
@@ -61,13 +62,20 @@ def frame_at(container, t: float) -> av.VideoFrame:
     raise NodeError("input", f"the video has no frame at {t:.3f} s")
 
 
+def upright(frame: av.VideoFrame) -> np.ndarray:
+    """The frame as RGB, turned the way players show it. Phone recordings store the picture sideways with a rotation
+    to apply: ffmpeg applied it, and so does torchcodec, which reads the frames face-track's detector sees; PyAV only
+    reports it. The face-track node has the same function."""
+    return np.ascontiguousarray(np.rot90(frame.to_ndarray(format="rgb24"), round((frame.rotation or 0) / 90) % 4))
+
+
 def even_height(w: int, src_w: int, src_h: int) -> int:
     """ffmpeg's `scale=w:-2`: the height that keeps the aspect ratio, to the nearest even number."""
     return max(2, round(Fraction(w * src_h, src_w * 2)) * 2)
 
 
 def keyframes(video: Path, shots: list[dict], out_dir: Path, width: int) -> None:
-    """Three frames per shot, `width` wide (ffmpeg's scale=width:-2, bicubic), as JPEG."""
+    """Three frames per shot, upright, `width` wide (ffmpeg's scale=width:-2, bicubic), as JPEG."""
     out_dir.mkdir(parents=True, exist_ok=True)
     with av.open(str(video)) as container:
         for shot in shots:
@@ -75,9 +83,10 @@ def keyframes(video: Path, shots: list[dict], out_dir: Path, width: int) -> None
             for pos in KEYFRAME_POSITIONS:
                 t = shot["start"] + pos * (shot["end"] - shot["start"])
                 name = f"shot{shot['index']:04d}_{int(pos * 100):02d}.jpg"
-                frame = frame_at(container, t)
-                frame.reformat(width=width, height=even_height(width, frame.width, frame.height), format="rgb24",
-                               interpolation="BICUBIC").to_image().save(out_dir / name, quality=90)
+                rgb = upright(frame_at(container, t))
+                h, w = rgb.shape[:2]
+                av.VideoFrame.from_ndarray(rgb, format="rgb24").reformat(
+                    width=width, height=even_height(width, w, h), interpolation="BICUBIC").to_image().save(out_dir / name, quality=90)
                 shot["keyframes"].append({"t": round(t, 3), "file": f"assets/keyframes/{name}"})
 
 
