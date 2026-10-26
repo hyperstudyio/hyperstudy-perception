@@ -3,7 +3,7 @@ name = "perception-env-faces"
 version = "0.1.0"
 description = "Face nodes: py-feat Detectorv2 (RetinaFace + multitask) and ArcFace identity clustering"
 requires-python = ">=3.12,<3.13"
-dependencies = ["perception-node", "py-feat==2.1.5", "scikit-learn", "pillow"]
+dependencies = ["perception-node", "py-feat==2.1.5", "scikit-learn", "pillow", "av==16.1.0"]
 
 [tool.uv]
 package = false

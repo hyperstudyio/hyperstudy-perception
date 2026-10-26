@@ -614,7 +614,6 @@ def cmd_setup(args):
         else:
             print(f"  {step.what:12s} {step.node or 'this machine':32s} {'ok' if step.ok else 'FAILED':6s} {step.seconds:6.1f} s  {step.message}")
 
-    report(setup.tools())
     for m, placement, why, config in chosen:
         if m.service:
             continue   # runs on its API's machines: nothing to set up here
@@ -713,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("action", choices=["set", "list", "remove"])
     k.add_argument("name", nargs="?")
     k.set_defaults(fn=cmd_keys)
-    st = sub.add_parser("setup", help="install what nodes need here before a run: environments, weights, tools")
+    st = sub.add_parser("setup", help="install what nodes need here before a run: environments and weights")
     st.add_argument("graph", nargs="?")
     st.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
     st.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (as for run)")

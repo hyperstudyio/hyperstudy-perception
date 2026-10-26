@@ -31,3 +31,6 @@ src-tauri/gen/
 # Secrets
 *.env
 .env*
+
+# A copy made to ship with an app has one (scripts/export-release.sh); a checkout never does
+RELEASE.json

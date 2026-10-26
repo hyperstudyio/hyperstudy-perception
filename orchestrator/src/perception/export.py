@@ -14,12 +14,15 @@ import time
 from pathlib import Path
 
 from . import artifacts
+from .release import release
 from .scheduler import Coordinator, LICENCE_ORDER
 
 SCHEMA_VERSION = "0.1.0"
 
 
 def _git_commit() -> str | None:
+    if r := release():
+        return r["commit"][:7]
     out = subprocess.run(["git", "-C", str(Path(__file__).parent), "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
     return out.stdout.strip() or None
 

@@ -1,7 +1,7 @@
 """`perception setup`: everything a node needs on this machine, ready before a run rather than fetched in the middle of
 one. For each node that would run here: its uv environment synced from its lock (`uv sync --frozen`, what `uv run`
 would do on first use), then its `prepare` script run in that environment (its weights downloaded into the cache it
-reads), and the tools nodes call (ffmpeg, ffprobe) found. Each step is timed and reported; a failure is said, with the
+reads). Nodes call no tools of the machine's (they read video with PyAV). Each step is timed and reported; a failure is said, with the
 end of its output, and the rest still runs. Doing it again finds everything in place and takes seconds.
 """
 
@@ -68,7 +68,3 @@ def setup_node(m: Manifest, runner: Runner, uv: str | None = None, config: dict 
         steps.append(Step(m.ref, "models", ok, seconds, tail))
     return steps
 
-
-def tools() -> Step:
-    missing = [t for t in ("ffmpeg", "ffprobe") if not shutil.which(t)]
-    return Step("", "tools", not missing, 0.0, f"{', '.join(missing)} not found (install FFmpeg)" if missing else "ffmpeg, ffprobe")

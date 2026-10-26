@@ -24,6 +24,7 @@ from pathlib import Path
 
 from ..hosts import Host, ssh_command
 from ..manifests import Manifest, Runner
+from ..release import files_in, release
 from .base import Capabilities
 from .native import REPO, NativeBackend
 
@@ -40,10 +41,13 @@ def code_files(manifest: Manifest, runner: Runner) -> list[str]:
     entry_dir = (manifest.directory / runner.entry).resolve().parent.relative_to(REPO).as_posix()
     if not (entry_dir + "/").startswith(dirs[0] + "/"):
         dirs.append(entry_dir)   # a script shared with another node (../work/node.py)
-    out = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--", *dirs], capture_output=True, text=True)
-    if out.returncode:
-        raise RuntimeError(f"{REPO} is not a git checkout: only files git tracks are sent to other machines ({out.stderr.strip()})")
-    files = sorted(f for f in out.stdout.split("\0") if f)
+    if release():
+        files = files_in(dirs)   # a copy shipped with an app: every file in it was tracked where it was made
+    else:
+        out = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--", *dirs], capture_output=True, text=True)
+        if out.returncode:
+            raise RuntimeError(f"{REPO} is not a git checkout: only files git tracks are sent to other machines ({out.stderr.strip()})")
+        files = sorted(f for f in out.stdout.split("\0") if f)
     refuse_links(files)
     if not any(f.startswith(dirs[0] + "/") for f in files):
         raise RuntimeError(f"git tracks no files in {dirs[0]}: commit the node before running it on another machine")
