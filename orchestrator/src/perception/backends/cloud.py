@@ -77,8 +77,8 @@ class CloudBackend(SshBackend):
             return self.deadline_s
         if video_s is None:
             return 60 * 60
-        # the plan (ffprobe) and the run (decode's media.v1, also ffprobe's format duration) read the same length, so they
-        # reserve the same; whole 5 minutes keep the price a round figure
+        # the plan (estimates.probe_seconds) and the run (decode's media.v1) read the same length, the container's
+        # duration through PyAV, so they reserve the same; whole 5 minutes keep the price a round figure
         return max(30 * 60, math.ceil((20 * 60 + video_s) / 300) * 300)
 
     def estimate(self, manifest: Manifest, runner: Runner, inputs: dict[str, Artifact], video_s: float | None = None) -> Estimate:

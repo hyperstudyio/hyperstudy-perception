@@ -28,11 +28,11 @@ def test_sizes_are_ffmpegs():
 def test_crop_pixels(clip):
     pixels = crop_pixels(clip.path, 0.4, [8, 8, 16, 16], 0.0, clip.w, clip.h, 64)
     assert pixels.shape == (64, 64, 3) and pixels.dtype == np.uint8
-    assert abs(pixels.mean() - clip.shown_at(0.4)[8:24, 8:24].mean()) < 1
+    assert abs(pixels.mean() - clip.nth(4)[8:24, 8:24].mean()) < 1
 
 
 def test_save_crop(clip, tmp_path):
     save_crop(clip.path, 1.2, [8, 8, 30, 20], 0.0, clip.w, clip.h, tmp_path / "c.jpg", longest_side(256))
     img = Image.open(tmp_path / "c.jpg")
     assert img.size == (256, 170)
-    assert abs(np.asarray(img).mean() - clip.shown_at(1.2)[8:28, 8:38].mean()) < 1
+    assert abs(np.asarray(img).mean() - clip.nth(12)[8:28, 8:38].mean()) < 1

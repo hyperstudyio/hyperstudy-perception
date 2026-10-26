@@ -24,12 +24,13 @@ def test_probe(clip):
     assert not m["variable_frame_rate"]
 
 
-def test_frame_at_counts_from_the_container_start(clip):
+def test_frame_at_counts_from_the_video_streams_first_frame(clip):
     with av.open(str(clip.path)) as c:
         v = c.streams.video[0]
-        assert float(v.start_time * v.time_base) == clip.late / clip.fps and not c.start_time
-        for t in (0.0, 0.1, 0.3, 1.0, 2.0):   # before the video starts, then frames `late` apart from the stream's own count
-            assert np.array_equal(frame_at(c, t).to_ndarray(format="rgb24"), clip.shown_at(t)), t
+        assert float(v.start_time * v.time_base) == clip.late / clip.fps and not c.start_time   # video after the audio
+        for i in (0, 1, 7, 19):   # frame i at i / fps, as face-track and scenedetect count (not ffmpeg -ss's i - late)
+            for off in (0, 0.0004, -0.0004):   # rounded to the millisecond, either way (29.97 fps frame times are)
+                assert np.array_equal(frame_at(c, i / clip.fps + off).to_ndarray(format="rgb24"), clip.nth(i)), (i, off)
 
 
 def test_frame_at_past_the_end(clip):
@@ -43,7 +44,7 @@ def test_keyframes(clip, tmp_path):
     assert [k["t"] for k in shots[1]["keyframes"]] == [1.15, 1.5, 1.85]
     img = Image.open(tmp_path / "shot0001_50.jpg")
     assert img.size == (33, even_height(33, clip.w, clip.h)) == (33, 24)   # ffmpeg's scale=33:-2
-    assert abs(np.asarray(img).mean() - clip.shown_at(1.5).mean()) < 3   # frames are 10 grey levels apart
+    assert abs(np.asarray(img).mean() - clip.nth(15).mean()) < 3   # frames are 10 grey levels apart
 
 
 def test_audio(clip, tmp_path):

@@ -44,13 +44,13 @@ def decoded(path) -> list[tuple[float, np.ndarray]]:
         return [(float(f.pts * f.time_base), f.to_ndarray(format="rgb24")) for f in c.decode(c.streams.video[0])]
 
 
-def shown_at(path, t: float) -> np.ndarray:
-    """The frame `ffmpeg -ss t` writes: the first at or after t from the container's start."""
-    return next(rgb for time, rgb in decoded(path) if time >= t - 1e-9)
+def nth(path, i: int) -> np.ndarray:
+    """Frame i of the video stream, counted from its first: the frame a detector sampling frame i saw."""
+    return [rgb for _, rgb in decoded(path)][i]
 
 
 @pytest.fixture(scope="session")
 def clip(tmp_path_factory):
     path = tmp_path_factory.mktemp("video") / "clip.mp4"
     make(path)
-    return SimpleNamespace(path=path, fps=FPS, seconds=SECONDS, w=W, h=H, late=LATE, shown_at=lambda t: shown_at(path, t))
+    return SimpleNamespace(path=path, fps=FPS, seconds=SECONDS, w=W, h=H, late=LATE, nth=lambda i: nth(path, i))

@@ -40,15 +40,24 @@ def probe(video: Path) -> dict:
 
 
 def frame_at(container, t: float) -> av.VideoFrame:
-    """The first frame shown at or after `t` seconds (to the millisecond) from the file's start: what
-    `ffmpeg -ss {t:.3f} -i video -frames:v 1` writes. ffmpeg counts from the container's start time, not the video
-    stream's (they differ when the video starts after the audio). The face-track node has the same function."""
+    """The frame nearest `t` seconds after the video stream's first frame. Callers' times are frame times counted from
+    that frame (face-track's frame index / fps, decode's shots from scenedetect's frame counts), rounded to the
+    millisecond: on either side of the frame's own time at 29.97 fps, so neither the first frame at or after t nor the
+    one shown at t is always it. (`ffmpeg -ss` counted from the container's start instead: when the video starts after
+    the audio, it cut crops and keyframes early.) The face-track node has the same function."""
     v = container.streams.video[0]
-    target = Fraction(container.start_time or 0, av.time_base) + Fraction(round(t * 1000), 1000)
+    target = Fraction(v.start_time or 0) * v.time_base + Fraction(round(t * 1000), 1000)
     container.seek(int(target / v.time_base), stream=v, backward=True)
+    before = None
     for frame in container.decode(v):
-        if frame.pts is not None and frame.pts * v.time_base >= target:
-            return frame
+        if frame.pts is None:
+            continue
+        at = frame.pts * v.time_base
+        if at >= target:
+            return before if before is not None and target - before.pts * v.time_base < at - target else frame
+        before = frame
+    if before is not None and target - before.pts * v.time_base < 1 / v.average_rate:   # within the last frame
+        return before
     raise NodeError("input", f"the video has no frame at {t:.3f} s")
 
 

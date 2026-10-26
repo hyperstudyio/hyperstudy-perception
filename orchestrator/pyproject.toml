@@ -10,6 +10,7 @@ dependencies = [
   "referencing>=0.35",
   "perception-node",
   "keyring>=25",
+  "av==16.1.0",
 ]
 
 [project.scripts]
