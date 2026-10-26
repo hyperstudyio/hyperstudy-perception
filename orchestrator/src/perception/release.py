@@ -39,16 +39,19 @@ def files_in(dirs: list[str]) -> list[str]:
 
 def env_dir(env: str) -> Path | None:
     """Where a node environment (envs/NAME) is made: in a checkout, uv's own place (envs/NAME/.venv, None here); for
-    the package, under the store, by the lock and the package version (the package's folder may not be writable, and an
-    upgrade replaces it)."""
+    the package, under the store, by the lock, the commit and the package version (the package's folder may not be
+    writable, and an upgrade replaces it)."""
     if release() is None:
         return None
     lock = REPO / env / "uv.lock"
     h = hashlib.sha256(lock.read_bytes() if lock.exists() else b"no lock")
+    # the commit too: the SDK is installed editable from this copy, so two builds of one version (PyPI's and a local
+    # one) must not share an environment and point its SDK at each other's files
+    h.update(release()["commit"].encode())
     try:
         h.update(version("hyperstudy-perception").encode())
     except PackageNotFoundError:   # the files without the package's metadata (a copy run in place)
-        h.update(release()["commit"].encode())
+        pass
     return home() / "envs" / f"{Path(env).name}-{h.hexdigest()[:12]}"
 
 

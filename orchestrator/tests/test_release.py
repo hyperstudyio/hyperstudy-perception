@@ -19,8 +19,8 @@ NODES = Path(__file__).parent / "nodes"
 @pytest.fixture
 def copy(tmp_path, monkeypatch):
     """This checkout, seen as a copy: RELEASE.json lists `files`, and running git fails the test."""
-    def made(files):
-        (tmp_path / "RELEASE.json").write_text(json.dumps({"commit": "0123456789abcdef", "files": files}))
+    def made(files, commit="0123456789abcdef"):
+        (tmp_path / "RELEASE.json").write_text(json.dumps({"commit": commit, "files": files}))
         monkeypatch.setattr(release, "RELEASE", tmp_path / "RELEASE.json")
         release.release.cache_clear()
 
@@ -53,6 +53,9 @@ def test_the_packages_node_environments_are_made_in_the_store_by_lock_and_versio
     assert release.env_vars("envs/core") == {"UV_PROJECT_ENVIRONMENT": str(core)}
     monkeypatch.setattr(release, "version", lambda _: "9.9.9")   # another version of the package: another environment
     assert release.env_dir("envs/core") != core
+    other = release.env_dir("envs/core")
+    copy([], commit="fedcba9876543210")   # the same version built from another commit: another environment too
+    assert release.env_dir("envs/core") not in (core, other)
 
 
 def test_a_graph_is_a_file_or_one_of_the_pipelines_by_name(tmp_path, monkeypatch):
