@@ -4,6 +4,7 @@ name: RunPod image
 
 on:
   push:
+    branches: ['**']   # not tags: a release's tag push is not a change to the image
     paths:
       - cloud/runpod/image/**
       - orchestrator/src/perception/backends/cloud.py

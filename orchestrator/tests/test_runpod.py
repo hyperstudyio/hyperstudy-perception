@@ -598,6 +598,8 @@ def test_the_backend_uses_the_image_built_from_the_repositorys_files():
     assert RunPodBackend.image_tag == image_tag_module().tag(), "rebuild the image (push) and set RunPodBackend.image_tag to tag.py's"
     # pulled by its digest too: the bytes that were measured, whatever is pushed under the tag later
     assert RunPodBackend.image.endswith(f":{RunPodBackend.image_tag}@{RunPodBackend.image_digest}")
+    # where .github/workflows/runpod-image.yml pushes it: under the repository's owner
+    assert RunPodBackend.image.startswith("ghcr.io/hyperstudyio/perception-runpod:")
     assert RunPodBackend.image_digest.startswith("sha256:") and len(RunPodBackend.image_digest) == 71
 
 
