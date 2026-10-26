@@ -49,8 +49,8 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body,publishedAt > release.json
           # The notes list pull request titles, anyone's once the repository is public, and the docs are MDX, where {...}
           # runs as code when the site is built and <...> is a component: they go in as text only, as character references
-          # (a backslash cannot undo these, and backslashes are one too), and no link target runs a script (`<` is escaped,
-          # so the only targets are [text](url) and [ref]: url). Headings move under
+          # (a backslash cannot undo these, and backslashes are one too), and no scheme that runs a script is left, wherever
+          # it stands (a link target can follow a line break; a scheme starts a word, so metadata: is left alone). Headings move under
           # the entry's ### heading.
           {
             echo "### $TAG"
@@ -58,7 +58,7 @@ jobs:
             echo "**Released:** $(jq -r '.publishedAt[:10]' release.json)"
             echo
             jq -r .body release.json | perl -pe 's/^(#{1,4}) /$1## /; s/&/&amp;/g; s/\\/&#92;/g; s/\{/&#123;/g; s/\}/&#125;/g; s/</&lt;/g;
-              s/(\]\(\s*|^\s*\[[^\]]*\]:\s*)(javascript|vbscript|data):/$1$2-link-removed:/gi'
+              s/\b(javascript|vbscript|data):/$1-link-removed:/gi'
             echo
             echo "---"
           } > entry.md
