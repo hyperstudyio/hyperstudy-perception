@@ -59,8 +59,9 @@ jobs:
             exit 1
           fi
       # moving the image to another owner: the same build (the measured one), copied, not a rebuild (apt's versions move)
-      # read without credentials (a public image of another owner, which this repository's token may not read: docker
-      # would send it and be refused) and written with this repository's; skopeo keeps the digest
+      # read without credentials (a public image of another owner, which this repository's token may not read: once
+      # logged in, docker sends that token and is refused), then written with this repository's; the last step checks
+      # the tag holds the digest the code pins
       - name: Copy instead of building
         if: inputs.copy_from != ''
         env:
@@ -70,8 +71,12 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           case "$FROM" in ghcr.io/*/perception-runpod@sha256:*) ;; *) echo "copy_from must be ghcr.io/OWNER/perception-runpod@sha256:..." >&2; exit 1 ;; esac
-          skopeo --version
-          skopeo copy --all --preserve-digests --src-no-creds --dest-creds "$ACTOR:$TOKEN" "docker://$FROM" "docker://$TO"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker logout ghcr.io
+          docker pull "$FROM"
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag "$FROM" "$TO"
+          docker push "$TO"
       - name: Room for the base image (RunPod's PyTorch image, about 15 GB unpacked)
         if: steps.have.outputs.built != 'true' && inputs.copy_from == ''
         run: |
