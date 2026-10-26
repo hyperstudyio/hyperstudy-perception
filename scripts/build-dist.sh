@@ -17,6 +17,7 @@ import json, sys
 files = sorted(f for f in sys.stdin.read().split("\0") if f)
 json.dump({"commit": sys.argv[1], "files": files}, open(sys.argv[2], "w"), indent=0)
 ' "$(git rev-parse HEAD)" "$data/RELEASE.json"
+cp LICENSE orchestrator/LICENSE   # a real file: the sdist would keep a link to ../LICENSE, which points nowhere there
 (cd orchestrator && uv build --quiet)
-rm -rf "$data"   # a checkout runs from its own files (release.py)
+rm -rf "$data" orchestrator/LICENSE   # a checkout runs from its own files (release.py)
 ls orchestrator/dist

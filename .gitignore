@@ -38,3 +38,4 @@ src-tauri/gen/
 RELEASE.json
 orchestrator/src/perception/_pipeline/
 orchestrator/dist/
+orchestrator/LICENSE

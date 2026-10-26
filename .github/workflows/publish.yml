@@ -1,7 +1,8 @@
-# Publishing a release drafted by release.yml uploads its files, the ones built and checked there, to PyPI, then adds
-# its notes to the HyperStudy docs (as hyperstudy-bridge does). PyPI trusts this workflow in the `pypi` environment
-# (trusted publishing: no PyPI token is stored here). The docs are written with DOCS_REPO_TOKEN, a token that can write
-# hyperstudyio/hyperstudy-docs' contents.
+# Publishing a release drafted by release.yml uploads its files, the ones built and checked there, to PyPI, then opens
+# a pull request on the HyperStudy docs adding its notes to the package's page (hyperstudy-bridge commits its notes
+# directly; here a person merges them). PyPI trusts this workflow in the `pypi` environment (trusted publishing: no
+# PyPI token is stored here). The pull request is opened with DOCS_REPO_TOKEN, a token for hyperstudyio/hyperstudy-docs
+# alone, with contents and pull requests write.
 name: Publish
 
 on:
@@ -36,7 +37,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   docs:
-    name: Add the notes to the docs
+    name: Propose the notes for the docs
     needs: pypi
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -47,28 +48,37 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body,publishedAt > release.json
+          # The notes list pull request titles, anyone's once the repository is public, and the docs are MDX, where {...}
+          # runs as code when the site is built and <...> is a component: they go in as text only, as character references
+          # (a backslash cannot undo these, and backslashes are one too), and links run no script. Headings move under
+          # the entry's ### heading.
           {
             echo "### $TAG"
             echo
             echo "**Released:** $(jq -r '.publishedAt[:10]' release.json)"
             echo
-            jq -r .body release.json | sed -E 's/^(#{1,4}) /\1## /'   # under the entry's ### heading
+            jq -r .body release.json | perl -pe 's/^(#{1,4}) /$1## /; s/&/&amp;/g; s/\\/&#92;/g; s/\{/&#123;/g; s/\}/&#125;/g; s/</&lt;/g;
+              s/(javascript|vbscript|data):/$1-link-removed:/gi'
             echo
             echo "---"
           } > entry.md
-      - name: Insert it after the page's marker, once
+      - name: Open a pull request on the docs with it, after the page's marker
         env:
           GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
+          DOCS: hyperstudyio/hyperstudy-docs
           PAGE: docs/experimenters/hyperstudy-perception.md
         run: |
-          gh api "repos/hyperstudyio/hyperstudy-docs/contents/$PAGE" > page.json
+          branch="release-notes/hyperstudy-perception-$TAG"
+          gh api "repos/$DOCS/contents/$PAGE" > page.json
           jq -r .content page.json | base64 -d > page.md
           grep -q '<!-- RELEASE_NOTES_START -->' page.md || { echo "$PAGE has no <!-- RELEASE_NOTES_START --> marker" >&2; exit 1; }
           if grep -qxF "### $TAG" page.md; then echo "$TAG is already in the docs"; exit 0; fi
           awk 'FNR == NR { entry = entry $0 "\n"; next } { print } /<!-- RELEASE_NOTES_START -->/ { printf "\n%s", entry }' entry.md page.md > new.md
-          gh api --method PUT "repos/hyperstudyio/hyperstudy-docs/contents/$PAGE" \
+          main=$(gh api "repos/$DOCS/git/ref/heads/main" --jq .object.sha)
+          gh api --method POST "repos/$DOCS/git/refs" -f ref="refs/heads/$branch" -f sha="$main" > /dev/null
+          gh api --method PUT "repos/$DOCS/contents/$PAGE" -f branch="$branch" \
             -f message="hyperstudy-perception $TAG release notes" \
-            -f content="$(base64 -w0 new.md)" -f sha="$(jq -r .sha page.json)" \
-            -f "committer[name]=github-actions[bot]" -f "committer[email]=github-actions[bot]@users.noreply.github.com" > /dev/null
-          echo "added $TAG to $PAGE"
+            -f content="$(base64 -w0 new.md)" -f sha="$(jq -r .sha page.json)" > /dev/null
+          gh pr create --repo "$DOCS" --base main --head "$branch" --title "hyperstudy-perception $TAG release notes" \
+            --body "The notes of [hyperstudy-perception $TAG](https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG), as published, for $PAGE."
