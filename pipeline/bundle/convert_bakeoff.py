@@ -43,7 +43,7 @@ def model(id, licence_mode, source=None, revision=None, licence=None):
 
 
 # Models per stage, for stage files that do not record them. Facts from the bake-off notes
-# (docs/research/.../measured_bakeoff_results.md and the licence audit); "needs-review" where unverified.
+# (the bake-off's measured results and the licence audit); "needs-review" where unverified.
 STAGES = {
     "shots": [model("PySceneDetect AdaptiveDetector", "commercial-ok", licence="BSD-3-Clause")],
     "captions": [model("claude-opus-5-5", "api-terms", licence="Anthropic API terms")],

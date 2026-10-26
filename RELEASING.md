@@ -30,7 +30,8 @@ A version on PyPI cannot be replaced. To fix a bad release, release the next pat
 
 ## One-time setup
 
-These need the account owners, not the workflows:
+These need the account owners, not the workflows. `CLAUDE_CODE_OAUTH_TOKEN` (pull request reviews) and
+`DOCS_REPO_TOKEN` are hyperstudyio organization secrets, so they already reach this repository.
 
 - **The PyPI publisher.** On pypi.org, under *Your projects → Publishing → Add a new pending publisher*, enter:
   - PyPI project name: `hyperstudy-perception`
@@ -41,7 +42,8 @@ These need the account owners, not the workflows:
 
   The first publish creates the project. No PyPI token is stored anywhere.
 - **The `pypi` environment** in this repository's settings. Optionally, add yourself as a required reviewer.
-- **`DOCS_REPO_TOKEN`**, a repository secret: a fine-grained token for `hyperstudyio/hyperstudy-docs` only, with
-  *Contents* and *Pull requests* read and write.
+- **`DOCS_REPO_TOKEN`**, an organization secret shared with hyperstudy-bridge: a fine-grained token for
+  `hyperstudyio/hyperstudy-docs`. This workflow opens a pull request, so the token needs *Pull requests* read and
+  write as well as *Contents*.
 - **The docs page** `docs/experimenters/hyperstudy-perception.md` in hyperstudy-docs, with a
   `<!-- RELEASE_NOTES_START -->` line where entries go, newest first.

@@ -11,14 +11,20 @@ same bundle format and the app's annotator component. See [PLAN.md](PLAN.md).
 Status: research prototype. `pipeline/bakeoff/` is the model bake-off as it stood on 2026-10-23, moved here from
 the HyperStudy repo before the refactor described in [PLAN.md](PLAN.md).
 
+Install it with `uv tool install hyperstudy-perception` (or pip); [orchestrator/README.md](orchestrator/README.md) shows
+how to run it, and [RELEASING.md](RELEASING.md) how a release is cut.
+
 | Path | Contents |
 |---|---|
+| `orchestrator/` | The `perception` CLI: graphs, planning, the run coordinator and store, the places nodes run |
+| `nodes/`, `envs/`, `sdk/` | The nodes, the locked uv environments they run in, and the SDK they write outputs with |
+| `graphs/` | The graphs `perception run` takes by name (`perception graphs` lists them) |
 | `schema/` | Track bundle format: conventions and the JSON Schema (v0.1 draft) |
+| `cloud/` | Cloud GPU images and scripts (RunPod, SkyPilot) |
 | `pipeline/bundle/` | `convert_bakeoff.py` (bake-off run → bundle) and `validate.py` (schema, checksums, cross-references) |
 | `pipeline/bakeoff/` | Bake-off stages (one uv environment each), the HTML annotator prototype, evaluation scripts |
-| `eval/labels/` | Hand labels and reference sets (track ids and times only; no video) |
-| `docs/research/`, `docs/reports/` | Model surveys, measured results (`docs/research/Agent video perception audio and objects/measured_bakeoff_results.md`), hosting report |
-| `docs/plans/` | Annotator plan |
+| `docs/` | The `--json` protocol the app reads, the graph spec and the MVP plan |
 
-Model weights are downloaded at run time under their own licences; several (py-feat, ArcFace, RTMW, Gaze-LLE)
-are non-commercial. No video or model weights are stored in this repository.
+The code is MIT licensed ([LICENSE](LICENSE)). Model weights are downloaded at run time under their own licences;
+several (py-feat, ArcFace, RTMW, Gaze-LLE) are non-commercial. No study video or model weights are stored in this
+repository (`nodes/testdata/` holds tiny synthetic clips for tests).
