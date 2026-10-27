@@ -55,9 +55,14 @@ def test_plan_and_the_node_agree_where_a_weight_is_cached(tmp_path, cache):
     assert weights_cached(sha) and model_cached(model)                              # not one, after
 
 
-def test_only_hub_and_checksummed_url_weights_are_fetched_by_a_run():
-    url = ModelRef(id="u", source="https://example.org/m.zip", licence_mode="commercial-ok")
-    assert not fetched(url)                                                      # no sha256: nothing to fetch or check
+def test_a_url_weight_needs_its_sha256_and_is_then_fetched_by_a_run():
+    with pytest.raises(ValueError, match="needs its sha256"):                  # it would download unseen by plan
+        ModelRef(id="u", source="https://example.org/m.zip", licence_mode="commercial-ok")
+    assert fetched(ModelRef(id="u", source="https://example.org/m.zip", sha256="a" * 64, licence_mode="commercial-ok"))
+    for other in ("http://example.org/m.zip", "HTTPS://example.org/m.zip", "ftp://example.org/m.zip"):
+        with pytest.raises(ValueError, match="lower case"):                    # plan would not count it a download
+            ModelRef(id="h", source=other, sha256="a" * 64, licence_mode="commercial-ok")
+    assert not fetched(ModelRef(id="p", source="py-feat==2.1.5 (weights from hf://py-feat)", licence_mode="academic-only"))
     assert fetched(ModelRef(id="h", source="hf://org/repo", licence_mode="commercial-ok"))
     assert not fetched(ModelRef(id="p", source="py-feat==2.1.5", licence_mode="academic-only"))
     with pytest.raises(ValueError):
@@ -75,11 +80,12 @@ def test_every_node_fetches_the_weights_its_manifest_declares():
     checked = 0
     for m in Registry.load(nodes):
         declared = {(x.source, x.sha256) for x in m.models if x.sha256}
-        if not declared:
+        if not (m.directory / "models.py").exists():
+            assert not declared, f"{m.ref} declares URL weights but has no models.py WEIGHTS to fetch them"
             continue
         spec = importlib.util.spec_from_file_location(f"weights_of_{m.id}", m.directory / "models.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        assert {(w["url"], w["sha256"]) for w in module.WEIGHTS.values()} == declared, m.ref
+        assert {(w["url"], w["sha256"]) for w in getattr(module, "WEIGHTS", {}).values()} == declared, m.ref
         checked += 1
     assert checked   # body-pose at least
