@@ -20,6 +20,16 @@ from .scheduler import Coordinator, LICENCE_ORDER
 SCHEMA_VERSION = "0.1.0"
 
 
+def _version() -> str:
+    """The installed package's version: what made the bundle ("unknown" in a checkout not installed; its git_commit
+    says which)."""
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("hyperstudy-perception")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def _git_commit() -> str | None:
     if r := release():
         return r["commit"][:7]
@@ -92,7 +102,7 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
         "format": "hyperstudy-perception-bundle", "schema_version": SCHEMA_VERSION,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
         "video": {k: media[k] for k in ("sha256", "duration", "fps", "width", "height")} | ({"filename": media["filename"]} if media.get("filename") else {}),
-        "pipeline": {"name": "hyperstudy-perception", "version": "0.1.0", "git_commit": _git_commit(), "source": f"perception run {run_id}"},
+        "pipeline": {"name": "hyperstudy-perception", "version": _version(), "git_commit": _git_commit(), "source": f"perception run {run_id}"},
         "layers": entries,
         "assets": assets,
     }
