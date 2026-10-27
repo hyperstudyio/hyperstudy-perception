@@ -6,6 +6,7 @@ A manifest is the only thing the coordinator knows about a node. The graph refer
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -77,9 +78,11 @@ class ModelRef(Strict):
     def _url_has_sha256(self):
         # weights come over https only; a URL with no checksum would be fetched without plan counting it a download
         # (--allow-downloads), unchecked. plan.fetched() counts exactly https sources with a sha256
-        if self.source and self.source.startswith("http://"):
-            raise ValueError(f"model {self.id}: weights are fetched over https, not http")
-        if self.source and self.source.startswith("https://") and not self.sha256:
+        url = re.match(r"([A-Za-z][A-Za-z0-9+.-]*)://", self.source or "")   # a URL at the start (not a note naming one)
+        scheme = url.group(1) if url else None
+        if scheme is not None and scheme not in ("hf", "https"):   # http, HTTPS, ftp...: plan.fetched() would miss them
+            raise ValueError(f"model {self.id}: a source is hf://... or https://... (lower case), not {scheme}://")
+        if scheme == "https" and not self.sha256:
             raise ValueError(f"model {self.id}: a URL source needs its sha256 (perception_node.weights)")
         return self
 
