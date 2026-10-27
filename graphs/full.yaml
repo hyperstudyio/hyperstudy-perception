@@ -22,6 +22,9 @@ nodes:
   - id: asr
     uses: audio.asr@1.0.0
     inputs: {audio: $nodes.decode.audio, shots: $nodes.decode.shots}
+  - id: waveform
+    uses: audio.waveform@1.0.0
+    inputs: {audio: $nodes.decode.audio}
   - id: faces
     uses: vision.face-track@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
