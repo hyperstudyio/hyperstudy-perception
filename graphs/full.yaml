@@ -26,7 +26,7 @@ nodes:
     uses: audio.waveform@1.0.0
     inputs: {audio: $nodes.decode.audio}
   - id: faces
-    uses: vision.face-track@1.0.0
+    uses: vision.face-track@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
   - id: bodies
     uses: vision.body-pose@1.0.0
