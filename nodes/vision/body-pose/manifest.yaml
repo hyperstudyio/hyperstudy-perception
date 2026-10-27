@@ -11,7 +11,7 @@ config:
 runners:
   # RTMW on CoreML (an MLProgram), YOLOX on the CPU: see models.py
   - {kind: native, env: envs/vision, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
-  # onnxruntime-gpu's CUDA provider: CUDA 12 and cuDNN 9 on the machine
+  # onnxruntime-gpu's CUDA provider: CUDA 13 and cuDNN 9 come with it (envs/vision); the machine needs an NVIDIA driver >= 580
   - {kind: native, env: envs/vision, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 4}
   - {kind: native, env: envs/vision, entry: node.py, accelerator: cpu}
 resources: {cpu_cores: 4, memory_gb: 4, gpu: shared}

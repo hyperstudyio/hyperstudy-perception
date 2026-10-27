@@ -5,7 +5,7 @@ weights cache and checked by sha256 (perception_node.weights); the manifest list
 Where they run (the request's accelerator):
   mps   RTMW on CoreML, as an MLProgram: one 384x288 crop takes 10.7 ms on an M5 Max, against 18.9 ms for the
         NeuralNetwork format rtmlib's device='mps' builds and 41.8 ms on the CPU. 405 of its 456 nodes run on CoreML.
-  cuda  both on CUDA (onnxruntime-gpu).
+  cuda  both on CUDA (onnxruntime-gpu, with CUDA 13 and cuDNN 9 from pip wheels; an NVIDIA driver >= 580).
   cpu   both on the CPU.
 YOLOX runs on the CPU on a Mac: its ONNX ends in NMS with data-dependent output shapes, which ONNX Runtime 1.31's CoreML
 provider fails on in both formats (static/inferred rank mismatch; zero-element dynamic shape on a frame with no person).
@@ -39,6 +39,8 @@ def weights(name: str):
 
 def session(onnx, accelerator: str, use_coreml: bool):
     import onnxruntime as ort
+    if accelerator == "cuda":
+        ort.preload_dlls()   # the CUDA 13 runtime and cuDNN 9 from their pip wheels (envs/vision), not the system's
     wanted = CUDA if accelerator == "cuda" else COREML if accelerator == "mps" and use_coreml else "CPUExecutionProvider"
     s = ort.InferenceSession(str(onnx), providers=[wanted, "CPUExecutionProvider"] if wanted != "CPUExecutionProvider" else [wanted])
     name = wanted if isinstance(wanted, str) else wanted[0]

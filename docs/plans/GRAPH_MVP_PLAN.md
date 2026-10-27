@@ -168,3 +168,7 @@ already draws (`pipeline/bundle/convert_bakeoff.py`'s `*_layer` functions). The 
 - **Weights from a URL.** A model's `source` may be an https URL with its `sha256`. The node fetches the file into
   one shared cache keyed by that sha256 (`perception_node.weights`), and checks it before use. `plan` lists such a
   file as a download until it is in the cache.
+- **Follow-up: weights we host or bake into the image (to revisit).** Weights are keyed by sha256, so a copy we
+  host, or one already in the cloud image's `PERCEPTION_WEIGHTS`, is the same file to every node. `fetch()` could try
+  our mirror before the source. A cloud run could then start with no download, so a pay-per-use GPU isn't billed
+  while weights arrive. The mirrorable models are already listed in PLAN.md §4.
