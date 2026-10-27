@@ -89,3 +89,27 @@ def test_every_node_fetches_the_weights_its_manifest_declares():
         assert {(w["url"], w["sha256"]) for w in getattr(module, "WEIGHTS", {}).values()} == declared, m.ref
         checked += 1
     assert checked   # body-pose at least
+
+
+def hub_snapshot(hub, repo: str, commit: str, ref: str | None = None):
+    """The Hugging Face cache's layout for one revision of a repository: snapshots/<commit>, and refs/<ref> naming it."""
+    org, name = repo.split("/")
+    folder = hub / f"models--{org}--{name}"
+    (folder / "snapshots" / commit).mkdir(parents=True)
+    if ref:
+        (folder / "refs").mkdir(exist_ok=True)
+        (folder / "refs" / ref).write_text(commit)
+
+
+def test_a_hub_source_pinned_to_a_revision_is_cached_only_at_that_revision(tmp_path, monkeypatch):
+    """A cache holding the repository at another commit is not the pinned one: a run would download it."""
+    from perception.plan import hf_cached
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    pinned, other = "a" * 40, "b" * 40
+    hub_snapshot(tmp_path, "org/repo", other, ref="main")
+    assert hf_cached("hf://org/repo")                                   # unpinned: any revision is enough
+    assert not hf_cached(f"hf://org/repo@{pinned}")
+    assert not hf_cached(f"hf://org/repo@{pinned}/config.yaml")
+    assert hf_cached("hf://org/repo@main") and not hf_cached("hf://org/repo@v2")   # a branch or tag, through refs/
+    hub_snapshot(tmp_path, "org/repo", pinned)
+    assert hf_cached(f"hf://org/repo@{pinned}") and hf_cached(f"hf://org/repo@{pinned}/config.yaml")
