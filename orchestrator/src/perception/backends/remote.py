@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ..hosts import Host, ssh_command
+from ..hosts import Host
 from ..manifests import Manifest, Runner
 from ..release import files_in, release
 from .base import Capabilities
@@ -127,7 +127,7 @@ class SshBackend(NativeBackend):
         files = code_files(manifest, runner)
         caps = self.host.caps
         spec = {
-            "dest": self.host.dest, "root": self.host.root, "host": self.host.name, "ssh": ssh_command(),
+            "dest": self.host.dest, "root": self.host.root, "host": self.host.name, "ssh": self.host.ssh(),
             "code": code_hash(files), "files": files,
             "node_dir": manifest.directory.resolve().relative_to(REPO).as_posix(), "entry": runner.entry, "env": runner.env,
             "runner_kind": self.runner_kind, "python": self.python, "uv": caps.tools.get("uv"), "prepare": manifest.prepare,

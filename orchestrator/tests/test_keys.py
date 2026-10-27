@@ -230,3 +230,73 @@ def test_a_locked_keychain_is_said_plainly_and_nothing_half_done(home, chain, ca
     err = capsys.readouterr().err
     assert "keychain" in err and "locked" in err and "Traceback" not in err
     assert json.loads((home / "keys.json").read_text()) == ["HF_TOKEN"]   # the index still says what the keychain holds
+
+
+# --- keys check: whether the provider accepts a key ------------------------------------------------------------------
+
+def check_json(capsys, name: str) -> dict:
+    assert cli.main(["--json", "keys", "check", name]) == 0
+    [out] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert out["type"] == "key_check" and out["name"] == name
+    assert SECRET not in json.dumps(out)
+    return out
+
+
+def test_a_key_is_checked_with_its_own_provider_once_and_its_answer_said(home, chain, monkeypatch, capsys):
+    from perception import keycheck
+    asked = []
+
+    def provider(status, body=b"{}"):
+        def get(url, headers):
+            asked.append((url, headers))
+            return status, body
+        return get
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    monkeypatch.setattr(keycheck, "get", provider(200))
+    assert check_json(capsys, "ANTHROPIC_API_KEY") == {"v": 1, "type": "key_check", "name": "ANTHROPIC_API_KEY", "ok": True,
+                                                        "detail": "Anthropic accepted the key"}
+    assert asked == [(keycheck.ANTHROPIC, {"x-api-key": SECRET, "anthropic-version": "2023-06-01"})]
+    monkeypatch.setattr(keycheck, "get", provider(401))
+    assert check_json(capsys, "ANTHROPIC_API_KEY")["detail"] == "Anthropic refused the key"
+    monkeypatch.setenv("HF_TOKEN", SECRET)
+    monkeypatch.setattr(keycheck, "get", provider(200, b'{"name": "ana"}'))
+    assert check_json(capsys, "HF_TOKEN")["detail"] == "Hugging Face accepted the key (as ana)"
+    assert asked[-1] == (keycheck.HUGGING_FACE, {"Authorization": f"Bearer {SECRET}"})
+
+
+def test_a_key_that_is_not_set_or_a_provider_out_of_reach_is_said_so_and_nothing_is_sent(home, chain, monkeypatch, capsys):
+    from perception import keycheck
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(keycheck, "get", lambda url, headers: pytest.fail("nothing to send"))
+    assert check_json(capsys, "ANTHROPIC_API_KEY") == {"v": 1, "type": "key_check", "name": "ANTHROPIC_API_KEY", "ok": False,
+                                                        "detail": "ANTHROPIC_API_KEY is not set"}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+
+    def offline(url, headers):
+        raise OSError("Network is unreachable")
+    monkeypatch.setattr(keycheck, "get", offline)
+    out = check_json(capsys, "ANTHROPIC_API_KEY")
+    assert out["ok"] is False and "could not reach" in out["detail"]
+
+
+def test_a_key_perception_has_no_check_for_is_an_error(home, chain, capsys):
+    assert cli.main(["--json", "keys", "check", "SOME_OTHER_KEY"]) == 1
+    [err] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert err["type"] == "error" and "no check for SOME_OTHER_KEY" in err["problems"][0]
+
+
+def test_a_provider_answer_that_is_cut_short_or_not_json_is_still_an_answer(home, chain, monkeypatch, capsys):
+    import http.client
+    from perception import keycheck
+    monkeypatch.setenv("HF_TOKEN", SECRET)
+    monkeypatch.setattr(keycheck, "get", lambda url, headers: (200, b"<html>not json</html>"))
+    assert check_json(capsys, "HF_TOKEN")["detail"] == "Hugging Face accepted the key"
+    monkeypatch.setattr(keycheck, "get", lambda url, headers: (200, b"[]"))
+    assert check_json(capsys, "HF_TOKEN")["ok"] is True
+
+    def cut_short(url, headers):
+        raise http.client.IncompleteRead(b"{")
+    monkeypatch.setattr(keycheck, "get", cut_short)
+    out = check_json(capsys, "HF_TOKEN")
+    assert out["ok"] is False and "could not reach" in out["detail"]

@@ -41,7 +41,7 @@ from .backends.native import NativeBackend, SelfBackend
 from .backends.probe import probe
 from .backends.cloud import Cloud, CloudBackend, RunPodBackend
 from .backends.remote import SshBackend
-from .hosts import HostError, Hosts, ssh_command
+from .hosts import HostError, Hosts, probe_dest
 from .keys import load_secrets
 from .ir import GraphError, compile_graph
 from .manifests import Registry
@@ -258,8 +258,13 @@ def cmd_nodes(args):
 def cmd_models(args):
     reg = registry(args)
     if args.json:
+        # each node too: what it is called, the API it calls (service) and the keys it needs, and its fixed choices
+        # (a model, an effort) at their defaults, with prices: what the app's settings show
+        from .plan import settings
         emit("models", models=[{"node": m.ref, **x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"})}
-                               for m in reg for x in m.models])
+                               for m in reg for x in m.models],
+             nodes=[{"node": m.ref, "title": m.title, "service": m.service, "secrets": list(m.secrets),
+                     "settings": settings(m, {k: s.get("default") for k, s in m.config.items()})} for m in reg])
         return 0
     for m in reg:
         for x in m.models:
@@ -481,7 +486,18 @@ def cmd_hosts(args):
         if args.action == "add":
             if not args.dest:
                 raise HostError("hosts add NAME USER@HOST")
-            hosts.add(args.name, args.dest, args.root)
+            hosts.add(args.name, args.dest, args.root, args.user, args.port, args.identity)
+        elif args.action == "probe":   # a connection test: nothing is added, nothing changes on the host
+            dest = args.dest or args.name
+            if not dest:
+                raise HostError("hosts probe USER@HOST")
+            caps, root = probe_dest(dest, args.root, args.user, args.port, args.identity)
+            found = {"dest": dest, "root": root, "caps": {**caps.__dict__, "accelerators": sorted(caps.accelerators)}}
+            if args.json:
+                emit("host_probe", **found)
+            else:
+                print(f"{dest}: {caps.platform}, {caps.cpu_cores} cores, {caps.memory_gb} GB, {'/'.join(sorted(caps.accelerators))}")
+            return 0
         elif args.action in ("check", "remove", "clean") and not args.name:
             raise HostError(f"hosts {args.action} NAME")
         elif args.action == "check":
@@ -510,7 +526,7 @@ def cmd_hosts(args):
                       f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then '
                       f'echo "a node is running there" >&2; exit 4; fi; done\n'
                       f"chmod -R u+w {root}/objects 2>/dev/null; rm -rf {root}/objects {root}/code {root}/work")
-            out = subprocess.run([*ssh_command(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
+            out = subprocess.run([*host.ssh(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
             if out.returncode:
                 raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")
     except HostError as e:
@@ -536,6 +552,13 @@ def cmd_cloud(args):
     (SkyPilot, your AWS credentials) or RunPod (an API key). `on` checks that the provider can be used first."""
     cloud = Cloud(home())
     problem = None
+    if args.action == "check":   # whether it could be used, changing nothing (a test)
+        problem = runpod_problem() if args.provider == "runpod" else aws_problem()
+        if args.json:
+            emit("cloud_check", provider=args.provider, ok=problem is None, detail=problem or f"{args.provider} can be used")
+        else:
+            print(problem or f"{args.provider} can be used")
+        return 0
     if args.action == "on":
         problem = runpod_problem() if args.provider == "runpod" else aws_problem()
         if problem is None:
@@ -609,6 +632,16 @@ def cmd_keys(args):
             if not args.name:
                 raise ValueError("keys remove NAME: which key?")
             result = {"name": args.name, "removed": keys.remove(args.name)}
+        elif args.action == "check":   # whether its provider accepts it: a refused key is an answer, not a failure
+            if not args.name:
+                raise ValueError("keys check NAME: which key?")
+            from .keycheck import check
+            ok, detail = check(args.name, keys.load().values.get(args.name))
+            if args.json:
+                emit("key_check", name=args.name, ok=ok, detail=detail)
+            else:
+                print(detail)
+            return 0
         else:
             found = keys.load()
             result = {"keys": [{"name": k, "source": found.sources[k]} for k in sorted(found.values)], "problems": found.problems}
@@ -743,17 +776,20 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
     rr.set_defaults(fn=cmd_rerun)
     h = sub.add_parser("hosts", help="lab servers nodes can run on, over SSH")
-    h.add_argument("action", choices=["add", "list", "check", "remove", "clean"])
-    h.add_argument("name", nargs="?")
+    h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe"])
+    h.add_argument("name", nargs="?", help="probe: the ssh destination")
     h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias)")
     h.add_argument("--root", default=".cache/hyperstudy-perception", help="add: where on the host its files go (under its home if relative)")
+    h.add_argument("--user", help="add, probe: the user to log in as, over what ~/.ssh/config says")
+    h.add_argument("--port", type=int, help="add, probe: the ssh port, over what ~/.ssh/config says")
+    h.add_argument("--identity", help="add, probe: a private key file on this machine, over what ~/.ssh/config says")
     h.set_defaults(fn=cmd_hosts)
     c = sub.add_parser("cloud", help="offer a cloud GPU machine to nodes that can use one")
-    c.add_argument("action", choices=["on", "off", "status"])
+    c.add_argument("action", choices=["on", "off", "status", "check"])
     c.add_argument("provider", nargs="?", choices=Cloud.providers, default="aws")
     c.set_defaults(fn=cmd_cloud)
     k = sub.add_parser("keys", help="your API keys and tokens: store one in the keychain, list where each comes from")
-    k.add_argument("action", choices=["set", "list", "remove"])
+    k.add_argument("action", choices=["set", "list", "remove", "check"])
     k.add_argument("name", nargs="?")
     k.set_defaults(fn=cmd_keys)
     st = sub.add_parser("setup", help="install what nodes need here before a run: environments and weights")

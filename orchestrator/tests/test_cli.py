@@ -306,3 +306,28 @@ def test_setup_for_a_graph_with_a_node_that_cannot_run_here_is_not_ready(home, c
     out = lines(capsys)
     [failed] = [o for o in out if o["type"] == "setup.step" and not o["ok"]]
     assert failed["what"] == "place" and "cannot run here" in failed["message"] and out[-1]["ok"] is False
+
+
+def test_cloud_check_says_whether_a_provider_can_be_used_and_changes_nothing(home, capsys, monkeypatch):
+    from perception import cli as cli_mod
+    monkeypatch.setattr(cli_mod, "runpod_problem", lambda: "RunPod did not accept the key in RUNPOD_API_KEY (401)")
+    assert cli("cloud", "check", "runpod") == 0
+    [out] = lines(capsys)
+    assert out == {"v": 1, "type": "cloud_check", "provider": "runpod", "ok": False, "detail": "RunPod did not accept the key in RUNPOD_API_KEY (401)"}
+    monkeypatch.setattr(cli_mod, "runpod_problem", lambda: None)
+    assert cli("cloud", "check", "runpod") == 0
+    assert lines(capsys)[0]["ok"] is True
+    assert cli("cloud", "status", "runpod") == 0
+    assert lines(capsys)[0]["runpod"]["enabled"] is False                         # checking did not turn it on
+
+
+def test_models_list_gives_each_node_its_title_service_keys_and_choices_with_prices(home, capsys):
+    assert main(["--json", "models", "list"]) == 0   # the repo's own nodes
+    [out] = lines(capsys)
+    captions = next(n for n in out["nodes"] if n["node"] == "vlm.shot-captions@1.0.0")
+    assert captions["service"] == "Anthropic API" and captions["secrets"] == ["ANTHROPIC_API_KEY"]
+    model = next(s for s in captions["settings"] if s["key"] == "model")
+    assert model["value"] == "claude-haiku-5-5" and model["choices"] == ["claude-haiku-5-5", "claude-opus-5-5"]
+    assert set(model["prices"]) == set(model["choices"]) and model["per"]
+    asr = next(n for n in out["nodes"] if n["node"] == "audio.asr@1.0.0")
+    assert asr["service"] is None and asr["secrets"] == []
