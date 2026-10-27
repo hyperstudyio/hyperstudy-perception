@@ -59,6 +59,8 @@ def test_a_url_weight_needs_its_sha256_and_is_then_fetched_by_a_run():
     with pytest.raises(ValueError, match="needs its sha256"):                  # it would download unseen by plan
         ModelRef(id="u", source="https://example.org/m.zip", licence_mode="commercial-ok")
     assert fetched(ModelRef(id="u", source="https://example.org/m.zip", sha256="a" * 64, licence_mode="commercial-ok"))
+    with pytest.raises(ValueError, match="over https"):                       # plan would not count it a download
+        ModelRef(id="h", source="http://example.org/m.zip", sha256="a" * 64, licence_mode="commercial-ok")
     assert fetched(ModelRef(id="h", source="hf://org/repo", licence_mode="commercial-ok"))
     assert not fetched(ModelRef(id="p", source="py-feat==2.1.5", licence_mode="academic-only"))
     with pytest.raises(ValueError):
