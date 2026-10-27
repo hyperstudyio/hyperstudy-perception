@@ -1,9 +1,19 @@
 [project]
 name = "perception-env-audio"
 version = "0.1.0"
-description = "Audio nodes on Apple silicon: Parakeet TDT via MLX"
+description = "Audio nodes: Parakeet TDT via MLX (Apple silicon), pyannote speaker diarization (torch)"
 requires-python = ">=3.12,<3.13"
-dependencies = ["perception-node", "parakeet-mlx==0.5.3; sys_platform == 'darwin' and platform_machine == 'arm64'"]
+dependencies = [
+  "perception-node",
+  "parakeet-mlx==0.5.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  # the bake-off's versions (tools/perception-bakeoff/uv.lock): pyannote.audio 4.0.7 on torch 2.8.0, with the torchaudio
+  # and torchcodec built for it (unpinned, uv picks 2.11 and 0.17, made for later torch). PyPI's torch 2.8.0 wheels for
+  # Linux are built for CUDA 12.8, whose runtime and cuDNN come with them as wheels
+  "pyannote.audio==4.0.7",
+  "torch==2.8.0",
+  "torchaudio==2.8.0",
+  "torchcodec==0.7.0",
+]
 
 [tool.uv]
 package = false
