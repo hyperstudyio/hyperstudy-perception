@@ -284,3 +284,19 @@ def test_a_key_perception_has_no_check_for_is_an_error(home, chain, capsys):
     assert cli.main(["--json", "keys", "check", "SOME_OTHER_KEY"]) == 1
     [err] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert err["type"] == "error" and "no check for SOME_OTHER_KEY" in err["problems"][0]
+
+
+def test_a_provider_answer_that_is_cut_short_or_not_json_is_still_an_answer(home, chain, monkeypatch, capsys):
+    import http.client
+    from perception import keycheck
+    monkeypatch.setenv("HF_TOKEN", SECRET)
+    monkeypatch.setattr(keycheck, "get", lambda url, headers: (200, b"<html>not json</html>"))
+    assert check_json(capsys, "HF_TOKEN")["detail"] == "Hugging Face accepted the key"
+    monkeypatch.setattr(keycheck, "get", lambda url, headers: (200, b"[]"))
+    assert check_json(capsys, "HF_TOKEN")["ok"] is True
+
+    def cut_short(url, headers):
+        raise http.client.IncompleteRead(b"{")
+    monkeypatch.setattr(keycheck, "get", cut_short)
+    out = check_json(capsys, "HF_TOKEN")
+    assert out["ok"] is False and "could not reach" in out["detail"]

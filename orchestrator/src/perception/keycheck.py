@@ -4,6 +4,7 @@ provider, never through a redirect (runpod.OPENER)."""
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -22,6 +23,15 @@ def get(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+
+
+def account(body: bytes) -> str | None:
+    """The account name in Hugging Face's answer, if it says one (the key was accepted either way)."""
+    try:
+        d = json.loads(body or b"{}")
+    except ValueError:
+        return None
+    return d.get("name") if isinstance(d, dict) else None
 
 
 def check(name: str, value: str | None) -> tuple[bool, str]:
@@ -44,9 +54,8 @@ def check(name: str, value: str | None) -> tuple[bool, str]:
             status, body = get(HUGGING_FACE, {"Authorization": f"Bearer {value}"})
             provider = "Hugging Face"
             if status == 200:
-                who = json.loads(body or b"{}").get("name")
-                return True, f"Hugging Face accepted the key{f' (as {who})' if who else ''}"
-    except OSError as e:
+                return True, f"Hugging Face accepted the key{f' (as {who})' if (who := account(body)) else ''}"
+    except (OSError, http.client.HTTPException) as e:   # no whole answer (a reply cut short is not an OSError)
         return False, f"could not reach the provider to check: {e}"
     if status == 200:
         return True, f"{provider} accepted the key"
