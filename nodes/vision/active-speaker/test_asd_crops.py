@@ -4,8 +4,8 @@ the model. Run: uv run --project envs/gaze --with pytest pytest nodes/vision/act
 import numpy as np
 import pytest
 
-from asd_crops import (CROP_SCALE, FPS, OUTSIDE_GREY, audio_span, clip_windows, crop_boxes, medfilt, padded_region,
-                       plans_for, track_frames, wanted_frames)
+from asd_crops import (CROP_SCALE, FACE_SIZE, FPS, OUTSIDE_GREY, VideoTooShort, audio_span, clip_windows, clips_as_completed,
+                       crop_boxes, medfilt, padded_region, plans_for, track_frames)
 from video25 import grey_frames
 
 
@@ -59,9 +59,39 @@ def test_tracks_under_0_4_s_are_not_scored_and_a_track_in_an_unknown_shot_is_ref
     long = track(6.0, 6.2, [[0, 0, 10, 10]] * 2, id="face:1")        # 5.875 .. 6.325 s: frames 147 .. 158
     plans = plans_for([short, long], shots)
     assert [p[0] for p in plans] == [1] and plans[0][1].tolist() == list(range(147, 159))
-    assert wanted_frames(plans)[150] == [(0, 3)] and 146 not in wanted_frames(plans)
     with pytest.raises(ValueError, match="face:0 is in shot:9"):
         plans_for([track(1, 2, [[0, 0, 1, 1]], shot="shot:9")], shots)
+
+
+def numbered_frames(n, seen):
+    """n tiny frames, each filled with its index; `seen` records how far the consumer has read."""
+    for i in range(n):
+        seen.append(i)
+        yield i, np.full((4, 4), i, np.uint8)
+
+
+def patch_of(gray, rect):
+    """A face patch holding the frame's number plus the rectangle's tag, so the test can tell what was cut where."""
+    return np.full((FACE_SIZE, FACE_SIZE), gray[0, 0] + rect, np.uint8)
+
+
+def test_each_clip_is_handed_over_as_soon_as_its_last_frame_has_gone_by():
+    plans = [(0, np.arange(2, 5), [100] * 3), (1, np.arange(3, 9), [200] * 6), (2, np.arange(0, 2), [50] * 2)]
+    seen = []
+    got = []
+    for slot, clip in clips_as_completed(numbered_frames(12, seen), plans, patch_of):
+        got.append((slot, seen[-1]))                      # the frame being read when the clip came
+        assert clip.shape == (len(plans[slot][1]), FACE_SIZE, FACE_SIZE) and clip.dtype == np.uint8
+        assert clip[:, 0, 0].tolist() == [plans[slot][2][0] + int(f) for f in plans[slot][1]]
+    assert got == [(2, 1), (0, 4), (1, 8)]                # not all at the end: their clips are not held to the end
+
+
+def test_a_video_ending_before_a_tracks_frames_is_refused():
+    plans = [(0, np.arange(2, 5), [100] * 3), (1, np.arange(3, 9), [200] * 6)]
+    run = clips_as_completed(numbered_frames(7, []), plans, patch_of)
+    assert next(run)[0] == 0
+    with pytest.raises(VideoTooShort, match="has 7 frames at 25 fps, but face tracks need frame 8"):
+        next(run)
 
 
 def test_the_audio_under_frames_runs_to_the_end_of_the_last():

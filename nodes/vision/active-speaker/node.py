@@ -3,7 +3,8 @@ transcript, the face tracks of its shot ranked by LR-ASD's score over it (the to
 else the person its voice is linked to, else an off-screen voice; and the voice -> person links.
 
 Every face track of 0.4 s or more is scored: its crops at 25 fps, cut in one pass over the video (video25.py, as
-asd_crops.py plans them), and the MFCCs of decode's audio under it, through LR-ASD (models.py). The layer: speaker_links.py.
+asd_crops.py plans them), and the MFCCs of decode's audio under it, through LR-ASD (models.py), each track as soon as
+its last frame has gone by. The layer: speaker_links.py.
 
 Times: a frame's time counts from the video stream's first frame (as face-track's samples do) and a sample's from
 the audio's first (as the transcript's words do), as every node of the graph counts them.
@@ -19,7 +20,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from perception_node import Node, NodeError
-from asd_crops import AUDIO_RATE, FPS, audio_span, plans_for, wanted_frames
+from asd_crops import AUDIO_RATE, FPS, audio_span, plans_for
 from models import LRASD_ID, LRASD_LICENCE, WEIGHTS, ASDModel, mfcc
 from speaker_links import layer_content
 from video25 import face_clips
@@ -49,24 +50,24 @@ with Node() as node:
         raise NodeError("input", str(e)) from None
 
     t0 = time.time()
-    clips = face_clips(video, plans, wanted_frames(plans))
-    crop_s = round(time.time() - t0, 1)
-
-    t0 = time.time()
     model = ASDModel(node.accelerator)
     load_s = round(time.time() - t0, 1)
     node.model(LRASD_ID, licence_mode="needs-review", source=WEIGHTS["lrasd"]["url"], revision=WEIGHTS["lrasd"]["sha256"],
                licence=LRASD_LICENCE)
 
-    t0 = time.time()
+    # each track is scored as soon as its last frame is cut: only the clips of tracks on screen at once are held
+    scores, score_s, t_all = {}, 0.0, time.time()
+    for slot, clip in face_clips(video, plans):
+        a0, a1 = audio_span(plans[slot][1])
+        tick = time.time()
+        scores[slot] = model.score(clip, mfcc(samples[a0:a1]))
+        score_s += time.time() - tick
+    crop_s, score_s = round(time.time() - t_all - score_s, 1), round(score_s, 1)
     scored = []
-    for (i, frames, _), clip in zip(plans, clips):
-        a0, a1 = audio_span(frames)
-        scores = model.score(clip, mfcc(samples[a0:a1]))
+    for slot, (i, frames, _) in enumerate(plans):   # in track order, as the layer's ties and votes read them
         track = faces["tracks"][i]
         scored.append({"index": i, "face": track["id"], "person": track["person"], "shot": track["shot"],
-                       "start": round(frames[0] / FPS, 3), "fps": FPS, "scores": [round(float(s), 2) for s in scores]})
-    score_s = round(time.time() - t0, 1)
+                       "start": round(frames[0] / FPS, 3), "fps": FPS, "scores": [round(float(s), 2) for s in scores[slot]]})
 
     content = layer_content(transcript, faces, scored, min_share, linear_sum_assignment)
     node.write_json("speakers", "speakers.json", {

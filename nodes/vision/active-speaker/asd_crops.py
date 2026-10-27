@@ -78,13 +78,34 @@ def plans_for(tracks: list[dict], shots: dict[str, dict]) -> list[tuple[int, np.
     return plans
 
 
-def wanted_frames(plans) -> dict[int, list[tuple[int, int]]]:
-    """frame index -> [(plan slot, position in that plan's clip)]: what to cut from each decoded frame."""
+class VideoTooShort(ValueError):
+    """The video ends before frames a plan needs."""
+
+
+def clips_as_completed(frames, plans, cut):
+    """(plan slot, clip: frames x 112 x 112 uint8) for each plan, as soon as its last frame has gone by, from one pass
+    over `frames` ((index, grey frame) in order); `cut(grey, rect)` makes a frame's patch. Only the clips of tracks on
+    screen at the same time are held, so memory follows the busiest moment, not the video's length. A plan whose
+    frames the video does not reach raises VideoTooShort (plans stay within their shots: the faces are not this video's)."""
     wanted: dict[int, list[tuple[int, int]]] = {}
-    for slot, (_, frames, _) in enumerate(plans):
-        for j, f in enumerate(frames):
+    ends: dict[int, list[int]] = {}
+    for slot, (_, plan_frames, _) in enumerate(plans):
+        for j, f in enumerate(plan_frames):
             wanted.setdefault(int(f), []).append((slot, j))
-    return wanted
+        ends.setdefault(int(plan_frames[-1]), []).append(slot)
+    clips: dict[int, np.ndarray] = {}
+    count = done = 0
+    for index, gray in frames:
+        for slot, j in wanted.get(index, ()):
+            if slot not in clips:
+                clips[slot] = np.zeros((len(plans[slot][1]), FACE_SIZE, FACE_SIZE), np.uint8)
+            clips[slot][j] = cut(gray, plans[slot][2][j])
+        for slot in ends.get(index, ()):
+            done += 1
+            yield slot, clips.pop(slot)
+        count = index + 1
+    if done < len(plans):
+        raise VideoTooShort(f"the video has {count} frames at {FPS} fps, but face tracks need frame {max(ends)}")
 
 
 def audio_span(frames: np.ndarray) -> tuple[int, int]:

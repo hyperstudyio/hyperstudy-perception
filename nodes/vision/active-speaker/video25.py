@@ -14,7 +14,7 @@ import av
 import numpy as np
 
 from perception_node import NodeError
-from asd_crops import CROP_SIZE, FACE_SIZE, FPS, padded_region
+from asd_crops import CROP_SIZE, FACE_SIZE, FPS, VideoTooShort, clips_as_completed, padded_region
 
 
 def _drain(sink):
@@ -63,15 +63,10 @@ def face_patch(gray: np.ndarray, rect) -> np.ndarray:
     return cv2.resize(padded_region(gray, *rect), (CROP_SIZE, CROP_SIZE))[lo:hi, lo:hi]
 
 
-def face_clips(video: Path, plans, wanted) -> list[np.ndarray]:
-    """Each plan's clip (frames x 112 x 112, uint8), cut from one pass over the video. Plans stay within their shots,
-    so a frame the video does not have means the faces or shots are not this video's: NodeError."""
-    clips = [np.zeros((len(frames), FACE_SIZE, FACE_SIZE), np.uint8) for _, frames, _ in plans]
-    count = 0
-    for index, gray in grey_frames(video):
-        for slot, j in wanted.get(index, ()):
-            clips[slot][j] = face_patch(gray, plans[slot][2][j])
-        count = index + 1
-    if wanted and max(wanted) >= count:
-        raise NodeError("input", f"{video.name} has {count} frames at {FPS} fps, but face tracks need frame {max(wanted)}")
-    return clips
+def face_clips(video: Path, plans):
+    """(plan slot, clip) for each plan as its last frame goes by, from one pass over the video (asd_crops.py's
+    clips_as_completed); NodeError when the video ends before a plan's frames."""
+    try:
+        yield from clips_as_completed(grey_frames(video), plans, face_patch)
+    except VideoTooShort as e:
+        raise NodeError("input", f"{video.name}: {e}") from None
