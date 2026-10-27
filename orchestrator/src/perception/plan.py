@@ -104,13 +104,22 @@ def weights_cached(sha256: str) -> bool:
 
 
 def hf_cached(source: str) -> bool:
-    """Is hf://org/name[@revision] in the local Hugging Face cache?"""
-    repo = source.removeprefix("hf://").split("@")[0]
+    """Is hf://org/name[@revision][/file] in the local Hugging Face cache? With a revision, at that revision: its
+    snapshot (snapshots/<commit>, a branch or tag named in refs/), not any other one the cache holds, which the node
+    would download the pinned one beside."""
+    repo, _, pinned = source.removeprefix("hf://").partition("@")
     parts = repo.split("/")
     if len(parts) < 2:
         return False
     hub = Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
-    return (hub / f"models--{parts[0]}--{parts[1]}").is_dir()
+    folder = hub / f"models--{parts[0]}--{parts[1]}"
+    if not pinned:
+        return folder.is_dir()
+    revision, _, file = pinned.partition("/")
+    ref = folder / "refs" / revision
+    commit = ref.read_text().strip() if ref.is_file() else revision
+    snapshot = folder / "snapshots" / commit
+    return bool(commit) and snapshot.is_dir() and (not file or (snapshot / file).is_file())
 
 
 def settings(m, config: dict) -> list[dict]:

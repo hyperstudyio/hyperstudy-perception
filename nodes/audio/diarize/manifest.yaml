@@ -1,0 +1,27 @@
+id: audio.diarize
+version: 1.0.0
+stage: transcribe+diarize
+title: Speaker diarization
+description: Who speaks when (pyannote community-1), as each word's and utterance's voice on the transcript
+inputs: {audio: audio.wav.v1, transcript: bundle.transcript@0.1}
+# it refines asr's transcript layer (adds the voices): export takes this one
+outputs: {transcript: bundle.transcript@0.1}
+runners:
+  # torch on the Apple GPU: 6 s for the 119 s OOO clip on an M5 Max (47-53 s on the CPU), the same turns (diarizer.py)
+  - {kind: native, env: envs/audio, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # PyPI's torch 2.8.0 for Linux, built for CUDA 12.8 (runtime and cuDNN come as wheels; the machine needs the NVIDIA
+  # driver). Not yet run on a GPU
+  - {kind: native, env: envs/audio, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 2}
+  - {kind: native, env: envs/audio, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 2, memory_gb: 4, gpu: shared}
+# the pipeline is gated on Hugging Face: the token of an account that accepted its conditions
+secrets: [HF_TOKEN]
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
+models:
+  - {id: pyannote/speaker-diarization-community-1,
+     source: "hf://pyannote/speaker-diarization-community-1@3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
+     revision: 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee, licence: "CC-BY-4.0 (gated on Hugging Face)",
+     licence_mode: commercial-ok, size_gb: 0.03, gated: true}
+  # the words it gives voices to: asr's model, recorded as asr records it (no source: this node downloads nothing of it)
+  - {id: mlx-community/parakeet-tdt-0.6b-v3, licence: CC-BY-4.0, licence_mode: commercial-ok}
