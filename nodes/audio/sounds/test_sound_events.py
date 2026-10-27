@@ -57,7 +57,15 @@ def test_the_two_taggers_events_of_a_label_merge_where_they_overlap_or_touch():
 def test_panns_frames_are_the_max_of_each_second_and_a_part_second_is_a_step():
     frames = np.zeros((250, 2), np.float32)
     frames[42, 0], frames[199, 1], frames[249, 0] = 0.9, 0.4, 0.3
-    np.testing.assert_array_equal(step_max(frames), np.array([[0.9, 0], [0, 0.4], [0.3, 0]], np.float32))
+    np.testing.assert_array_equal(step_max(frames, 3), np.array([[0.9, 0], [0, 0.4], [0.3, 0]], np.float32))
+
+
+def test_panns_frame_at_the_very_end_of_a_whole_second_soundtrack_is_in_its_last_step_not_a_step_past_it():
+    # Cnn14's STFT is centred: 2 s at 32 kHz gives 64000 // 320 + 1 = 201 frames, the last one at 2.00 s
+    frames = np.zeros((201, 1), np.float32)
+    frames[200, 0] = 0.5
+    assert tag_steps(64000, 32000) == 2
+    np.testing.assert_array_equal(step_max(frames, 2), np.array([[0], [0.5]], np.float32))
 
 
 def test_each_steps_efficientat_window_is_centred_on_it_edges_padded_with_silence():

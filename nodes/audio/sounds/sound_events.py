@@ -145,12 +145,13 @@ def windows(padded: np.ndarray, sr: int, first: int, last: int) -> np.ndarray:
     return np.stack([padded[i * step:i * step + win] for i in range(first, last)])
 
 
-def step_max(frames: np.ndarray, fps: int = PANNS_FPS) -> np.ndarray:
-    """Frame-wise scores (frames, classes) as one row per 1 s step: the max over the step, as the model's own clip
-    decision is the max over frames."""
+def step_max(frames: np.ndarray, n_steps: int, fps: int = PANNS_FPS) -> np.ndarray:
+    """Frame-wise scores (frames, classes) as one row for each of the soundtrack's n_steps 1 s steps (tag_steps): the
+    max over the step, as the model's own clip decision is the max over frames. Cnn14's STFT is centred, so it has a
+    frame at the very end; when the soundtrack is a whole number of seconds, that frame is in the last step rather
+    than starting a step past the end. (The bake-off made a step of it; its clips, 119.04 and 137.6 s, have none.)"""
     per_step = int(STEP_S * fps)
-    n_steps = int(np.ceil(frames.shape[0] / per_step))
-    return np.stack([frames[i * per_step:(i + 1) * per_step].max(0) for i in range(n_steps)])
+    return np.stack([frames[i * per_step:(i + 1) * per_step if i < n_steps - 1 else None].max(0) for i in range(n_steps)])
 
 
 def tag_rows(scores: np.ndarray, labels: list[str]) -> list[dict]:

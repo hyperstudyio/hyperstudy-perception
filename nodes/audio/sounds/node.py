@@ -53,7 +53,7 @@ with Node() as node:
     hop = TAGGER_SR // PANNS_FPS
     pieces = [(c, timed(timings, "panns_s", dev, run_panns, panns, wave32[c.start:c.end], dev))
               for c in plan_chunks(len(wave32), round(PANNS_CORE_S * TAGGER_SR), round(PANNS_CONTEXT_S * TAGGER_SR))]
-    steps = {"panns": tag_rows(step_max(stitch(pieces, hop, axis=0)), labels)}
+    steps = {"panns": tag_rows(step_max(stitch(pieces, hop, axis=0), tag_steps(len(wave32), TAGGER_SR)), labels)}
     del panns, pieces
 
     # EfficientAT mn40: one 5 s window per 1 s step, batch_size windows at a time
