@@ -85,9 +85,10 @@ class Host:
         caps = Capabilities(**{**d["caps"], "accelerators": set(d["caps"]["accelerators"])})
         return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"))
 
-    def ssh(self) -> list[str]:
-        """ssh to this host: every command sent to it (probe, nodes, clean) goes through this, with its overrides."""
-        return [*ssh_command(), *ssh_options(self.user, self.port, self.identity)]
+    def ssh(self, fresh: bool = False) -> list[str]:
+        """ssh to this host: every command sent to it (probe, nodes, clean) goes through this, with its overrides.
+        `fresh`: its own connection, not a shared one (a check: see ssh_command)."""
+        return [*ssh_command(shared=not fresh, identity=self.identity), *ssh_options(self.user, self.port, self.identity)]
 
 
 def ssh_options(user: str | None, port: int | None, identity: str | None) -> list[str]:
@@ -115,17 +116,24 @@ def check_overrides(dest: str, user: str | None, port: int | None, identity: str
     return str(path)
 
 
-def ssh_command() -> list[str]:
+def ssh_command(shared: bool = True, identity: str | None = None) -> list[str]:
     """ssh with the options every remote command uses. PERCEPTION_SSH replaces the ssh program (the tests use a
-    stand-in that runs commands on this machine)."""
+    stand-in that runs commands on this machine). A connection is shared by host, port and user (%C), and by key file
+    too (`identity`): ssh's own sharing ignores the key, so a connection opened with one key would carry commands meant
+    for another. Not `shared`: a connection of its own, for a check (add, probe, check), whose yes must be this
+    connection's, never one another key opened."""
     control = Path(f"/tmp/perception-ssh-{os.getuid()}")   # short: a socket path must fit in 104 bytes on macOS
     control.mkdir(mode=0o700, exist_ok=True)
     st = control.stat()
     if st.st_uid != os.getuid() or st.st_mode & 0o077:
         raise HostError(f"{control} must be a directory only you can use")
-    return [os.environ.get("PERCEPTION_SSH", "ssh"), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-            "-o", "ControlMaster=auto", "-o", f"ControlPath={control}/%C", "-o", "ControlPersist=120"]
+    base = [os.environ.get("PERCEPTION_SSH", "ssh"), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
+    if not shared:
+        return [*base, "-o", "ControlMaster=no", "-o", "ControlPath=none"]
+    import hashlib
+    keyed = f"-{hashlib.sha256(identity.encode()).hexdigest()[:12]}" if identity else ""   # short: the socket path's limit
+    return [*base, "-o", "ControlMaster=auto", "-o", f"ControlPath={control}/%C{keyed}", "-o", "ControlPersist=120"]
 
 
 def check_names(name: str, dest: str, root: str):
@@ -218,7 +226,7 @@ class Hosts:
             identity: str | None = None) -> Host:
         check_names(name, dest, root)
         identity = check_overrides(dest, user, port, identity)
-        caps, absolute = probe(dest, root, [*ssh_command(), *ssh_options(user, port, identity)])
+        caps, absolute = probe(dest, root, [*ssh_command(shared=False), *ssh_options(user, port, identity)])
         host = Host(name, dest, absolute, caps, time.time(), user, port, identity)
         hosts = self.load()
         hosts[name] = host
@@ -230,7 +238,7 @@ class Hosts:
         if name not in hosts:
             raise HostError(f"no host {name!r} (perception hosts list)")
         old = hosts[name]
-        caps, _ = probe(old.dest, old.root, old.ssh())
+        caps, _ = probe(old.dest, old.root, old.ssh(fresh=True))
         hosts[name] = Host(name, old.dest, old.root, caps, time.time(), old.user, old.port, old.identity)
         self.save(hosts)
         return hosts[name]
@@ -247,4 +255,4 @@ def probe_dest(dest: str, root: str = DEFAULT_ROOT, user: str | None = None, por
     """Reach a destination as `hosts add` would and say what it has, changing nothing there and adding nothing here."""
     check_names("probe", dest, root)
     identity = check_overrides(dest, user, port, identity)
-    return probe(dest, root, [*ssh_command(), *ssh_options(user, port, identity)], make_root=False)
+    return probe(dest, root, [*ssh_command(shared=False), *ssh_options(user, port, identity)], make_root=False)

@@ -735,7 +735,8 @@ def test_the_cli_adds_lists_and_plans_with_a_host(tmp_path, host, monkeypatch, c
 # --- user, port and identity over ~/.ssh/config; a probe that changes nothing -----------------------------------
 
 LOGGING_SSH = FAKE_SSH.replace('while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -*) shift;; *) break;; esac; done',
-                               'while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -l|-p|-i) echo "$1 $2" >> "$FAKE_HOST/options"; shift 2;; -*) shift;; *) break;; esac; done')
+                               'while [ $# -gt 0 ]; do case "$1" in -o) case "$2" in Control*) echo "$2" >> "$FAKE_HOST/control";; esac; shift 2;; '
+                               '-l|-p|-i) echo "$1 $2" >> "$FAKE_HOST/options"; shift 2;; -*) shift;; *) break;; esac; done')
 
 
 @pytest.fixture
@@ -800,3 +801,23 @@ def test_a_probe_says_what_a_destination_has_and_changes_nothing_there_or_here(t
     assert main(["--json", "hosts", "probe", "lab.example.org"]) == 1
     [err] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert err["type"] == "error" and "could not reach lab.example.org" in err["problems"][0]
+
+
+def test_a_connection_test_never_rides_a_shared_connection_and_a_hosts_key_shares_only_with_itself(tmp_path, logging_host, monkeypatch):
+    """ssh shares a connection by host, port and user, not by key: a test that rode one opened with another key would
+    say yes to a key the server refuses."""
+    from perception.cli import main
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    key = tmp_path / "id_lab"
+    key.write_text("not really a key")
+    assert main(["hosts", "probe", "lab", "--identity", str(key)]) == 0
+    assert main(["hosts", "add", "lab", "lab", "--identity", str(key)]) == 0
+    assert main(["hosts", "check", "lab"]) == 0
+    tests = (logging_host / "control").read_text().splitlines()
+    assert tests == ["ControlMaster=no", "ControlPath=none"] * 3                     # probe, add, check: each a fresh connection
+    shared = Hosts(tmp_path / "home").load()["lab"].ssh()
+    path = next(o for o in shared if o.startswith("ControlPath="))
+    other = Host("lab", "lab", "/r", lab(tmp_path).caps, 0, identity=str(tmp_path / "id_other")).ssh()
+    plain = Host("lab", "lab", "/r", lab(tmp_path).caps, 0).ssh()
+    assert path.endswith("%C-" + __import__("hashlib").sha256(str(key.resolve()).encode()).hexdigest()[:12])
+    assert len({path, next(o for o in other if o.startswith("ControlPath=")), next(o for o in plain if o.startswith("ControlPath="))}) == 3
