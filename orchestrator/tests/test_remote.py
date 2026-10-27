@@ -730,3 +730,73 @@ def test_the_cli_adds_lists_and_plans_with_a_host(tmp_path, host, monkeypatch, c
     assert main(["--json", "hosts", "remove", "lab"]) == 0
     [event] = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
     assert event["hosts"] == []
+
+
+# --- user, port and identity over ~/.ssh/config; a probe that changes nothing -----------------------------------
+
+LOGGING_SSH = FAKE_SSH.replace('while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -*) shift;; *) break;; esac; done',
+                               'while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -l|-p|-i) echo "$1 $2" >> "$FAKE_HOST/options"; shift 2;; -*) shift;; *) break;; esac; done')
+
+
+@pytest.fixture
+def logging_host(host, tmp_path):
+    """The fake host, its ssh stand-in also writing each -l, -p and -i it is given to host/options."""
+    (tmp_path / "ssh").write_text(LOGGING_SSH)
+    return host
+
+
+def test_a_hosts_user_port_and_key_go_with_every_command_sent_to_it(tmp_path, logging_host, monkeypatch, capsys):
+    from perception.cli import main
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    key = tmp_path / "id_lab"
+    key.write_text("not really a key")
+    assert main(["hosts", "add", "lab", "lab.example.org", "--user", "ana", "--port", "2222", "--identity", str(key)]) == 0
+    sent = (logging_host / "options").read_text().splitlines()
+    assert sent == ["-l ana", "-p 2222", f"-i {key.resolve()}"]                      # the probe when it was added
+    saved = Hosts(tmp_path / "home").load()["lab"]
+    assert (saved.user, saved.port, saved.identity) == ("ana", 2222, str(key.resolve()))
+    assert main(["hosts", "check", "lab"]) == 0
+    assert main(["hosts", "clean", "lab"]) == 0
+    sent = (logging_host / "options").read_text().splitlines()
+    assert sent == ["-l ana", "-p 2222", f"-i {key.resolve()}"] * 3                  # check and clean too
+    remote = SshBackend(saved, runner_kind="self", python=sys.executable)
+    assert remote.host.ssh()[-6:] == ["-p", "2222", "-i", str(key.resolve()), "-o", "IdentitiesOnly=yes"]
+
+
+def test_a_host_saved_before_overrides_existed_loads_without_them(tmp_path):
+    hosts = Hosts(tmp_path)
+    old = lab(tmp_path).to_json()
+    for k in ("user", "port", "identity"):
+        old.pop(k)
+    hosts.path.write_text(json.dumps({"lab": old}))
+    h = hosts.load()["lab"]
+    assert (h.user, h.port, h.identity) == (None, None, None) and "-l" not in h.ssh()
+
+
+def test_overrides_ssh_would_misread_are_refused(tmp_path, host):
+    hosts = Hosts(tmp_path / "home")
+    with pytest.raises(HostError, match="give the user once"):
+        hosts.add("lab", "ana@lab", user="bob")
+    with pytest.raises(HostError, match="not a port"):
+        hosts.add("lab", "lab", port=70000)
+    with pytest.raises(HostError, match="no key file"):
+        hosts.add("lab", "lab", identity=str(tmp_path / "missing"))
+    with pytest.raises(HostError, match="not a user name"):
+        hosts.add("lab", "lab", user="-oProxyCommand=x")
+    assert hosts.load() == {}
+
+
+def test_a_probe_says_what_a_destination_has_and_changes_nothing_there_or_here(tmp_path, logging_host, monkeypatch, capsys):
+    from perception.cli import main
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    assert main(["--json", "hosts", "probe", "lab.example.org", "--port", "2222"]) == 0
+    [found] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert found["type"] == "host_probe" and found["dest"] == "lab.example.org"
+    assert found["caps"]["cpu_cores"] > 0 and found["root"].endswith("/.cache/hyperstudy-perception")
+    assert not (logging_host / "home" / ".cache").exists()                          # no folder made on the host
+    assert not (tmp_path / "home" / "hosts.json").exists()                          # and no host added here
+    assert (logging_host / "options").read_text().splitlines() == ["-p 2222"]
+    (logging_host / "unreachable").touch()
+    assert main(["--json", "hosts", "probe", "lab.example.org"]) == 1
+    [err] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert err["type"] == "error" and "could not reach lab.example.org" in err["problems"][0]

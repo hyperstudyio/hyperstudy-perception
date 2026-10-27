@@ -1,5 +1,9 @@
 """Other machines nodes can run on: lab servers reached over SSH (`perception hosts add NAME DEST`).
 
+DEST is what you would give ssh (user@host, or a Host from ~/.ssh/config). --user, --port and --identity override what
+~/.ssh/config says for it; every command sent to the host uses them (Host.ssh). `perception hosts probe DEST` reaches a
+destination and says what it has without adding it or changing anything there (a connection test).
+
 A host is probed when it is added (and by `hosts check`): its platform, cores, memory, GPU and tools are recorded in
 $PERCEPTION_HOME/hosts.json, so planning never waits on the network. SSH runs in batch mode with the user's own keys
 and ~/.ssh/config: nothing here asks for or stores a password. Connections are shared (ControlMaster), so the many short
@@ -36,6 +40,7 @@ DEST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@%+:\[\]-]*$")
 ROOT = re.compile(r"^[A-Za-z0-9_./~-]+$")
 DEFAULT_ROOT = ".cache/hyperstudy-perception"
 RESERVED = {"native", "self", "cloud", "runpod", "local"}
+USER = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$")
 
 # What the host has, as key=value lines. POSIX sh: Linux servers and Macs, no Python needed. Tools are looked for on the
 # PATH a login shell would add too (~/.local/bin is where uv installs itself), since ssh commands get a minimal PATH.
@@ -65,6 +70,10 @@ class Host:
     root: str                  # absolute, on the host
     caps: Capabilities
     probed_at: float
+    # overrides of what ~/.ssh/config says for dest (None: ssh's own)
+    user: str | None = None
+    port: int | None = None
+    identity: str | None = None   # a private key on this machine, absolute
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -74,7 +83,36 @@ class Host:
     @classmethod
     def from_json(cls, d: dict) -> "Host":
         caps = Capabilities(**{**d["caps"], "accelerators": set(d["caps"]["accelerators"])})
-        return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"])
+        return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"))
+
+    def ssh(self) -> list[str]:
+        """ssh to this host: every command sent to it (probe, nodes, clean) goes through this, with its overrides."""
+        return [*ssh_command(), *ssh_options(self.user, self.port, self.identity)]
+
+
+def ssh_options(user: str | None, port: int | None, identity: str | None) -> list[str]:
+    return [*(["-l", user] if user else []), *(["-p", str(port)] if port else []),
+            *(["-i", identity, "-o", "IdentitiesOnly=yes"] if identity else [])]
+
+
+def check_overrides(dest: str, user: str | None, port: int | None, identity: str | None) -> str | None:
+    """Refuse overrides ssh would misread; the identity file as an absolute path on this machine."""
+    if user is not None:
+        if not USER.match(user):
+            raise HostError(f"not a user name: {user!r}")
+        if "@" in dest:
+            raise HostError(f"{dest} already names its user: give the user once (in the destination, or --user)")
+    if port is not None and not 1 <= port <= 65535:
+        raise HostError(f"not a port: {port}")
+    if identity is None:
+        return None
+    path = Path(identity).expanduser()
+    if not path.is_file():
+        raise HostError(f"no key file at {identity}")
+    path = path.resolve()
+    if any(ord(c) < 32 for c in str(path)):
+        raise HostError(f"not a plain path: {identity!r}")
+    return str(path)
 
 
 def ssh_command() -> list[str]:
@@ -126,11 +164,12 @@ def private_root_script(root: str) -> str:
     return f"root={path}\n" + PRIVATE_ROOT
 
 
-def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None) -> tuple[Capabilities, str]:
+def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None, make_root: bool = True) -> tuple[Capabilities, str]:
     """What the host has, and its root as an absolute path (made private there, or refused: PRIVATE_ROOT). `ssh`: the
-    command to reach it, when it needs options of its own (a RunPod pod's key and port)."""
-    out = subprocess.run([*(ssh or ssh_command()), dest, "sh -s"], input=private_root_script(root) + PROBE, capture_output=True,
-                         text=True, timeout=120)
+    command to reach it, when it needs options of its own (overrides, a RunPod pod's key and port). Without `make_root`
+    nothing on the host is changed: the root is only where it would be (a connection test)."""
+    script = (private_root_script(root) if make_root else "") + PROBE
+    out = subprocess.run([*(ssh or ssh_command()), dest, "sh -s"], input=script, capture_output=True, text=True, timeout=120)
     if out.returncode:
         raise HostError(f"could not reach {dest} (ssh exit {out.returncode}): {out.stderr.strip()[-500:]}")
     facts = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
@@ -175,10 +214,12 @@ class Hosts:
         tmp.write_text(json.dumps({n: h.to_json() for n, h in sorted(hosts.items())}, indent=1))
         os.replace(tmp, self.path)
 
-    def add(self, name: str, dest: str, root: str = DEFAULT_ROOT) -> Host:
+    def add(self, name: str, dest: str, root: str = DEFAULT_ROOT, user: str | None = None, port: int | None = None,
+            identity: str | None = None) -> Host:
         check_names(name, dest, root)
-        caps, absolute = probe(dest, root)
-        host = Host(name, dest, absolute, caps, time.time())
+        identity = check_overrides(dest, user, port, identity)
+        caps, absolute = probe(dest, root, [*ssh_command(), *ssh_options(user, port, identity)])
+        host = Host(name, dest, absolute, caps, time.time(), user, port, identity)
         hosts = self.load()
         hosts[name] = host
         self.save(hosts)
@@ -189,8 +230,8 @@ class Hosts:
         if name not in hosts:
             raise HostError(f"no host {name!r} (perception hosts list)")
         old = hosts[name]
-        caps, _ = probe(old.dest, old.root)
-        hosts[name] = Host(name, old.dest, old.root, caps, time.time())
+        caps, _ = probe(old.dest, old.root, old.ssh())
+        hosts[name] = Host(name, old.dest, old.root, caps, time.time(), old.user, old.port, old.identity)
         self.save(hosts)
         return hosts[name]
 
@@ -199,3 +240,11 @@ class Hosts:
         if hosts.pop(name, None) is None:
             raise HostError(f"no host {name!r}")
         self.save(hosts)
+
+
+def probe_dest(dest: str, root: str = DEFAULT_ROOT, user: str | None = None, port: int | None = None,
+               identity: str | None = None) -> tuple[Capabilities, str]:
+    """Reach a destination as `hosts add` would and say what it has, changing nothing there and adding nothing here."""
+    check_names("probe", dest, root)
+    identity = check_overrides(dest, user, port, identity)
+    return probe(dest, root, [*ssh_command(), *ssh_options(user, port, identity)], make_root=False)
