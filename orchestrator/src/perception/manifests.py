@@ -73,6 +73,16 @@ class ModelRef(Strict):
     # cache, so plan can tell whether a run would download it
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
+    @model_validator(mode="after")
+    def _url_has_sha256(self):
+        # weights come over https only; a URL with no checksum would be fetched without plan counting it a download
+        # (--allow-downloads), unchecked. plan.fetched() counts exactly https sources with a sha256
+        if self.source and self.source.startswith("http://"):
+            raise ValueError(f"model {self.id}: weights are fetched over https, not http")
+        if self.source and self.source.startswith("https://") and not self.sha256:
+            raise ValueError(f"model {self.id}: a URL source needs its sha256 (perception_node.weights)")
+        return self
+
 
 class Manifest(Strict):
     id: str
