@@ -1,0 +1,22 @@
+[project]
+name = "perception-env-vision"
+version = "0.1.0"
+description = "Vision nodes on ONNX Runtime: body pose (RTMW + YOLOX-m, via rtmlib)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "perception-node",
+  "rtmlib==0.0.16",
+  # CoreML and CPU on a Mac; CUDA (onnxruntime-gpu, CUDA 12 / cuDNN 9 from its wheels' requirements) on Linux. The
+  # two packages are one module, so rtmlib's own onnxruntime requirement is limited to where -gpu is not installed.
+  "onnxruntime==1.31.0 ; sys_platform != 'linux'",
+  "onnxruntime-gpu==1.31.0 ; sys_platform == 'linux'",
+  "opencv-python==5.0.0.93",
+  "numpy",
+]
+
+[tool.uv]
+package = false
+override-dependencies = ["onnxruntime==1.31.0 ; sys_platform != 'linux'"]
+
+[tool.uv.sources]
+perception-node = { path = "../../sdk", editable = true }

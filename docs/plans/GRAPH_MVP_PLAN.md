@@ -146,3 +146,25 @@ SkyPilot on AWS us-east-1 (`cloud/skypilot/`), always through `launch.sh`:
   - **Still idle.** The GPU is idle about 40% of the run: model loading, and thumbnails and crops cut by ffmpeg on the
     CPU. `num_workers` now defaults to 4 where workers fork (#4). Next: GPU frame decoding (torchcodec on CUDA).
 - **Thumbnails.** Each person's crop is chosen among shortlisted faces on exposure, colour cast, blur and blown-out pixels (`thumbnails.py`), instead of size and frontality alone (which picked a red-lit face on clip 2).
+
+### Phase 3: the bake-off's other models as nodes (from 2026-10-27)
+
+Only four of the bake-off's capabilities had become nodes: decode, asr, face-track and shot-captions. The rest are
+ported one node at a time, each with the model the bake-off chose (PLAN.md §4) and writing the layer the annotator
+already draws (`pipeline/bundle/convert_bakeoff.py`'s `*_layer` functions). The order follows what each one reads:
+
+1. Wave 1: bodies, diarization, sounds, waveform, the face detail output (in face-track, not a new node), and gaze
+   from faces.
+2. Wave 2: speakers (LR-ASD, recomputed on Parakeet's diarized transcript), hands, facing and objects.
+3. Wave 3: gestures, prosody, gaze with objects, and asr on CUDA (NeMo, a native runner).
+
+- **`vision.body-pose` (bodies).** RTMW-l 384x288, plus YOLOX-m, the person detector RTMW needs because it is
+  top-down. Both run through rtmlib on ONNX Runtime, in the new `envs/vision`: CoreML (MLProgram) on a Mac, CUDA via
+  onnxruntime-gpu on Linux, or CPU.
+  - On OOO it matches the bake-off's `pose_rtmw.json` exactly: 244 tracks, 185 linked to faces, all 3136 samples
+    matched, keypoint difference 0. It took 114 s for the 119 s clip on CoreML (the bake-off took 103 s), plus 16 s
+    to load.
+  - The CUDA runner is not yet run on a GPU.
+- **Weights from a URL.** A model's `source` may be an https URL with its `sha256`. The node fetches the file into
+  one shared cache keyed by that sha256 (`perception_node.weights`), and checks it before use. `plan` lists such a
+  file as a download until it is in the cache.

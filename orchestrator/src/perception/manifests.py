@@ -69,6 +69,9 @@ class ModelRef(Strict):
     licence_mode: Literal["academic-only", "commercial-ok", "needs-review", "api-terms"]
     size_gb: float | None = None
     gated: bool = False
+    # a URL source's file, as the node fetches it (perception_node.weights): checked, and the key of the shared weights
+    # cache, so plan can tell whether a run would download it
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class Manifest(Strict):

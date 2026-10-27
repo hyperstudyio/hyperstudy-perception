@@ -87,6 +87,22 @@ class Plan:
         return "\n".join(lines)
 
 
+def fetched(model) -> bool:
+    """Whether a run fetches this model's weights itself: from the Hugging Face hub, or from a URL with its sha256."""
+    return bool(model.source) and (model.source.startswith("hf://") or (model.source.startswith("https://") and bool(model.sha256)))
+
+
+def model_cached(model) -> bool:
+    return hf_cached(model.source) if model.source.startswith("hf://") else weights_cached(model.sha256)
+
+
+def weights_cached(sha256: str) -> bool:
+    """Is the file with this sha256 in the shared weights cache? As perception_node.weights.cached: one file in
+    PERCEPTION_WEIGHTS (else ~/.cache/hyperstudy-perception/weights) / sha256."""
+    folder = Path(os.environ.get("PERCEPTION_WEIGHTS") or Path.home() / ".cache" / "hyperstudy-perception" / "weights") / sha256
+    return folder.is_dir() and sum(1 for p in folder.iterdir() if p.is_file()) == 1
+
+
 def hf_cached(source: str) -> bool:
     """Is hf://org/name[@revision] in the local Hugging Face cache?"""
     repo = source.removeprefix("hf://").split("@")[0]
@@ -131,8 +147,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         np.place = placement.label if placement else None
         # weights not in this machine's cache; on another machine its cache is not known, so every weight is a download
         # there (a run never downloads silently: --allow-downloads)
-        np.downloads = [x for x in m.models if x.source and x.source.startswith("hf://")
-                        and ((placement and placement.backend.remote) or not hf_cached(x.source))]
+        np.downloads = [x for x in m.models if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(m.models)
