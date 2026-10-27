@@ -1,0 +1,29 @@
+id: vision.gaze
+version: 1.0.0
+stage: gaze
+title: Gaze targets
+description: Where each tracked face looks (Gaze-LLE ViT-L/14 heatmaps and in-frame scores), its target face or out of frame, and looks_at, mutual gaze and joint attention events
+# Faces only for now; objects as targets come with an objects input (gaze_targets.py says how)
+inputs: {video: video.v1, media: media.v1, faces: bundle.faces@0.1}
+outputs: {gaze: bundle.gaze@0.1}
+config:
+  # the face box scaled about its centre: the head box Gaze-LLE is given, and a face target's region (the bake-off's 1.2)
+  head_box_scale: {type: number, minimum: 1, maximum: 2, default: 1.2}
+runners:
+  - {kind: native, env: envs/gaze, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # PyPI's torch 2.14 wheels for Linux are built for CUDA 13 (envs/gaze): an NVIDIA driver >= 580
+  - {kind: native, env: envs/gaze, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 4}
+  - {kind: native, env: envs/gaze, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 4, memory_gb: 4, gpu: shared}   # 2.8 GB peak RSS on the CPU (OOO)
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
+models:
+  - {id: "Gaze-LLE ViT-L/14 in/out (gazelle_dinov2_vitl14_inout, GazeFollow -> VideoAttentionTarget)",
+     source: "https://github.com/fkryan/gazelle/releases/download/v1.0.0/gazelle_dinov2_vitl14_inout.pt",
+     sha256: e48136e4efad6bb91182a51a2fb365c2202d974e5e449145a21348aca7b5d0b1, size_gb: 0.013,
+     licence: "Gaze-LLE code MIT; the release checkpoints state no licence; GazeFollow and VideoAttentionTarget terms unverified (not cleared to mirror, PLAN.md §4)",
+     licence_mode: needs-review}
+  - {id: "DINOv2 ViT-L/14 (dinov2_vitl14_pretrain, LVD-142M)",
+     source: "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitl14/dinov2_vitl14_pretrain.pth",
+     sha256: d5383ea8f4877b2472eb973e0fd72d557c7da5d3611bd527ceeb1d7162cbf428, size_gb: 1.22,
+     licence: "Apache-2.0, code and weights", licence_mode: commercial-ok}
