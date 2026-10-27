@@ -1,0 +1,27 @@
+[project]
+name = "perception-env-audio-events"
+version = "0.1.0"
+description = "Sound events on PyTorch 2.8: PANNs Cnn14 and EfficientAT mn40 (AudioSet taggers), PE-A-Frame large (text queries)"
+requires-python = ">=3.12,<3.13"
+# The bake-off's versions. torch and torchaudio stay at 2.8: EfficientAT's mel front end uses
+# torchaudio.compliance.kaldi.get_mel_banks, which later torchaudio releases remove, so this is its own environment
+# rather than the audio one (Parakeet on MLX) or the faces one (a newer torch). transformers 5.20.2 is the release whose
+# PE-A-Frame port models.py corrects (the text tower's final norm). On Linux, PyPI's torch 2.8 wheels are built for
+# CUDA 12.8 and install its runtime as wheels: a machine needs only an NVIDIA driver >= 570.
+dependencies = [
+  "perception-node",
+  "torch==2.8.0",
+  "torchaudio==2.8.0",
+  "torchvision==0.23.0",
+  "torchlibrosa==0.1.0",
+  "transformers==5.20.2",
+  "huggingface-hub",
+  "av==16.1.0",
+  "numpy",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+perception-node = { path = "../../sdk", editable = true }

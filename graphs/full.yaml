@@ -28,6 +28,9 @@ nodes:
   - id: diarize
     uses: audio.diarize@1.0.0
     inputs: {audio: $nodes.decode.audio, transcript: $nodes.asr.transcript}
+  - id: sounds
+    uses: audio.sounds@1.0.0
+    inputs: {video: $inputs.video}
   - id: waveform
     uses: audio.waveform@1.0.0
     inputs: {audio: $nodes.decode.audio}

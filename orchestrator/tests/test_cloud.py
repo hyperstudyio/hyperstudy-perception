@@ -524,3 +524,14 @@ def test_the_cli_turns_cloud_places_on_after_checking_aws(tmp_path, machine, mon
     store.db.execute("UPDATE tasks SET state='succeeded'")
     assert main(["--json", "cloud", "off"]) == 0
     assert not any(b.kind == "cloud" for b in backends())
+
+
+def test_every_real_nodes_cuda_runner_fits_the_cloud_gpus_it_would_be_placed_on():
+    """Placement refuses a runner whose minimum_vram_gb is over the place's vram_gb: a CUDA runner asking for more than
+    the L4 (22) or RunPod's cards (20) report is never placed in the cloud, and a Linux run falls back to its CPU runner."""
+    from perception.backends.cloud import RunPodBackend
+    nodes = Path(__file__).resolve().parents[2] / "nodes"
+    for m in Registry.load(nodes):
+        for r in m.runners:
+            if r.accelerator == "cuda":
+                assert r.minimum_vram_gb <= min(CloudBackend.caps.vram_gb, RunPodBackend.caps.vram_gb), m.ref

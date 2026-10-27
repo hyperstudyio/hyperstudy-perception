@@ -1,0 +1,32 @@
+id: audio.sounds
+version: 1.0.0
+stage: sounds
+title: Sound events
+description: Sounds other than speech, from AudioSet taggers (PANNs Cnn14, EfficientAT mn40) each second, and a fixed list of sounds people make or hear (laughter, applause, crying, a door, a phone...) found by PE-A-Frame
+# the soundtrack at 32 and 48 kHz, read from the video itself: decode's 16 kHz WAV has nothing above 8 kHz
+inputs: {video: video.v1}
+outputs: {sounds: bundle.sounds@0.1}
+config:
+  # mn40's 5 s windows scored at once. The windows are independent: batch sizes change scores by about 1e-6 (the layer
+  # was the same at 16, 32 and 64 windows, and all at once, on the bake-off's clips). PE-A-Frame, not this, sets the peak.
+  batch_size: {type: integer, minimum: 1, default: 64, description: "EfficientAT windows per batch"}
+runners:
+  - {kind: native, env: envs/audio-events, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # PyPI's torch 2.8 wheels for Linux carry CUDA 12.8 (envs/audio-events); the machine needs an NVIDIA driver >= 570.
+  # PE-A-Frame large is 5.8 GB of float32 weights, run on up to 140 s of audio at once: 17 GB allocated on the Apple GPU
+  # (not yet measured on CUDA). 20, not 24: a "24 GB" card reports 23.99, an L4 22.5, and the cloud places 22 and 20.
+  - {kind: native, env: envs/audio-events, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 20}
+  - {kind: native, env: envs/audio-events, entry: node.py, accelerator: cpu}
+# on the CPU, 28 GB resident at most (PE-A-Frame on nes-biking's 137.6 s soundtrack, one piece)
+resources: {cpu_cores: 4, memory_gb: 28, gpu: exclusive}
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
+models:
+  - {id: PANNs Cnn14_DecisionLevelMax, source: "https://zenodo.org/records/3987831/files/Cnn14_DecisionLevelMax_mAP=0.385.pth",
+     sha256: dd3b4043a87d4ec13df8082c0fcfee3fb5084151808e47e060987a95eabdd142, size_gb: 0.33,
+     licence: "MIT code, CC-BY-4.0 weights (trained on AudioSet)", licence_mode: commercial-ok}
+  - {id: EfficientAT mn40_as, source: "https://github.com/fschmid56/EfficientAT/releases/download/v0.0.1/mn40_as_mAP_484.pt",
+     sha256: 09624dca1c53128255c65c5a52ff49ae91bb01fe17f0e13b3c3a0c9f24a8478b, size_gb: 0.27,
+     licence: "MIT code and weights (trained on AudioSet)", licence_mode: commercial-ok}
+  - {id: Meta PE-A-Frame large, source: "hf://facebook/pe-a-frame-large@d7fd29e06effc0fe5630de3b6e4ca784876a1a16",
+     revision: d7fd29e06effc0fe5630de3b6e4ca784876a1a16, size_gb: 5.8, licence: Apache-2.0, licence_mode: commercial-ok}
