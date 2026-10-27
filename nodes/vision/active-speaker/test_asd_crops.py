@@ -1,0 +1,97 @@
+"""What LR-ASD is given per face track (asd_crops.py), and the 25 fps grey frames it is cut from (video25.py), without
+the model. Run: uv run --project envs/gaze --with pytest pytest nodes/vision/active-speaker"""
+
+import numpy as np
+import pytest
+
+from asd_crops import (CROP_SCALE, FPS, OUTSIDE_GREY, audio_span, clip_windows, crop_boxes, medfilt, padded_region,
+                       plans_for, track_frames, wanted_frames)
+from video25 import grey_frames
+
+
+def track(start, end, boxes, shot="shot:0", id="face:0"):
+    """A face track sampled evenly from start to end with these [x, y, w, h] boxes."""
+    ts = np.linspace(start, end, len(boxes))
+    return {"id": id, "shot": shot, "start": start, "end": end, "samples": [{"t": float(t), "box": b} for t, b in zip(ts, boxes)]}
+
+
+def test_a_track_is_widened_by_an_eighth_of_a_second_each_side_within_its_shot():
+    frames, _ = track_frames(track(1.0, 2.0, [[0, 0, 10, 10]] * 2), {"start": 0.0, "end": 10.0})
+    assert frames[0] == 22 and frames[-1] == 53          # ceil(0.875 * 25), floor(2.125 * 25)
+    frames, _ = track_frames(track(1.0, 2.0, [[0, 0, 10, 10]] * 2), {"start": 0.95, "end": 2.05})
+    assert frames[0] == 24 and frames[-1] == 50          # ceil(0.95 * 25); floor((2.05 - 0.04) * 25): the shot's last frame
+
+
+def test_boxes_are_interpolated_to_25_fps_and_held_beyond_the_samples():
+    frames, boxes = track_frames(track(1.0, 2.0, [[0, 0, 10, 10], [100, 50, 30, 20]]), {"start": 0.0, "end": 10.0})
+    at = dict(zip(frames.tolist(), boxes.tolist()))
+    assert at[25] == [0, 0, 10, 10] and at[50] == [100, 50, 30, 20]
+    assert at[22] == [0, 0, 10, 10] and at[53] == [100, 50, 30, 20]      # the padding holds the end boxes
+    assert at[30] == pytest.approx([20, 10, 14, 12])                   # 0.2 of the way
+
+
+def test_the_median_filter_is_scipys_zero_padded_one():
+    x = np.array([5.0, 1, 4, 2, 3])
+    assert medfilt(x, 3).tolist() == [1, 4, 2, 3, 2]                   # [0 5 1] -> 1 ... [2 3 0] -> 2
+    assert medfilt(x, 13).tolist() == [0, 0, 0, 0, 0]                 # wider than the series: mostly zeros
+    assert medfilt(np.arange(1.0, 9)).tolist() == [1, 2, 2, 2, 2, 2, 2, 2]   # kernel 13 (the values scipy gives)
+
+
+def test_a_crop_is_a_square_about_the_face_centre_with_room_below_the_chin():
+    boxes = np.tile([100.0, 200.0, 40.0, 60.0], (30, 1))   # long enough that the middle frames see no padding
+    y0, y1, x0, x1 = crop_boxes(boxes)[15]
+    s = 30.0                                               # half the box's longer side
+    assert (y0, y1) == pytest.approx((230 - s, 230 + s * (1 + 2 * CROP_SCALE)))
+    assert (x0, x1) == pytest.approx((120 - s * (1 + CROP_SCALE), 120 + s * (1 + CROP_SCALE)))
+
+
+def test_a_crop_leaving_the_frame_is_grey_there_with_its_corners_truncated():
+    gray = np.arange(100, dtype=np.uint8).reshape(10, 10)
+    out = padded_region(gray, -2.7, 3.9, 8.2, 12.5)            # int(): -2, 3, 8, 12
+    assert out.shape == (5, 4)
+    assert (out[:2] == OUTSIDE_GREY).all() and (out[:, 2:] == OUTSIDE_GREY).all()
+    assert out[2:, :2].tolist() == [[8, 9], [18, 19], [28, 29]]
+
+
+def test_tracks_under_0_4_s_are_not_scored_and_a_track_in_an_unknown_shot_is_refused():
+    shots = {"shot:0": {"start": 0.0, "end": 10.0}}
+    short = track(5.0, 5.1, [[0, 0, 10, 10]] * 2, id="face:0")       # 4.875 .. 5.225 s: 9 frames
+    long = track(6.0, 6.2, [[0, 0, 10, 10]] * 2, id="face:1")        # 5.875 .. 6.325 s: frames 147 .. 158
+    plans = plans_for([short, long], shots)
+    assert [p[0] for p in plans] == [1] and plans[0][1].tolist() == list(range(147, 159))
+    assert wanted_frames(plans)[150] == [(0, 3)] and 146 not in wanted_frames(plans)
+    with pytest.raises(ValueError, match="face:0 is in shot:9"):
+        plans_for([track(1, 2, [[0, 0, 1, 1]], shot="shot:9")], shots)
+
+
+def test_the_audio_under_frames_runs_to_the_end_of_the_last():
+    assert audio_span(np.arange(25, 51)) == (16000, 32640)
+
+
+def test_a_clip_is_cut_to_whole_frames_of_audio_and_tiled_by_each_window_length():
+    windows = clip_windows(n_mfcc=503, n_frames=130, durations=(1, 2, 6))
+    # 503 MFCCs -> 500 (whole frames of 4) = 5 s = 125 frames, under the 130 frames
+    assert windows[0] == [(i * 100, (i + 1) * 100, i * 25, (i + 1) * 25) for i in range(5)]
+    assert windows[1] == [(0, 200, 0, 50), (200, 400, 50, 100), (400, 500, 100, 125)]   # the last window shorter
+    assert windows[2] == [(0, 500, 0, 125)]
+    assert clip_windows(n_mfcc=1000, n_frames=30, durations=(1,)) == [[(0, 100, 0, 25), (100, 120, 25, 30)]]   # video-bound
+
+
+def test_frames_are_25_per_second_from_the_video_streams_first_frame(clip):
+    """The clip's video starts 3 frames (0.3 s) after its audio; frame 0 is still its first frame. At 10 fps in, frame
+    n shows what FFmpeg's fps filter picks: the last input frame whose time, rounded to the nearest 25 fps tick (halves
+    up), is at or before n."""
+    got = list(grey_frames(clip.path))
+    assert [i for i, _ in got] == list(range(clip.seconds * FPS))
+    for n, gray in got:
+        assert gray.shape == (clip.h, clip.w)
+        source = max(i for i in range(clip.seconds * clip.fps) if np.floor(i * FPS / clip.fps + 0.5) <= n)
+        assert abs(float(gray.mean()) - (10 + 10 * source)) < 4, (n, source, gray.mean())   # conftest's level(source)
+    assert [round((g.mean() - 10) / 10) for _, g in got[:9]] == [0, 0, 0, 1, 1, 2, 2, 2, 3]
+
+
+def test_frames_are_turned_upright(rotated):
+    """Stored sideways with a 90° rotation: shown 32 wide and 64 high, blue (darker in grey) above red."""
+    (_, gray), *_ = list(grey_frames(rotated))
+    assert gray.shape == (64, 32)
+    assert gray[:24].mean() + 20 < gray[40:].mean()
