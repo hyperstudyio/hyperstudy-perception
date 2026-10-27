@@ -2,7 +2,8 @@
 
 1. manifest.json against the root of schema/bundle-<major.minor>.schema.json, and each layer file against
    #/$defs/layer/<name>.
-2. Every layer and side file exists, and its sha256 and size match the manifest.
+2. Every layer and side file exists, and its sha256 and size match the manifest. A side file with a schema
+   (#/$defs/side/<name>) validates against it, and a layer's detail.file is one of its side files.
 3. References: every id a layer points at (a shot, utterance, voice, face track, person, body, hand, object track
    or object identity) is defined by the layer that owns that kind of id. JSON Schema checks an id's shape, not
    whether it exists.
@@ -69,6 +70,30 @@ def crop_paths(node, key=None):
         yield key, node
 
 
+def side_file_problems(bundle, name, entry, doc, schema, registry):
+    """A layer's detail.file must be one of its side files; a side file with a schema (#/$defs/side/<name>) must
+    validate, and one keyed by face track ids (faces_detail) must hold the layer's tracks, a sample for each sample."""
+    problems, listed = [], {f["file"] for f in entry.get("side_files", [])}
+    referenced = (doc.get("detail") or {}).get("file") if isinstance(doc.get("detail"), dict) else None
+    if referenced and referenced not in listed:
+        problems.append(f"{name}: detail.file {referenced} is not one of the layer's side files")
+    for file in sorted(listed):
+        side_name, path = Path(file).stem, bundle / file
+        if side_name not in schema["$defs"].get("side", {}) or not path.exists():
+            continue
+        side = json.loads(path.read_text())
+        validator = Draft202012Validator({"$ref": f"{schema['$id']}#/$defs/side/{side_name}"}, registry=registry)
+        for e in sorted(validator.iter_errors(side), key=lambda e: list(e.absolute_path))[:20]:
+            problems.append(f"{name}: {file}: {e.json_path}: {e.message[:200]}")
+        if side_name == "faces_detail" and isinstance(side.get("tracks"), dict):
+            samples = {t["id"]: [s["t"] for s in t.get("samples", [])] for t in doc.get("tracks", [])}
+            detail = {k: [s.get("t") for s in v] for k, v in side["tracks"].items()}
+            if samples != detail:
+                differ = sorted(k for k in samples.keys() | detail.keys() if samples.get(k) != detail.get(k))
+                problems.append(f"{name}: {file} does not match the layer's track samples: {len(differ)} tracks, e.g. {differ[:5]}")
+    return problems
+
+
 def main():
     bundle = Path(sys.argv[1])
     problems = []
@@ -96,6 +121,7 @@ def main():
             problems.append(f"{name}: {e.json_path}: {e.message[:200]}")
         if docs[name].get("layer") != name:
             problems.append(f"{name}: file says layer {docs[name].get('layer')!r}")
+        problems += side_file_problems(bundle, name, entry, docs[name], schema, registry)
 
     for f in manifest.get("assets", []):
         path = bundle / f["file"]

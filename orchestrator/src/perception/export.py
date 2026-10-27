@@ -1,8 +1,9 @@
 """Publishing a run as a track bundle (schema/bundle-0.1): the view the annotator and HyperStudy read.
 
 A bundle is not a second copy of the truth. Its layers are the run's committed `bundle.<layer>@0.1` artifacts, copied
-byte for byte, and its manifest records their checksums, the video (from the run's `media.v1` artifact) and each
-layer's licence mode: the strictest of its node's models and of every node upstream of it.
+byte for byte (with the side files their nodes wrote beside them, such as layers/faces_detail.json), and its manifest
+records their checksums, the video (from the run's `media.v1` artifact) and each layer's licence mode: the strictest
+of its node's models and of every node upstream of it.
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
             effective[i] = max([own[i], *(licence(u) for u in graph.nodes[i].upstream)], key=LICENCE_ORDER.index)
         return effective[i]
 
-    media, layers, asset_trees, writers = None, {}, [], {}
+    media, layers, asset_trees, writers, sides = None, {}, [], {}, {}
     for node_id, t in tasks.items():
         for name, a in json.loads(t["outputs"]).items():
             kind = artifacts.get(a["type"])
@@ -64,6 +65,8 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
                 media = json.loads(Path(a["path"]).read_text())
             elif kind.layer:
                 writers.setdefault(kind.layer, []).append((node_id, Path(a["path"])))
+            elif kind.side_of:
+                sides.setdefault((node_id, kind.side_of), []).append((kind.bundle_file, Path(a["path"])))
     for layer_name, ws in writers.items():
         # a node that refines an upstream node's layer (captions on the shots layer) supersedes it; two unrelated
         # writers of one layer are a graph error
@@ -87,6 +90,18 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
         dest.write_text(json.dumps(doc, separators=(",", ":")))
         entries[name] = {"file": f"layers/{name}.json", "sha256": artifacts.sha256_file(dest), "bytes": dest.stat().st_size,
                          "licence_mode": licence(node_id), "stage": graph.nodes[node_id].manifest.stage or graph.nodes[node_id].manifest.id}
+        # its side files, byte for byte: those the node that wrote this layer wrote with it (a layer's ids are its own)
+        side_files = []
+        for file, src in sorted(sides.get((node_id, name), [])):
+            side = out / file
+            shutil.copyfile(src, side)
+            side.chmod(0o644)
+            side_files.append({"file": file, "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size})
+        referenced = (doc.get("detail") or {}).get("file")
+        if referenced and referenced not in {s["file"] for s in side_files}:
+            raise SystemExit(f"the {name} layer from {node_id} points at {referenced}, which {node_id} did not write")
+        if side_files:
+            entries[name]["side_files"] = side_files
     assets = []
     for tree in asset_trees:   # each node's assets tree merges into assets/; layers refer to "assets/<path>"
         for src in sorted(p for p in tree.rglob("*") if p.is_file()):

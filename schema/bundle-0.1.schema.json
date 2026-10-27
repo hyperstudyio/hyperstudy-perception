@@ -114,6 +114,33 @@
         "timings": { "type": "object" }
       }
     },
+    "side": {
+      "faces_detail": {
+        "description": "layers/faces_detail.json, the faces layer's side file (its detail.file): py-feat's output per face track sample, keyed by the layer's track ids, one entry per sample of that track in order.",
+        "type": "object",
+        "required": ["au_names", "emotion_names", "tracks"],
+        "properties": {
+          "au_names": { "type": "array", "items": { "type": "string" }, "description": "The order of each sample's au." },
+          "emotion_names": { "type": "array", "items": { "type": "string" }, "description": "The order of each sample's emo." },
+          "angles": { "type": "string", "description": "Units and sign convention of head pose and gaze." },
+          "tracks": {
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/id/face" },
+            "additionalProperties": { "type": "array", "items": {
+              "type": "object", "required": ["t"],
+              "properties": {
+                "t": { "$ref": "#/$defs/time" },
+                "lmk": { "type": "array", "items": { "type": "number" }, "minItems": 136, "maxItems": 136, "description": "68 landmarks: all x, then all y, in source pixels." },
+                "au": { "type": "array", "items": { "type": "number" } },
+                "emo": { "type": "array", "items": { "type": "number" } },
+                "va": { "$ref": "#/$defs/point", "description": "[valence, arousal]" },
+                "head": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "[yaw, pitch, roll]" },
+                "gaze": { "$ref": "#/$defs/point", "description": "[yaw, pitch]" }
+              } } }
+          }
+        }
+      }
+    },
     "layerBase": {
       "type": "object", "required": ["layer", "schema_version", "producer"],
       "properties": {

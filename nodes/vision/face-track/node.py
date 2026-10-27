@@ -3,7 +3,8 @@
 py-feat Detectorv2 (RetinaFace + multitask model + ArcFace) on frames sampled at `fps`; faces linked into tracks
 within each shot and clustered into people (tracking.py). Writes one crop per person (thumbnails.py: shortlisted by size and
 frontality, chosen on exposure, colour cast and sharpness) and one per track (its largest face), referenced from the
-layer as assets/crops/...
+layer as assets/crops/... Also writes the layer's side file, layers/faces_detail.json in a bundle (face_detail.py):
+py-feat's 68 landmarks, action units, emotions, valence and arousal, head pose and gaze for every track sample.
 
 Licence: py-feat's code is MIT, but the Detectorv2 multitask weights are non-commercial and InsightFace-derived
 ArcFace weights are research-only, so this layer is academic-only.
@@ -18,6 +19,7 @@ from functools import partial
 import numpy as np
 
 from perception_node import Node, NodeError
+import face_detail
 from frames import crop_pixels, longest_side, save_crop, width
 from loader import decode_workers
 from thumbnails import QUALITY_PX, choose, shortlist
@@ -55,6 +57,11 @@ with Node() as node:
                licence="py-feat code MIT; v2 weights non-commercial")
     node.model("ArcFace (InsightFace, via py-feat)", licence_mode="academic-only", licence="research-only weights")
 
+    missing = face_detail.missing_columns(fex.columns)
+    if missing:
+        raise NodeError("internal", f"py-feat's output lacks columns the face detail needs: {', '.join(missing[:5])}")
+    if not fex.index.is_unique:   # a track sample finds its py-feat row by the row's label
+        raise NodeError("internal", "py-feat's output has repeated row labels")
     rows = detection_rows(fex, fps)
     tracks = build_tracks(rows, shots)
     labels = cluster_tracks(tracks, c["cluster_threshold"]) if tracks else []
@@ -107,11 +114,19 @@ with Node() as node:
     run_jobs(jobs)
     crops_s = round(time.time() - t0, 1)
 
+    aus = face_detail.au_names(fex.columns)
+    detail_columns = face_detail.LANDMARKS + aus + face_detail.EMOTIONS + face_detail.OTHER
+    try:
+        detail = face_detail.side_file([[(r["t"], fex.loc[r["index"], detail_columns]) for r in t["rows"]] for t in tracks], aus)
+    except ValueError as e:   # a value JSON cannot hold (NaN)
+        raise NodeError("internal", str(e)) from None
+    node.write_json("detail", "faces_detail.json", detail)
+
     pairs = [{**p, "a": f"person:{p['a']}", "b": f"person:{p['b']}"} for p in person_pairs(tracks, labels, names)]
     node.write_json("faces", "faces.json", {
         "layer": "faces", "schema_version": "0.1.0",
         "producer": node.producer(timings={"detect_s": detect_s, "thumbnails_s": thumbnails_s, "crops_s": crops_s}, device=device),
-        "sample_fps": c["fps"], "angles": "radians; yaw + = subject's right (image left)",
-        "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": None})
+        "sample_fps": c["fps"], "angles": face_detail.ANGLES,
+        "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": face_detail.reference()})
     node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures,
                decode_workers=workers)

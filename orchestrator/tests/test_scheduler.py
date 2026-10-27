@@ -768,6 +768,60 @@ def test_a_node_that_refines_a_layer_supersedes_it_in_the_bundle(tmp_path):
     assert json.loads((out / "manifest.json").read_text())["layers"]["shots"]["licence_mode"] == "academic-only"
 
 
+def faces_graph(video: Path, **config) -> dict:
+    return {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+            "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                      {"id": "faces", "uses": "test.faces@1.0.0", "inputs": {"video": "$inputs.video"}, "config": config}]}
+
+
+def test_a_layers_side_file_goes_into_the_bundle_with_it(tmp_path):
+    """face-track's detail output becomes layers/faces_detail.json, listed under the faces layer's side_files, which is
+    where the annotator looks for the file the layer's detail.file names (and the only bundle file it reads by path)."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, faces_graph(video))
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    manifest = json.loads((out / "manifest.json").read_text())
+    side = out / "layers" / "faces_detail.json"
+    stored = Path(json.loads(coord._tasks(run_id)["faces"]["outputs"])["detail"]["path"])
+    assert side.read_bytes() == stored.read_bytes()
+    assert manifest["layers"]["faces"]["side_files"] == [
+        {"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size}]
+    assert "side_files" not in manifest["layers"]["shots"]
+    validate = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
+    result = subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_layer_pointing_at_a_side_file_its_node_did_not_write_is_not_exported(tmp_path):
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, faces_graph(video, detail_file="layers/faces_mesh.json"))
+    assert status == "succeeded", coord._tasks(run_id)
+    with pytest.raises(SystemExit, match="points at layers/faces_mesh.json"):
+        export.bundle(coord, run_id, tmp_path / "bundle")
+
+
+def test_the_faces_detail_type_checks_its_shape(tmp_path):
+    check = artifacts.get("bundle.faces_detail@0.1").validate
+    good = {"au_names": ["AU01"], "emotion_names": ["Neutral"],
+            "tracks": {"face:3": [{"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}]}}
+    path = tmp_path / "faces_detail.json"
+    path.write_text(json.dumps(good))
+    assert check(path) == []
+    path.write_text(json.dumps(good | {"tracks": {"3": good["tracks"]["face:3"]}}))       # not a face track id
+    assert check(path)
+    path.write_text(json.dumps(good | {"tracks": {"face:3": [good["tracks"]["face:3"][0] | {"lmk": [0.0] * 68}]}}))   # x only
+    assert check(path)
+    assert artifacts.get("bundle.faces_detail@0.1").side_of == "faces" and artifacts.get("bundle.faces_detail@0.1").layer is None
+
+
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])
 def test_changing_the_node_sdk_changes_every_nodes_runner_identity(tmp_path, monkeypatch, backend):
     from perception.backends import native

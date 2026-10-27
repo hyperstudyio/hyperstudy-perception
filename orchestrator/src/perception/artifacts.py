@@ -1,7 +1,8 @@
 """Artifact types: what flows between nodes, and how a node's output is checked before it is published.
 
 The bundle's layer schemas are artifact types (`bundle.<layer>@0.1`): a layer a node writes is exactly the layer the
-annotator and HyperStudy read. A few internal types carry what bundles do not (media metadata, audio, keyframes).
+annotator and HyperStudy read, and so are the side files a layer points to (`bundle.faces_detail@0.1`, the faces
+layer's layers/faces_detail.json). A few internal types carry what bundles do not (media metadata, audio, keyframes).
 A type is a file or a tree (a directory); its validator returns a list of problems (empty: valid).
 """
 
@@ -31,6 +32,10 @@ class ArtifactType:
     shape: Literal["file", "tree", "source"]   # source: an input that stays where it is (the video), never copied
     validate: Callable[[Path], list[str]]
     layer: str | None = None                    # the bundle layer this type is, if any
+    # a side file of a bundle layer (heavy per-sample arrays the layer points to): the layer, and the file's path in a
+    # bundle. Export publishes it with that layer when the node that wrote the layer wrote it too
+    side_of: str | None = None
+    bundle_file: str | None = None
     # the kinds of data it holds, in policy.allow_upload's terms: what leaves the machine when a node that reads it runs
     # elsewhere (a lab server, a cloud machine). None: anything (a JSON or text file could hold any of them)
     kinds: tuple[str, ...] | None = None
@@ -66,6 +71,18 @@ def _layer(name: str) -> Callable[[Path], list[str]]:
         if doc.get("layer") != name:
             problems.append(f"layer is {doc.get('layer')!r}, not {name!r}")
         return problems
+    return check
+
+
+def _side(name: str) -> Callable[[Path], list[str]]:
+    def check(path: Path) -> list[str]:
+        schema, registry = _bundle_schema()
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError) as e:
+            return [f"not JSON: {e}"]
+        validator = Draft202012Validator({"$ref": f"{schema['$id']}#/$defs/side/{name}"}, registry=registry)
+        return [f"{e.json_path}: {e.message[:200]}" for e in list(validator.iter_errors(doc))[:20]]
     return check
 
 
@@ -111,6 +128,10 @@ LAYER_KINDS: dict[str, tuple[str, ...]] = {
 }
 assert set(LAYER_KINDS) == set(BUNDLE_LAYERS)
 
+# Side files: name (its schema, #/$defs/side/<name>, and its file, layers/<name>.json) -> (layer, what it holds).
+# The faces detail is py-feat's per-sample landmarks, action units, emotions and pose: face data, no embeddings.
+SIDE_FILES: dict[str, tuple[str, tuple[str, ...]]] = {"faces_detail": ("faces", ("faces",))}
+
 TYPES: dict[str, ArtifactType] = {
     "video.v1": ArtifactType("video.v1", "source", lambda p: [] if p.is_file() else ["missing"], kinds=("video",)),
     "media.v1": ArtifactType("media.v1", "file", _json_schema(MEDIA_SCHEMA), kinds=()),   # the video's format and timing
@@ -122,6 +143,9 @@ TYPES: dict[str, ArtifactType] = {
     "text.v1": ArtifactType("text.v1", "file", lambda p: []),
     **{f"bundle.{name}@0.1": ArtifactType(f"bundle.{name}@0.1", "file", _layer(name), layer=name, kinds=LAYER_KINDS[name])
        for name in BUNDLE_LAYERS},
+    **{f"bundle.{name}@0.1": ArtifactType(f"bundle.{name}@0.1", "file", _side(name), side_of=layer,
+                                          bundle_file=f"layers/{name}.json", kinds=kinds)
+       for name, (layer, kinds) in SIDE_FILES.items()},
 }
 
 
