@@ -1,8 +1,9 @@
 """Artifact types: what flows between nodes, and how a node's output is checked before it is published.
 
 The bundle's layer schemas are artifact types (`bundle.<layer>@0.1`): a layer a node writes is exactly the layer the
-annotator and HyperStudy read, and so are the side files a layer points to (`bundle.faces_detail@0.1`, the faces
-layer's layers/faces_detail.json). A few internal types carry what bundles do not (media metadata, audio, keyframes).
+annotator and HyperStudy read, and so are the side files a layer points to (`bundle.faces_detail@0.1` and
+`bundle.faces_mesh@0.1`, the faces layer's layers/faces_detail.json and layers/faces_mesh.json). A few internal types
+carry what bundles do not (media metadata, audio, keyframes).
 A type is a file or a tree (a directory); its validator returns a list of problems (empty: valid).
 """
 
@@ -141,8 +142,12 @@ LAYER_KINDS: dict[str, tuple[str, ...]] = {
 assert set(LAYER_KINDS) == set(BUNDLE_LAYERS)
 
 # Side files: name (its schema, #/$defs/side/<name>, and its file, layers/<name>.json) -> (layer, what it holds).
-# The faces detail is py-feat's per-sample landmarks, action units, emotions and pose: face data, no embeddings.
-SIDE_FILES: dict[str, tuple[str, tuple[str, ...]]] = {"faces_detail": ("faces", ("faces",))}
+# The faces detail is py-feat's per-sample landmarks, action units, emotions and pose, and the faces mesh its per-sample
+# 478-point face mesh: face data, no embeddings.
+SIDE_FILES: dict[str, tuple[str, tuple[str, ...]]] = {"faces_detail": ("faces", ("faces",)),
+                                                      "faces_mesh": ("faces", ("faces",))}
+# the fields of a layer that point at one of its side files, as {"file": "layers/<name>.json", ...} or null
+SIDE_POINTERS = ("detail", "mesh")
 # a side file's per-sample arrays that hold one value per name in a list of the file's: field -> that list
 SIDE_NAMED: dict[str, dict[str, str]] = {"faces_detail": {"au": "au_names", "emo": "emotion_names"}}
 

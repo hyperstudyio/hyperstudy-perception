@@ -139,6 +139,25 @@
               } } }
           }
         }
+      },
+      "faces_mesh": {
+        "description": "layers/faces_mesh.json, the faces layer's mesh side file (its mesh.file): py-feat's 478-point 2D face mesh per face track sample, keyed by the layer's track ids, one entry per sample of that track in order. Large; readers fetch it only when they draw the mesh.",
+        "type": "object",
+        "required": ["points", "tracks"],
+        "properties": {
+          "points": { "const": 478, "description": "Mesh points per sample." },
+          "layout": { "type": "string", "description": "The order of each sample's xy." },
+          "tracks": {
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/id/face" },
+            "additionalProperties": { "type": "array", "items": {
+              "type": "object", "required": ["t", "xy"],
+              "properties": {
+                "t": { "$ref": "#/$defs/time" },
+                "xy": { "type": "array", "items": { "type": "integer" }, "minItems": 956, "maxItems": 956, "description": "478 points: all x, then all y, in source pixels, rounded to integers." }
+              } } }
+          }
+        }
       }
     },
     "layerBase": {
@@ -235,7 +254,9 @@
             "properties": { "a": { "$ref": "#/$defs/id/person" }, "b": { "$ref": "#/$defs/id/person" },
               "distance": { "type": "number" }, "co_visible": { "type": "boolean" } } } },
           "detail": { "type": ["object", "null"], "required": ["file"], "properties": {
-            "file": { "type": "string" }, "fields": { "type": "array", "items": { "type": "string" } } } }
+            "file": { "type": "string" }, "fields": { "type": "array", "items": { "type": "string" } } } },
+          "mesh": { "type": ["object", "null"], "required": ["file"], "description": "Where the faces_mesh side file is.",
+            "properties": { "file": { "type": "string" } } }
         }
       },
 

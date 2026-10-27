@@ -774,9 +774,10 @@ def faces_graph(video: Path, **config) -> dict:
                       {"id": "faces", "uses": "test.faces@1.0.0", "inputs": {"video": "$inputs.video"}, "config": config}]}
 
 
-def test_a_layers_side_file_goes_into_the_bundle_with_it(tmp_path):
-    """face-track's detail output becomes layers/faces_detail.json, listed under the faces layer's side_files, which is
-    where the annotator looks for the file the layer's detail.file names (and the only bundle file it reads by path)."""
+def test_a_layers_side_files_go_into_the_bundle_with_it(tmp_path):
+    """face-track's detail and mesh outputs become layers/faces_detail.json and layers/faces_mesh.json, listed under the
+    faces layer's side_files, which is where the annotator looks for the files the layer's detail.file and mesh.file
+    name (and the only bundle files it reads by path)."""
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
@@ -785,11 +786,15 @@ def test_a_layers_side_file_goes_into_the_bundle_with_it(tmp_path):
     assert status == "succeeded", coord._tasks(run_id)
     out = export.bundle(coord, run_id, tmp_path / "bundle")
     manifest = json.loads((out / "manifest.json").read_text())
-    side = out / "layers" / "faces_detail.json"
-    stored = Path(json.loads(coord._tasks(run_id)["faces"]["outputs"])["detail"]["path"])
-    assert side.read_bytes() == stored.read_bytes()
+    outputs = json.loads(coord._tasks(run_id)["faces"]["outputs"])
+    detail, mesh = out / "layers" / "faces_detail.json", out / "layers" / "faces_mesh.json"
+    assert detail.read_bytes() == Path(outputs["detail"]["path"]).read_bytes()
+    assert mesh.read_bytes() == Path(outputs["mesh"]["path"]).read_bytes()
     assert manifest["layers"]["faces"]["side_files"] == [
-        {"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size}]
+        {"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(detail), "bytes": detail.stat().st_size},
+        {"file": "layers/faces_mesh.json", "sha256": artifacts.sha256_file(mesh), "bytes": mesh.stat().st_size}]
+    layer = json.loads((out / "layers" / "faces.json").read_text())
+    assert layer["mesh"] == {"file": "layers/faces_mesh.json"} and layer["detail"]["file"] == "layers/faces_detail.json"
     assert "side_files" not in manifest["layers"]["shots"]
     validate = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
     result = subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
@@ -797,14 +802,15 @@ def test_a_layers_side_file_goes_into_the_bundle_with_it(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_a_layer_pointing_at_a_side_file_its_node_did_not_write_is_not_exported(tmp_path):
+@pytest.mark.parametrize("pointer", ["detail", "mesh"])
+def test_a_layer_pointing_at_a_side_file_its_node_did_not_write_is_not_exported(tmp_path, pointer):
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
     coord = coordinator(tmp_path)
-    run_id, status = run(coord, faces_graph(video, detail_file="layers/faces_mesh.json"))
+    run_id, status = run(coord, faces_graph(video, **{f"{pointer}_file": "layers/faces_other.json"}))
     assert status == "succeeded", coord._tasks(run_id)
-    with pytest.raises(SystemExit, match="points at layers/faces_mesh.json"):
+    with pytest.raises(SystemExit, match=rf"points at layers/faces_other.json \({pointer}.file\)"):
         export.bundle(coord, run_id, tmp_path / "bundle")
 
 
@@ -822,6 +828,28 @@ def test_the_faces_detail_type_checks_its_shape(tmp_path):
     assert artifacts.get("bundle.faces_detail@0.1").side_of == "faces" and artifacts.get("bundle.faces_detail@0.1").layer is None
 
 
+MESH_SAMPLE = {"t": 1.0, "xy": [12] * 956}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    ({"points": 478, "layout": "all x, then all y", "tracks": {"face:3": [MESH_SAMPLE]}}, True),
+    ({"points": 478, "tracks": {}}, True),                                                    # no tracks; layout optional
+    ({"points": 478, "tracks": {"3": [MESH_SAMPLE]}}, False),                                 # not a face track id
+    ({"points": 478, "tracks": {"face:3": [MESH_SAMPLE | {"xy": [12] * 478}]}}, False),       # x only
+    ({"points": 478, "tracks": {"face:3": [MESH_SAMPLE | {"xy": [12.5] * 956}]}}, False),     # not whole pixels
+    ({"points": 468, "tracks": {"face:3": [MESH_SAMPLE]}}, False),                            # another mesh
+    ({"points": 478, "tracks": {"face:3": [{"t": 1.0}]}}, False),                             # no xy
+    ({"tracks": {"face:3": [MESH_SAMPLE]}}, False),                                           # no points
+])
+def test_the_faces_mesh_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.faces_mesh@0.1")
+    path = tmp_path / "faces_mesh.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "faces" and kind.layer is None and kind.bundle_file == "layers/faces_mesh.json"
+    assert kind.kinds == ("faces",)
+
+
 FULL_SAMPLE = {"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
 
 
@@ -834,8 +862,8 @@ def test_a_faces_detail_sample_must_hold_every_field_one_value_per_name(tmp_path
     assert artifacts.get("bundle.faces_detail@0.1").validate(path)
 
 
-def bundle_validation(tmp_path, damage) -> subprocess.CompletedProcess:
-    """validate.py on an exported faces bundle after `damage(side_file_path)`, with the manifest's checksum updated
+def bundle_validation(tmp_path, damage, file="layers/faces_detail.json") -> subprocess.CompletedProcess:
+    """validate.py on an exported faces bundle after `damage(path of file)`, with the manifest's checksums updated
     (export records whatever bytes it copied)."""
     from perception import export
     video = tmp_path / "clip.mp4"
@@ -843,11 +871,11 @@ def bundle_validation(tmp_path, damage) -> subprocess.CompletedProcess:
     coord = coordinator(tmp_path)
     run_id, _ = run(coord, faces_graph(video))
     out = export.bundle(coord, run_id, tmp_path / "bundle")
-    side = out / "layers" / "faces_detail.json"
-    damage(side)
+    damage(out / file)
     manifest = json.loads((out / "manifest.json").read_text())
-    manifest["layers"]["faces"]["side_files"] = [{"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(side),
-                                                  "bytes": side.stat().st_size}]
+    for entry in manifest["layers"].values():
+        for f in [entry, *entry.get("side_files", [])]:
+            f.update(sha256=artifacts.sha256_file(out / f["file"]), bytes=(out / f["file"]).stat().st_size)
     (out / "manifest.json").write_text(json.dumps(manifest))
     validate = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
     return subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
@@ -862,14 +890,23 @@ def _with(change):
     return damage
 
 
-@pytest.mark.parametrize("damage, problem", [
-    (lambda p: p.write_text("{not json"), "not JSON"),
-    (_with(lambda d: d["tracks"].update({"face:0": ["not a sample", 3]})), "face:0"),
-    (_with(lambda d: d["tracks"]["face:0"][0].update(au=[0.1, 0.2])), "au has 2 values for 1 au_names"),
-    (_with(lambda d: d["tracks"].pop("face:0")), "does not match the layer's track samples"),
+DETAIL, MESH = "layers/faces_detail.json", "layers/faces_mesh.json"
+
+
+@pytest.mark.parametrize("file, damage, problem", [
+    (DETAIL, lambda p: p.write_text("{not json"), "not JSON"),
+    (DETAIL, _with(lambda d: d["tracks"].update({"face:0": ["not a sample", 3]})), "face:0"),
+    (DETAIL, _with(lambda d: d["tracks"]["face:0"][0].update(au=[0.1, 0.2])), "au has 2 values for 1 au_names"),
+    (DETAIL, _with(lambda d: d["tracks"].pop("face:0")), "does not match the layer's track samples"),
+    (MESH, lambda p: p.write_text("{not json"), "faces_mesh.json: not JSON"),
+    (MESH, _with(lambda d: d["tracks"]["face:0"][0].update(xy=[1] * 955)), "faces_mesh.json: $.tracks"),
+    (MESH, _with(lambda d: d["tracks"].pop("face:0")), "faces_mesh.json does not match the layer's track samples"),
+    (MESH, _with(lambda d: d["tracks"]["face:0"][1].update(t=0.25)), "faces_mesh.json does not match the layer's track samples"),
+    ("layers/faces.json", _with(lambda d: d.update(mesh={"file": "layers/faces_other.json"})),
+     "mesh.file layers/faces_other.json is not one of the layer's side files"),
 ])
-def test_validate_reports_a_bad_side_file_as_a_problem(tmp_path, damage, problem):
-    result = bundle_validation(tmp_path, damage)
+def test_validate_reports_a_bad_side_file_as_a_problem(tmp_path, file, damage, problem):
+    result = bundle_validation(tmp_path, damage, file)
     assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 

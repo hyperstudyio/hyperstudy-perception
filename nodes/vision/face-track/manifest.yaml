@@ -1,10 +1,10 @@
 id: vision.face-track
-version: 1.1.0
+version: 1.2.0
 stage: faces
 title: Face tracks
-description: Face tracks within shots, identity clusters across the video (py-feat + ArcFace), crops, and per-sample landmarks, action units, emotions and pose (the detail side file)
+description: Face tracks within shots, identity clusters across the video (py-feat + ArcFace), crops, per-sample landmarks, action units, emotions and pose (the detail side file), and the per-sample 478-point face mesh (the mesh side file)
 inputs: {video: video.v1, media: media.v1, shots: bundle.shots@0.1}
-outputs: {faces: bundle.faces@0.1, detail: bundle.faces_detail@0.1, crops: assets.v1}
+outputs: {faces: bundle.faces@0.1, detail: bundle.faces_detail@0.1, mesh: bundle.faces_mesh@0.1, crops: assets.v1}
 config:
   fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 8, description: "frames sampled per second"}
   cluster_threshold: {type: number, minimum: 0, maximum: 2, default: 0.65}

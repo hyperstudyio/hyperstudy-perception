@@ -43,7 +43,7 @@ run: |
   uv run perception run ../graphs/decode.yaml --input video=/data/clip.mp4
   for point in $SWEEP; do
     b=${point%:*}; w=${point#*:}
-    sed "s/uses: vision.face-track@1.1.0/&\n    config: {batch_size: $b, num_workers: $w}/" ../graphs/faces.yaml > ../graphs/tune-$b-$w.yaml
+    sed "s/uses: vision.face-track@1.2.0/&\n    config: {batch_size: $b, num_workers: $w}/" ../graphs/faces.yaml > ../graphs/tune-$b-$w.yaml
     echo "=== batch $b workers $w $(date +%T)" | tee -a ~/out/sweep.txt
     SECONDS=0
     # A failed point is recorded (with its error code, from status) and the sweep goes on.
