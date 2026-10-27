@@ -3,8 +3,9 @@
 py-feat Detectorv2 (RetinaFace + multitask model + ArcFace) on frames sampled at `fps`; faces linked into tracks
 within each shot and clustered into people (tracking.py). Writes one crop per person (thumbnails.py: shortlisted by size and
 frontality, chosen on exposure, colour cast and sharpness) and one per track (its largest face), referenced from the
-layer as assets/crops/... Also writes the layer's side file, layers/faces_detail.json in a bundle (face_detail.py):
-py-feat's 68 landmarks, action units, emotions, valence and arousal, head pose and gaze for every track sample.
+layer as assets/crops/... Also writes the layer's side files (face_detail.py), for every track sample: in a bundle,
+layers/faces_detail.json (py-feat's 68 landmarks, action units, emotions, valence and arousal, head pose and gaze) and
+layers/faces_mesh.json (py-feat's 478-point face mesh).
 
 Licence: py-feat's code is MIT, but the Detectorv2 multitask weights are non-commercial and InsightFace-derived
 ArcFace weights are research-only, so this layer is academic-only.
@@ -118,15 +119,18 @@ with Node() as node:
     detail_columns = face_detail.LANDMARKS + aus + face_detail.EMOTIONS + face_detail.OTHER
     try:
         detail = face_detail.side_file([[(r["t"], fex.loc[r["index"], detail_columns]) for r in t["rows"]] for t in tracks], aus)
+        mesh = face_detail.mesh_file([[(r["t"], fex.loc[r["index"], face_detail.MESH].tolist()) for r in t["rows"]] for t in tracks])
     except ValueError as e:   # a value JSON cannot hold (NaN)
         raise NodeError("internal", str(e)) from None
     node.write_json("detail", "faces_detail.json", detail)
+    node.write_json("mesh", "faces_mesh.json", mesh)
 
     pairs = [{**p, "a": f"person:{p['a']}", "b": f"person:{p['b']}"} for p in person_pairs(tracks, labels, names)]
     node.write_json("faces", "faces.json", {
         "layer": "faces", "schema_version": "0.1.0",
         "producer": node.producer(timings={"detect_s": detect_s, "thumbnails_s": thumbnails_s, "crops_s": crops_s}, device=device),
         "sample_fps": c["fps"], "angles": face_detail.ANGLES,
-        "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": face_detail.reference()})
+        "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": face_detail.reference(),
+        "mesh": face_detail.mesh_reference()})
     node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures,
                decode_workers=workers)

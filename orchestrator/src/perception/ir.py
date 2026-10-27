@@ -10,7 +10,7 @@
         uses: core.decode@1.0.0
         inputs: {video: $inputs.video}
       - id: faces
-        uses: vision.face-track@1.1.0
+        uses: vision.face-track@1.2.0
         inputs: {video: $inputs.video, shots: $nodes.decode.shots}
         config: {fps: 8}
 
