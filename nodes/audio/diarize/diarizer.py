@@ -1,0 +1,63 @@
+"""pyannote's speaker-diarization-community-1 pipeline, called through pyannote.audio directly (the bake-off called it
+through WhisperX's DiarizationPipeline, which only wraps it: same pipeline, same in-memory waveform, same output).
+
+The pipeline is gated on Hugging Face: the account whose HF_TOKEN the node is given must have accepted its conditions
+at https://hf.co/pyannote/speaker-diarization-community-1. It is read from the Hugging Face cache at a pinned revision
+(segmentation, embedding and PLDA models, 31 MB in all).
+
+pyannote.audio 4 sends usage telemetry (pipeline name, audio duration, speaker counts) to otel.pyannote.ai unless
+PYANNOTE_METRICS_ENABLED is false; it is set false here, before pyannote is imported: nothing leaves the machine.
+
+Where it runs (the request's accelerator): mps (Apple GPU), cuda or cpu. A device torch cannot use here is an error,
+not a quiet run on the CPU. On the 119 s OOO clip, an M5 Max: 6 s on MPS (13 s with other jobs on the GPU), 47-53 s on
+the CPU, with identical turns.
+"""
+
+from __future__ import annotations
+
+import os
+import warnings
+
+from perception_node import NodeError
+from pcm16 import RATE
+
+REPO = "pyannote/speaker-diarization-community-1"
+REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
+LICENCE = "CC-BY-4.0 (gated on Hugging Face)"
+
+
+def load(token: str | None, accelerator: str = "cpu"):
+    """The pipeline on the accelerator's device. Its weights come from the Hugging Face cache, or are downloaded into
+    it (with `token`)."""
+    os.environ["PYANNOTE_METRICS_ENABLED"] = "false"
+    # torchcodec (pyannote's file decoder) warns on import that it cannot find FFmpeg's shared libraries: the node never
+    # asks it to decode, it passes the waveform in memory (pcm16.py)
+    warnings.filterwarnings("ignore", message=r"\s*torchcodec is not installed correctly")   # the message starts with a newline
+    import torch
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, LocalEntryNotFoundError, RepositoryNotFoundError
+    from pyannote.audio import Pipeline
+
+    device = {"mps": "mps", "cuda": "cuda"}.get(accelerator, "cpu")
+    if device == "mps" and not torch.backends.mps.is_available():
+        raise NodeError("resources", "torch cannot use the Apple GPU (MPS) here: run Speaker diarization on another device")
+    if device == "cuda" and not torch.cuda.is_available():
+        raise NodeError("resources", "torch cannot use CUDA here (no NVIDIA GPU or driver): run Speaker diarization on another device")
+    try:
+        pipeline = Pipeline.from_pretrained(REPO, revision=REVISION, token=token)
+    except GatedRepoError:   # before RepositoryNotFoundError, which it is a kind of. Also what an invalid token gets
+        raise NodeError("licence", f"{REPO} is gated, and Hugging Face refused this machine's HF_TOKEN for it: check the "
+                                   f"token, and that its account accepted the conditions at https://hf.co/{REPO}") from None
+    except RepositoryNotFoundError:   # the repository is not visible to this token
+        raise NodeError("input", f"Hugging Face did not accept this machine's HF_TOKEN for {REPO}") from None
+    except (HfHubHTTPError, LocalEntryNotFoundError) as e:   # the network, or the hub, failed: not in the cache either
+        raise NodeError("transient", f"could not download {REPO} from Hugging Face: {e}") from None
+    return pipeline.to(torch.device(device)), device
+
+
+def turns(pipeline, waveform) -> list[dict]:
+    """Speaker turns, [{start, end, speaker}] in pyannote's order: what WhisperX's DiarizationPipeline returned (its
+    `speaker_diarization`, where turns of two speakers may overlap)."""
+    import torch
+    output = pipeline({"waveform": torch.from_numpy(waveform[None, :]), "sample_rate": RATE})
+    return [{"start": seg.start, "end": seg.end, "speaker": label}
+            for seg, _, label in output.speaker_diarization.itertracks(yield_label=True)]

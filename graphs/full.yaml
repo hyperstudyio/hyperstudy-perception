@@ -22,13 +22,18 @@ nodes:
   - id: asr
     uses: audio.asr@1.0.0
     inputs: {audio: $nodes.decode.audio, shots: $nodes.decode.shots}
+  # refines asr's transcript: the same words and utterances, with their voices (pyannote; gated, HF_TOKEN)
+  - id: diarize
+    uses: audio.diarize@1.0.0
+    inputs: {audio: $nodes.decode.audio, transcript: $nodes.asr.transcript}
   - id: faces
     uses: vision.face-track@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
   - id: bodies
     uses: vision.body-pose@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, faces: $nodes.faces.faces}
+  # the speech it reads is diarized, as the bake-off's captions read it: lines by voice (SPEAKER_00, ...), not one SPEAKER
   - id: captions
     uses: vlm.shot-captions@1.0.0
-    inputs: {shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes, transcript: $nodes.asr.transcript,
+    inputs: {shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes, transcript: $nodes.diarize.transcript,
              faces: $nodes.faces.faces, media: $nodes.decode.media}
