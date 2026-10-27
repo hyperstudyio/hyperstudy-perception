@@ -784,6 +784,10 @@ def test_overrides_ssh_would_misread_are_refused(tmp_path, host):
         hosts.add("lab", "lab", identity=str(tmp_path / "missing"))
     with pytest.raises(HostError, match="not a user name"):
         hosts.add("lab", "lab", user="-oProxyCommand=x")
+    for odd in ("id_%u", "id_${HOME}"):                       # ssh expands these in a key file's path: not the file checked
+        (tmp_path / odd).write_text("not really a key")
+        with pytest.raises(HostError, match="ssh would expand"):
+            hosts.add("lab", "lab", identity=str(tmp_path / odd))
     assert hosts.load() == {}
 
 

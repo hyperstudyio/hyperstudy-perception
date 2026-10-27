@@ -113,6 +113,8 @@ def check_overrides(dest: str, user: str | None, port: int | None, identity: str
     path = path.resolve()
     if any(ord(c) < 32 for c in str(path)):
         raise HostError(f"not a plain path: {identity!r}")
+    if "%" in str(path) or "${" in str(path):   # ssh expands %u, ${HOME}… in -i: it would read another file than this
+        raise HostError(f"ssh would expand % or ${{ in a key file's path: rename {identity}")
     return str(path)
 
 
