@@ -780,3 +780,18 @@ def test_changing_the_node_sdk_changes_every_nodes_runner_identity(tmp_path, mon
     before = b.identity(m, m.runners[0])
     (sdk / "__init__.py").write_text("PROTOCOL = 1  # a changed response writer\n")
     assert b.identity(m, m.runners[0]) != before
+
+
+def test_a_bundle_names_the_pipeline_version_that_made_it(tmp_path):
+    """Not a fixed string: a bundle from 0.1.1 says 0.1.1 (the installed package's version)."""
+    from importlib.metadata import version
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    manifest = json.loads((export.bundle(coord, run_id, tmp_path / "bundle") / "manifest.json").read_text())
+    assert manifest["pipeline"]["version"] == version("hyperstudy-perception")
