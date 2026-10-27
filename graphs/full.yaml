@@ -26,12 +26,18 @@ nodes:
   - id: diarize
     uses: audio.diarize@1.0.0
     inputs: {audio: $nodes.decode.audio, transcript: $nodes.asr.transcript}
+  - id: waveform
+    uses: audio.waveform@1.0.0
+    inputs: {audio: $nodes.decode.audio}
   - id: faces
-    uses: vision.face-track@1.0.0
+    uses: vision.face-track@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
   - id: bodies
     uses: vision.body-pose@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, faces: $nodes.faces.faces}
+  - id: gaze
+    uses: vision.gaze@1.0.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces}
   # the speech it reads is diarized, as the bake-off's captions read it: lines by voice (SPEAKER_00, ...), not one SPEAKER
   - id: captions
     uses: vlm.shot-captions@1.0.0

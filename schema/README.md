@@ -10,9 +10,11 @@ layers/faces_detail.json heavy per-sample arrays live in side files the layer po
 assets/                  optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
-`bundle-0.1.schema.json` validates the manifest (the root schema) and each layer file
-(`#/$defs/layer/<name>`). `pipeline/bundle/validate.py` checks a bundle directory against both, plus
-cross-references the schema cannot express (every id a layer points at exists).
+`bundle-0.1.schema.json` validates the manifest (the root schema), each layer file
+(`#/$defs/layer/<name>`) and each side file it defines (`#/$defs/side/<name>` for `layers/<name>.json`: so far
+`faces_detail`, the faces layer's `detail.file`, listed in the manifest under the faces layer's `side_files`).
+`pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
+express (every id a layer points at exists; faces_detail holds a sample for each of the faces layer's samples).
 
 ## Conventions
 

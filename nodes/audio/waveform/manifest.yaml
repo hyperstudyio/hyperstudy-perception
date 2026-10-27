@@ -1,0 +1,14 @@
+id: audio.waveform
+version: 1.0.0
+# the bake-off's stage name for this layer (convert_bakeoff.waveform_layer): it measured extract's audio.wav
+stage: extract
+title: Waveform
+description: Peak absolute amplitude of the audio per 1/50 s, 0-100 relative to the loudest bin
+inputs: {audio: audio.wav.v1}
+outputs: {waveform: bundle.waveform@0.1}
+runners:
+  # standard library only: envs/core, the environment decode already installs
+  - {kind: native, env: envs/core, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 1, memory_gb: 1, gpu: none}
+models:
+  - {id: peak absolute amplitude per bin, licence: this repo, licence_mode: commercial-ok}

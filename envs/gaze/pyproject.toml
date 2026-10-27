@@ -1,0 +1,25 @@
+[project]
+name = "perception-env-gaze"
+version = "0.1.0"
+description = "Gaze targets: Gaze-LLE (frozen DINOv2 ViT-L/14 + gaze decoder) on PyTorch"
+requires-python = ">=3.12,<3.13"
+# The bake-off's versions (tools/perception-bakeoff/gaze/uv.lock), so the heatmaps are the ones it measured. timm for
+# the decoder's transformer blocks; torchvision for the input transform and the heatmap resize; OpenCV decodes frames
+# exactly as the bake-off did. On Linux PyPI's torch 2.14 wheels are built for CUDA 13 (an NVIDIA driver >= 580).
+# Not merged into envs/vision: torch pins its CUDA 13 libraries exactly (cuDNN 9.24, CUDA runtime 13.0), which would
+# move onnxruntime-gpu's (cuDNN 9.27, runtime 13.4) under body pose.
+dependencies = [
+  "perception-node",
+  "torch==2.14.1",
+  "torchvision==0.29.1",
+  "timm==1.0.30",
+  "opencv-python==5.0.0.93",
+  "numpy",
+  "pillow",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+perception-node = { path = "../../sdk", editable = true }
