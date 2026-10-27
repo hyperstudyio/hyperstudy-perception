@@ -82,8 +82,20 @@ def _side(name: str) -> Callable[[Path], list[str]]:
         except (OSError, ValueError) as e:
             return [f"not JSON: {e}"]
         validator = Draft202012Validator({"$ref": f"{schema['$id']}#/$defs/side/{name}"}, registry=registry)
-        return [f"{e.json_path}: {e.message[:200]}" for e in list(validator.iter_errors(doc))[:20]]
+        problems = [f"{e.json_path}: {e.message[:200]}" for e in list(validator.iter_errors(doc))[:20]]
+        return problems or _named_lengths(doc, SIDE_NAMED.get(name, {}))
     return check
+
+
+def _named_lengths(doc: dict, named: dict[str, str]) -> list[str]:
+    """Per-sample arrays read by a list of names (a faces_detail sample's au by au_names) must have one value per name,
+    which the schema cannot say. `doc` has passed its schema."""
+    problems = []
+    for track, samples in doc["tracks"].items():
+        for i, s in enumerate(samples):
+            problems += [f"$.tracks['{track}'][{i}]: {field} has {len(s[field])} values for {len(doc[names])} {names}"
+                         for field, names in named.items() if len(s[field]) != len(doc[names])]
+    return problems[:20]
 
 
 def _wav(path: Path) -> list[str]:
@@ -131,6 +143,8 @@ assert set(LAYER_KINDS) == set(BUNDLE_LAYERS)
 # Side files: name (its schema, #/$defs/side/<name>, and its file, layers/<name>.json) -> (layer, what it holds).
 # The faces detail is py-feat's per-sample landmarks, action units, emotions and pose: face data, no embeddings.
 SIDE_FILES: dict[str, tuple[str, tuple[str, ...]]] = {"faces_detail": ("faces", ("faces",))}
+# a side file's per-sample arrays that hold one value per name in a list of the file's: field -> that list
+SIDE_NAMED: dict[str, dict[str, str]] = {"faces_detail": {"au": "au_names", "emo": "emotion_names"}}
 
 TYPES: dict[str, ArtifactType] = {
     "video.v1": ArtifactType("video.v1", "source", lambda p: [] if p.is_file() else ["missing"], kinds=("video",)),

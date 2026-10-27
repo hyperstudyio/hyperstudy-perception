@@ -127,7 +127,7 @@
             "type": "object",
             "propertyNames": { "$ref": "#/$defs/id/face" },
             "additionalProperties": { "type": "array", "items": {
-              "type": "object", "required": ["t"],
+              "type": "object", "required": ["t", "lmk", "au", "emo", "va", "head", "gaze"],
               "properties": {
                 "t": { "$ref": "#/$defs/time" },
                 "lmk": { "type": "array", "items": { "type": "number" }, "minItems": 136, "maxItems": 136, "description": "68 landmarks: all x, then all y, in source pixels." },

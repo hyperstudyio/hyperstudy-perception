@@ -81,16 +81,27 @@ def side_file_problems(bundle, name, entry, doc, schema, registry):
         side_name, path = Path(file).stem, bundle / file
         if side_name not in schema["$defs"].get("side", {}) or not path.exists():
             continue
-        side = json.loads(path.read_text())
+        try:
+            side = json.loads(path.read_text())
+        except ValueError as e:
+            problems.append(f"{name}: {file}: not JSON: {e}")
+            continue
         validator = Draft202012Validator({"$ref": f"{schema['$id']}#/$defs/side/{side_name}"}, registry=registry)
-        for e in sorted(validator.iter_errors(side), key=lambda e: list(e.absolute_path))[:20]:
-            problems.append(f"{name}: {file}: {e.json_path}: {e.message[:200]}")
-        if side_name == "faces_detail" and isinstance(side.get("tracks"), dict):
-            samples = {t["id"]: [s["t"] for s in t.get("samples", [])] for t in doc.get("tracks", [])}
-            detail = {k: [s.get("t") for s in v] for k, v in side["tracks"].items()}
-            if samples != detail:
-                differ = sorted(k for k in samples.keys() | detail.keys() if samples.get(k) != detail.get(k))
-                problems.append(f"{name}: {file} does not match the layer's track samples: {len(differ)} tracks, e.g. {differ[:5]}")
+        errors = sorted(validator.iter_errors(side), key=lambda e: list(e.absolute_path))
+        problems += [f"{name}: {file}: {e.json_path}: {e.message[:200]}" for e in errors[:20]]
+        if errors or side_name != "faces_detail" or not isinstance(doc.get("tracks"), list):
+            continue   # the cross-checks below read the shape the schema checks
+        for track, samples in side["tracks"].items():
+            for i, s in enumerate(samples):
+                problems += [f"{name}: {file}: $.tracks['{track}'][{i}]: {field} has {len(s[field])} values for "
+                             f"{len(side[names])} {names}" for field, names in (("au", "au_names"), ("emo", "emotion_names"))
+                             if len(s[field]) != len(side[names])]
+        layer_samples = {t.get("id"): [s.get("t") for s in t.get("samples", []) if isinstance(s, dict)]
+                         for t in doc["tracks"] if isinstance(t, dict)}
+        detail = {k: [s["t"] for s in v] for k, v in side["tracks"].items()}
+        if layer_samples != detail:
+            differ = sorted(k for k in layer_samples.keys() | detail.keys() if layer_samples.get(k) != detail.get(k))
+            problems.append(f"{name}: {file} does not match the layer's track samples: {len(differ)} tracks, e.g. {differ[:5]}")
     return problems
 
 

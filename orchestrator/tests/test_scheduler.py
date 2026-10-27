@@ -822,6 +822,58 @@ def test_the_faces_detail_type_checks_its_shape(tmp_path):
     assert artifacts.get("bundle.faces_detail@0.1").side_of == "faces" and artifacts.get("bundle.faces_detail@0.1").layer is None
 
 
+FULL_SAMPLE = {"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
+
+
+@pytest.mark.parametrize("sample", [{"t": 1.0},                                                 # no fields but t
+                                    FULL_SAMPLE | {"au": [0.1, 0.2]}, FULL_SAMPLE | {"emo": []}])   # not one per name
+def test_a_faces_detail_sample_must_hold_every_field_one_value_per_name(tmp_path, sample):
+    """The annotator indexes au by au_names and emo by emotion_names; gestures reads lmk."""
+    path = tmp_path / "faces_detail.json"
+    path.write_text(json.dumps({"au_names": ["AU01"], "emotion_names": ["Neutral"], "tracks": {"face:3": [sample]}}))
+    assert artifacts.get("bundle.faces_detail@0.1").validate(path)
+
+
+def bundle_validation(tmp_path, damage) -> subprocess.CompletedProcess:
+    """validate.py on an exported faces bundle after `damage(side_file_path)`, with the manifest's checksum updated
+    (export records whatever bytes it copied)."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, _ = run(coord, faces_graph(video))
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    side = out / "layers" / "faces_detail.json"
+    damage(side)
+    manifest = json.loads((out / "manifest.json").read_text())
+    manifest["layers"]["faces"]["side_files"] = [{"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(side),
+                                                  "bytes": side.stat().st_size}]
+    (out / "manifest.json").write_text(json.dumps(manifest))
+    validate = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
+    return subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
+                          capture_output=True, text=True)
+
+
+def _with(change):
+    def damage(path):
+        doc = json.loads(path.read_text())
+        change(doc)
+        path.write_text(json.dumps(doc))
+    return damage
+
+
+@pytest.mark.parametrize("damage, problem", [
+    (lambda p: p.write_text("{not json"), "not JSON"),
+    (_with(lambda d: d["tracks"].update({"face:0": ["not a sample", 3]})), "face:0"),
+    (_with(lambda d: d["tracks"]["face:0"][0].update(au=[0.1, 0.2])), "au has 2 values for 1 au_names"),
+    (_with(lambda d: d["tracks"].pop("face:0")), "does not match the layer's track samples"),
+])
+def test_validate_reports_a_bad_side_file_as_a_problem(tmp_path, damage, problem):
+    result = bundle_validation(tmp_path, damage)
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
+
+
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])
 def test_changing_the_node_sdk_changes_every_nodes_runner_identity(tmp_path, monkeypatch, backend):
     from perception.backends import native
