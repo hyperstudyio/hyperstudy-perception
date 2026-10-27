@@ -124,6 +124,7 @@ def track_bodies(frames: list[tuple[float, list[dict]]], shots_of_frames: list[s
     face link does not conflict. Face-linked bodies are placed first, then the rest largest first: largest-first alone
     let an unlinked duplicate take the track of the face its twin was linked to."""
     tracks, open_tracks = [], {}
+    face_ends: dict[str, float] = {}   # face track -> the last time a body track linked to it was seen
     for (t, bodies), shot in zip(frames, shots_of_frames):
         candidates = [tr for tr in open_tracks.setdefault(shot, []) if t - tr["samples"][-1]["t"] <= MAX_TRACK_GAP_S + 1e-6]
         used = set()
@@ -131,7 +132,11 @@ def track_bodies(frames: list[tuple[float, list[dict]]], shots_of_frames: list[s
             face = body.get("face")
             free = [tr for tr in candidates if id(tr) not in used]
             same_face = [tr for tr in free if face is not None and tr["face"] == face]
-            compatible = [tr for tr in free if face is None or tr["face"] in (None, face)]
+            # an unlinked track takes a face only if it began after every other track of that face ended: linking it
+            # then would make two tracks of one face at once (the face moved to an overlapping body while its own
+            # track went unseen for longer than MAX_TRACK_GAP_S)
+            compatible = [tr for tr in free if face is None or tr["face"] == face
+                          or (tr["face"] is None and tr["samples"][0]["t"] > face_ends.get(face, -1.0))]
             best = same_face[0] if same_face else max(compatible, key=lambda tr: iou(tr["samples"][-1]["box"], body["box"]), default=None)
             if best is None or (not same_face and iou(best["samples"][-1]["box"], body["box"]) < TRACK_IOU):
                 best = {"shot": shot, "face": None, "samples": []}
@@ -140,6 +145,8 @@ def track_bodies(frames: list[tuple[float, list[dict]]], shots_of_frames: list[s
             if face is not None:
                 best["face"] = face
             best["samples"].append({"t": t, **body})
+            if best["face"] is not None:
+                face_ends[best["face"]] = t
             used.add(id(best))
     one_body_per_face(tracks)
     return tracks

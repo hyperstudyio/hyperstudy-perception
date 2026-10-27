@@ -82,6 +82,16 @@ def test_tracks_follow_faces_and_iou_end_at_cuts_and_never_share_a_face():
         one_body_per_face([{"face": "face:0", "samples": [{"t": 0}, {"t": 2}]}, {"face": "face:0", "samples": [{"t": 1}, {"t": 3}]}])
 
 
+def test_a_face_moving_to_an_overlapping_unlinked_track_starts_a_new_track_rather_than_two_at_once():
+    a = lambda: {**body([0, 0, 100, 200]), "face": "face:0"}
+    c = lambda: body([10, 0, 100, 200])                              # overlaps a's box; unlinked
+    c_linked = lambda: {**c(), "face": "face:0"}
+    frames = [(0.0, [a(), c()]), (0.125, [c()]), (0.6, [c_linked()])]   # a unseen for longer than the gap by 0.6
+    tracks = track_bodies(frames, ["shot:0"] * 3)                   # no AssertionError: one face, one track at a time
+    linked = sorted(([s["t"] for s in tr["samples"]], tr["face"]) for tr in tracks)
+    assert linked == [([0.0], "face:0"), ([0.0, 0.125], None), ([0.6], "face:0")]
+
+
 def test_layer_tracks_are_body_ids_in_shot_order_rounded():
     b = {**body([0.04, 1.26, 10, 20]), "face": None}
     tracks = layer_tracks([{"shot": "shot:10", "face": "face:3", "samples": [{"t": 2.0, **b}]},

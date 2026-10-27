@@ -62,3 +62,24 @@ def test_only_hub_and_checksummed_url_weights_are_fetched_by_a_run():
     assert not fetched(ModelRef(id="p", source="py-feat==2.1.5", licence_mode="academic-only"))
     with pytest.raises(ValueError):
         ModelRef(id="bad", source="https://example.org/m.zip", sha256="not-a-sha", licence_mode="commercial-ok")
+
+
+def test_every_node_fetches_the_weights_its_manifest_declares():
+    """plan decides from the manifest whether a run would download; the node fetches what its WEIGHTS say. A file
+    changed in one and not the other would download without --allow-downloads (or always look missing)."""
+    import importlib.util
+    from pathlib import Path
+
+    from perception.manifests import Registry
+    nodes = Path(__file__).resolve().parents[2] / "nodes"
+    checked = 0
+    for m in Registry.load(nodes):
+        declared = {(x.source, x.sha256) for x in m.models if x.sha256}
+        if not declared:
+            continue
+        spec = importlib.util.spec_from_file_location(f"weights_of_{m.id}", m.directory / "models.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert {(w["url"], w["sha256"]) for w in module.WEIGHTS.values()} == declared, m.ref
+        checked += 1
+    assert checked   # body-pose at least
