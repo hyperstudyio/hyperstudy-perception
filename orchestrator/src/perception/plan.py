@@ -115,10 +115,11 @@ def hf_cached(source: str) -> bool:
     folder = hub / f"models--{parts[0]}--{parts[1]}"
     if not pinned:
         return folder.is_dir()
-    revision = pinned.split("/")[0]
+    revision, _, file = pinned.partition("/")
     ref = folder / "refs" / revision
     commit = ref.read_text().strip() if ref.is_file() else revision
-    return bool(commit) and (folder / "snapshots" / commit).is_dir()
+    snapshot = folder / "snapshots" / commit
+    return bool(commit) and snapshot.is_dir() and (not file or (snapshot / file).is_file())
 
 
 def settings(m, config: dict) -> list[dict]:

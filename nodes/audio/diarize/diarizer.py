@@ -42,15 +42,18 @@ def load(token: str | None, accelerator: str = "cpu"):
         raise NodeError("resources", "torch cannot use the Apple GPU (MPS) here: run Speaker diarization on another device")
     if device == "cuda" and not torch.cuda.is_available():
         raise NodeError("resources", "torch cannot use CUDA here (no NVIDIA GPU or driver): run Speaker diarization on another device")
+    refused = NodeError("licence", f"{REPO} is gated, and Hugging Face refused this machine's HF_TOKEN for it: check the "
+                                   f"token, and that its account accepted the conditions at https://hf.co/{REPO}")
     try:
         pipeline = Pipeline.from_pretrained(REPO, revision=REVISION, token=token)
     except GatedRepoError:   # before RepositoryNotFoundError, which it is a kind of. Also what an invalid token gets
-        raise NodeError("licence", f"{REPO} is gated, and Hugging Face refused this machine's HF_TOKEN for it: check the "
-                                   f"token, and that its account accepted the conditions at https://hf.co/{REPO}") from None
+        raise refused from None
     except RepositoryNotFoundError:   # the repository is not visible to this token
         raise NodeError("input", f"Hugging Face did not accept this machine's HF_TOKEN for {REPO}") from None
     except (HfHubHTTPError, LocalEntryNotFoundError) as e:   # the network, or the hub, failed: not in the cache either
         raise NodeError("transient", f"could not download {REPO} from Hugging Face: {e}") from None
+    if pipeline is None:   # from_pretrained's other answer when it gets no config (pyannote 3 gave it for a gated repo)
+        raise refused
     return pipeline.to(torch.device(device)), device
 
 

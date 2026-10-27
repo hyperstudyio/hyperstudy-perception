@@ -112,4 +112,7 @@ def test_a_hub_source_pinned_to_a_revision_is_cached_only_at_that_revision(tmp_p
     assert not hf_cached(f"hf://org/repo@{pinned}/config.yaml")
     assert hf_cached("hf://org/repo@main") and not hf_cached("hf://org/repo@v2")   # a branch or tag, through refs/
     hub_snapshot(tmp_path, "org/repo", pinned)
-    assert hf_cached(f"hf://org/repo@{pinned}") and hf_cached(f"hf://org/repo@{pinned}/config.yaml")
+    assert hf_cached(f"hf://org/repo@{pinned}")
+    assert not hf_cached(f"hf://org/repo@{pinned}/config.yaml")   # the revision's folder, without that file
+    (tmp_path / "models--org--repo" / "snapshots" / pinned / "config.yaml").write_text("{}")
+    assert hf_cached(f"hf://org/repo@{pinned}/config.yaml")
