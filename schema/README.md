@@ -11,6 +11,7 @@ layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
 layers/shots_scores.parquet
+layers/transcript_tokens.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -36,9 +37,15 @@ adaptive_ratio, with the detector's parameters in the file's metadata; a cut is 
 content_val reach adaptive_threshold and min_content_val, min_scene_len frames after the last, so the cuts can be
 re-thresholded from the file, and the node checks the stored scores give the layer's cuts exactly; one row per frame,
 about 32 B a frame, 113 KB for a two-minute clip, 3.4 MB an hour at 29.97 fps).
+The transcript layer's: `transcript_tokens` (its `raw.tokens`: every subword token Parakeet returned, of which the
+layer keeps the words they merge into, with its vocabulary id, text, start and end, parakeet-mlx's entropy confidence
+as float32, its sentence, and the index of the layer word it is part of; one row per token; about 15 bytes a token,
+10 KB for a two-minute clip). Its kind is `transcript`, as the layer's.
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
-of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
+of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples;
+transcript_tokens' word column indexes the transcript layer's words in order, each word spanning its first token's
+start to its last token's end).
 
 The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's
 `allow_upload` and the run's consent to name `embeddings`. Like the faces layer, they come from InsightFace's ArcFace
@@ -70,8 +77,8 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    for its content rather than its source: say why in the comment there.
 2. **Describe it** in `bundle-0.1.schema.json`: a JSON one as a schema at `#/$defs/side/<name>`, which the orchestrator
    validates every output against; a Parquet one as its columns at `#/$defs/parquet/<name>` (name, Arrow type as
-   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, which
-   validate.py then checks). A test fails while a registered side file is not described, or a described one is not
+   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, or
+   `per_word: true` when its `word` column indexes a transcript layer's words, which validate.py then checks). A test fails while a registered side file is not described, or a described one is not
    registered.
 3. **Write it** from the node: declare an output of type `bundle.<name>@0.1` in its manifest, write the file
    (`node.write_json`, or `node.path` and your Parquet writer), and put the `raw` pointer in the layer. Bump the node's
@@ -85,7 +92,9 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    (`nodes/vision/gaze/heatmaps.py` and its tests are the pattern). Write rows in fixed-size groups as they come
    rather than holding a film's worth in memory.
 5. **Export and validate.** `perception export` copies every side file a layer's node wrote, byte for byte, lists it
-   under the layer's `side_files`, and stops if a pointer names a file that node did not write. validate.py checks
+   under the layer's `side_files`, and stops if a pointer names a file that node did not write. A node that refines a
+   layer and keeps its pointers (diarize writes asr's transcript again, keeping `raw.tokens`) is exported with the
+   side files those pointers name from the upstream writer of the layer that wrote them. validate.py checks
    pointers, checksums, JSON side schemas and Parquet magic; with pyarrow (its dev group, which `uv run` installs) it
    also reads each Parquet file's columns and rows, and without pyarrow it says it skipped that check.
 
