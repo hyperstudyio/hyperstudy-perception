@@ -9,13 +9,13 @@ import pytest
 import captions_raw
 import style_captions as sc
 
-WORDS = [{"w": "Not", "start": 6.0, "end": 6.3}, {"w": "really.", "start": 6.4, "end": 7.0},
-         {"w": "mixed", "start": 7.36, "end": 7.68}, {"w": "easy.", "start": 7.84, "end": 8.48},
-         {"w": "now.", "start": 13.92, "end": 63.0}]
+WORDS = [{"w": "Blue", "start": 6.0, "end": 6.3}, {"w": "kettle.", "start": 6.4, "end": 7.0},
+         {"w": "orange", "start": 7.36, "end": 7.68}, {"w": "lamp.", "start": 7.84, "end": 8.48},
+         {"w": "done.", "start": 13.92, "end": 63.0}]
 TRANSCRIPT = {"words": WORDS, "utterances": [
-    {"id": "utt:2", "start": 6.0, "end": 7.0, "text": "Not really.", "words": [0, 1]},
-    {"id": "utt:3", "start": 7.36, "end": 8.48, "text": "mixed easy.", "words": [2, 3]},
-    {"id": "utt:4", "start": 13.92, "end": 63.0, "text": "now.", "words": [4, 4]}]}
+    {"id": "utt:2", "start": 6.0, "end": 7.0, "text": "Blue kettle.", "words": [0, 1]},
+    {"id": "utt:3", "start": 7.36, "end": 8.48, "text": "orange lamp.", "words": [2, 3]},
+    {"id": "utt:4", "start": 13.92, "end": 63.0, "text": "done.", "words": [4, 4]}]}
 PROSODY = {"layer": "prosody", "producer": {"stage": "prosody", "models": []}, "caption_models": {},
            "raw": {"tracks": {"file": "layers/prosody_tracks.parquet", "format": "parquet", "description": "frames"}},
            "utterances": [{"utt": "utt:2", "measures": {"duration": 1.0}, "captions": {}},
@@ -33,7 +33,7 @@ def test_each_target_is_heard_with_a_second_each_side_and_its_end_is_the_prosody
     u = units[1]
     assert u["analysed_end"] == 8.48 and u["snippet"] == pytest.approx((6.36, 9.48))   # the bake-off's utt:3 snippet
     assert u["samples"] == (int(6.36 * 16000), int(9.48 * 16000))
-    assert units[2]["analysed_end"] == 15.12   # "now." stretched over 49 s: analysed for 1.2 s
+    assert units[2]["analysed_end"] == 15.12   # "done." stretched over 49 s: analysed for 1.2 s
     near_start = sc.targets({"words": [{"w": "hi", "start": 0.4, "end": 0.6}],
                              "utterances": [{"id": "utt:0", "start": 0.4, "end": 0.6, "text": "hi", "words": [0, 0]}]},
                             {"utterances": [{"utt": "utt:0", "measures": {"duration": 0.2}}]}, int(0.9 * 16000))
@@ -53,8 +53,8 @@ def test_the_prompt_is_the_bakeoffs():
     units = sc.targets(TRANSCRIPT, PROSODY, N)
     assert sc.prompt(units, 1) == (
         "Snippet length 3.12 s. The target utterance runs from 1.00 s to 2.12 s of the snippet.\n"
-        "Target transcript (automatic, may contain errors): \"mixed easy.\"\n"
-        "Previous line in the conversation: \"Not really.\"\nNext line: \"now.\"")
+        "Target transcript (automatic, may contain errors): \"orange lamp.\"\n"
+        "Previous line in the conversation: \"Blue kettle.\"\nNext line: \"done.\"")
     assert "Previous line in the conversation: \"(none)\"" in sc.prompt(units, 0)
     assert "Next line: \"(none)\"" in sc.prompt(units, 2)
 
@@ -78,9 +78,9 @@ def test_replies_must_be_the_schemas_with_tags_from_the_list():
 
 
 def test_the_layer_gets_the_captions_and_keeps_the_prosody_nodes_pointers():
-    entry = sc.caption_entry({"description": "Calm.", "tags": ["calm"], "emphasized_words": ["easy"]}, (6.36, 9.48),
+    entry = sc.caption_entry({"description": "Calm.", "tags": ["calm"], "emphasized_words": ["lamp"]}, (6.36, 9.48),
                              {"usd": 0.003}, ["calm", "neutral"], {"usd": 0.0004})
-    assert entry == {"description": "Calm.", "tags": ["calm"], "emphasized_words": ["easy"], "snippet": [6.36, 9.48],
+    assert entry == {"description": "Calm.", "tags": ["calm"], "emphasized_words": ["lamp"], "snippet": [6.36, 9.48],
                      "usage": {"usd": 0.003}, "tags_from_text": ["calm", "neutral"], "tagger_usage": {"usd": 0.0004}}
     pointer = {"file": captions_raw.FILE, "format": "parquet", "description": captions_raw.DESCRIPTION}
     doc = sc.refine(PROSODY, [entry] * 3, {"stage": "prosody+captions"}, pointer)

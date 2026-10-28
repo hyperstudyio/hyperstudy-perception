@@ -73,7 +73,7 @@ with Node() as node:
     labels = odyssey.labels(config)
 
     node.model(PARSELMOUTH_ID, licence_mode="needs-review", licence=PRAAT_LICENCE)
-    node.model(odyssey.REPO, licence_mode="needs-review", source=f"hf://{odyssey.REPO}@{odyssey.REVISION}",
+    node.model(odyssey.REPO, licence_mode="needs-review", source=f"hf://{odyssey.REPO}@{odyssey.REVISION}/model.safetensors",
                revision=odyssey.REVISION, licence=odyssey.LICENCE)
     node.model(odyssey.WAVLM, licence_mode="commercial-ok", source=f"hf://{odyssey.WAVLM}@{odyssey.WAVLM_REVISION}/config.json",
                revision=odyssey.WAVLM_REVISION, licence="MIT (Microsoft); only its config.json: the weights are Odyssey's")

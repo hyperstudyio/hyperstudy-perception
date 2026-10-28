@@ -26,7 +26,7 @@ models:
   # its outputs are not covered, linking it into distributed software would be (the bake-off's licence note)
   - {id: "Parselmouth 0.4.7 (Praat 6.1.38)", licence: "GPL-3.0 (Parselmouth and Praat)", licence_mode: needs-review}
   - {id: 3loi/SER-Odyssey-Baseline-WavLM-Multi-Attributes,
-     source: "hf://3loi/SER-Odyssey-Baseline-WavLM-Multi-Attributes@00d0e12ba9bf957f5aeea36e8663c8c61cb50ac9",
+     source: "hf://3loi/SER-Odyssey-Baseline-WavLM-Multi-Attributes@00d0e12ba9bf957f5aeea36e8663c8c61cb50ac9/model.safetensors",
      revision: 00d0e12ba9bf957f5aeea36e8663c8c61cb50ac9, size_gb: 1.27,
      licence: "MIT (code and weights, MSP-UTD / 3loi); WavLM-large backbone MIT (Microsoft). Trained on MSP-Podcast, whose data licence is academic-only; whether that carries over to the weights is unresolved",
      licence_mode: needs-review}
