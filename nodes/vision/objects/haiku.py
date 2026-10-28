@@ -8,8 +8,8 @@
 3. crop check: per label, VERIFY_BATCH tracks a call, each track as three outlined moments side by side ->
    object / graphic / absent.
 
-What leaves the machine: keyframes and crops of video frames (frames) and the names themselves (the manifest's
-privacy.external_upload). Calls go one at a time, as the bake-off made them (the vocabulary's chaining needs order).
+What leaves the machine: keyframes and crops of video frames, which show the people on screen (frames and faces, the
+manifest's privacy.external_upload), and the names themselves. Calls go one at a time, as the bake-off made them (the vocabulary's chaining needs order).
 """
 
 from __future__ import annotations

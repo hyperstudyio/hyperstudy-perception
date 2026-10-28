@@ -33,8 +33,9 @@ runners:
 # machine cannot hold at all fails the node at the start
 resources: {cpu_cores: 4, memory_gb: 16, gpu: exclusive}
 # Sent to Anthropic: each shot's keyframes, and crops of video frames around each track (the crop check), with the
-# object names. Nothing of the faces or bodies layers is sent.
-privacy: {external_upload: [frames]}
+# object names. Both show the people on screen: a worn item's crop (glasses, earrings, a hat) centres on its wearer's
+# face. No data from the faces or bodies layers is sent.
+privacy: {external_upload: [frames, faces]}
 # both models are gated on Hugging Face (HF_TOKEN); Haiku names and checks the objects (ANTHROPIC_API_KEY)
 secrets: [ANTHROPIC_API_KEY, HF_TOKEN]
 # Upper estimate per shot (measured in the bake-off: $0.028 for OOO's 44 shots, $0.041 for NES's 36: vocabulary, name
