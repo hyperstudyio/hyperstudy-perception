@@ -242,6 +242,12 @@ class Side:
 # translation, blendshapes, mesh depth): face geometry and expression, no identity vector, so faces. The faces untracked
 # file holds every face py-feat detected that tracking left out, with all of py-feat's values for it, its ArcFace
 # embedding among them (to revisit clustering as well as tracking): faces and embeddings, like faces_embeddings.
+# The facing poses are MediaPipe's 33 body landmarks (2D in the crop, and 3D world) per face-linked body sample, with
+# the torso direction from them, and the facing angles each pair's angle and image distance per sample time: the same
+# kind of data as the bodies layer (a skeleton per person) and the facing layer (who is turned to whom), which hold no
+# kind, so none. The 33 landmarks include 11 coarse face points (nose, eyes, ears, mouth corners), fewer than the
+# bodies layer's 68: if the bodies layer is ever counted as faces, the poses go with it (no pixels, face images or
+# identity embeddings either way).
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -257,6 +263,8 @@ SIDE_FILES: dict[str, Side] = {
     "sounds_queries": Side("sounds", ("audio",), "parquet"),
     "bodies_scores": Side("bodies", (), "parquet"),
     "bodies_duplicates": Side("bodies", (), "parquet"),
+    "facing_poses": Side("facing", (), "parquet"),
+    "facing_angles": Side("facing", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

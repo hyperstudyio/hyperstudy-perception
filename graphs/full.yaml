@@ -48,7 +48,7 @@ nodes:
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, faces: $nodes.faces.faces}
   # who faces whom: MediaPipe 3D torso direction for the bodies' own person boxes (no second detector pass)
   - id: facing
-    uses: vision.facing@1.0.0
+    uses: vision.facing@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, bodies: $nodes.bodies.bodies}
   # hand boxes from the bodies' hand keypoints and a hand detector; each hand's body and face come with the bodies
   - id: hands

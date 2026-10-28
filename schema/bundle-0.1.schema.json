@@ -328,6 +328,34 @@
           { "name": "mesh", "arrow": "fixed_size_list<element: float not null>[1434]", "description": "The 478-point mesh: all 478 x, then all 478 y (source pixels), then all 478 z (relative depth, as faces_pyfeat's mesh_z)." },
           { "name": "blendshapes", "arrow": "fixed_size_list<element: float not null>[52]", "description": "The 52 blendshape coefficients, as faces_pyfeat's." }
         ]
+      },
+      "facing_poses": {
+        "description": "layers/facing_poses.parquet, a raw side file of the facing layer (raw.poses): every pose MediaPipe Pose Landmarker returned for the crop of each face-linked sample of the bodies layer (the body box grown by the metadata's margin, centred in a black square), up to the metadata's poses a crop, of which the layer uses one (kept: the pose whose landmarks centre nearest the box centre). One row per pose, in time order, the bodies of one time in the bodies layer's track order, the poses of one crop in the landmarker's order; a face-linked body sample with no row is one whose crop held no pose. The landmarks are the model's float32 values as it returned them; yaw, pitch and centre the producer's float64 values. The file metadata names the model, the landmarks (names) and the score_threshold a landmark's visibility must reach to count. Columns are not nullable.",
+        "columns": [
+          { "name": "body", "arrow": "string", "description": "The body track (body:N): the bodies layer's tracks[].id." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that track's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the bodies layer's." },
+          { "name": "face", "arrow": "string", "description": "The face track the body is linked to (face:N): the facing layer's from and to." },
+          { "name": "pose", "arrow": "int32", "description": "The pose's index in the landmarker's result for this crop." },
+          { "name": "kept", "arrow": "bool", "description": "Whether the layer uses this pose: the one whose 2D landmarks (all 33) centre nearest the body box's centre, the first of equals. One per sample with a row." },
+          { "name": "window", "arrow": "fixed_size_list<element: int32 not null>[3]", "description": "The crop square [x0, y0, side] in source pixels (it may extend past the frame): a landmark at crop coordinates (x, y) is at (x0 + x * side, y0 + y * side) in the frame." },
+          { "name": "landmarks", "arrow": "fixed_size_list<element: float not null>[165]", "description": "The 33 landmarks in the metadata's names order (BlazePose: nose ... right_foot_index), each x, y (in [0, 1] of the crop), z (depth relative to the hips, in x's scale), visibility and presence (in [0, 1])." },
+          { "name": "world", "arrow": "fixed_size_list<element: float not null>[99]", "description": "The 33 world landmarks in the same order, each x, y, z in metres in a camera-aligned frame (x right, y down, z away) with the origin at the mid-hip. Their visibility and presence are the landmarks' (MediaPipe copies them)." },
+          { "name": "source", "arrow": "string", "description": "What the torso direction comes from: torso (both shoulders and both hips visible: yaw and pitch), shoulders (both shoulders, not both hips: yaw only, pitch 0) or none (not both shoulders: no direction, yaw and pitch 0). A landmark is visible when its visibility reaches score_threshold." },
+          { "name": "yaw", "arrow": "double", "description": "The torso direction's yaw in degrees, unrounded: 0 facing the camera, positive turned to the subject's right (image left), +-180 back to the camera. The events use it to 0.1 degree." },
+          { "name": "pitch", "arrow": "double", "description": "The torso direction's pitch in degrees, unrounded, positive tilted back (torso only, else 0). The events use it to 0.1 degree." },
+          { "name": "centre", "arrow": "fixed_size_list<element: double not null>[2]", "description": "The torso centre [x, y] in source pixels the pose's facing is measured from: the mean of its visible shoulders and hips (as stored to 0.1 px), else the body box's centre." }
+        ]
+      },
+      "facing_angles": {
+        "description": "layers/facing_angles.parquet, a raw side file of the facing layer (raw.angles): what its events are thresholded from. At each sample time, for each face-linked body whose kept pose (facing_poses) has a direction (A) and each other face-linked body with a kept pose there (B), the angle between A's facing vector (-sin(yaw) cos(pitch), -sin(pitch), -cos(yaw) cos(pitch), yaw and pitch to 0.1 degree) and the image direction from A's torso centre to B's at zero depth, and the distance between the centres; a pair whose centres coincide has no row. One row per ordered pair, in time order, then A and B in the bodies layer's track order. The events: at each (t, A), of the Bs with angle <= cone_deg the nearest (lowest dist, then lowest face number) is the one A faces; one pair's times merge across gaps of at most max_gap_s into runs, kept when at least min_facing_s long; score = mean cos(angle), mutual when B faces A for at least min_facing_s of the run. At the metadata's cone_deg, min_facing_s and max_gap_s (the layer's) this gives the layer's events exactly. Columns are not nullable.",
+        "columns": [
+          { "name": "t", "arrow": "double", "description": "The sample time, as the bodies layer's." },
+          { "name": "from", "arrow": "string", "description": "A's face track (face:N)." },
+          { "name": "to", "arrow": "string", "description": "B's face track (face:N)." },
+          { "name": "angle", "arrow": "double", "description": "Degrees in [0, 180] between A's facing vector and the direction to B, unrounded." },
+          { "name": "dist", "arrow": "double", "description": "The distance between A's and B's torso centres in source pixels." }
+        ]
       }
     },
     "sidePointer": {

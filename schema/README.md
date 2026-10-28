@@ -20,6 +20,8 @@ layers/sounds_tags.parquet
 layers/sounds_queries.parquet
 layers/bodies_scores.parquet
 layers/bodies_duplicates.parquet
+layers/facing_poses.parquet
+layers/facing_angles.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -71,6 +73,16 @@ which the layer keeps only the box; one row per sample) and `bodies_duplicates` 
 dropped as a second detection of a person, with the sample it duplicated, their head/shoulder distance, and its own
 box and 133 keypoints, so the de-duplication can be revisited). Both are the models' float32 values, unrounded; on a
 two-minute clip of five people (3136 samples, 28 duplicates) 18 KB and 34 KB, about 0.5 MB and 1.0 MB an hour.
+The facing layer's: `facing_poses` (its `raw.poses`: every pose MediaPipe Pose Landmarker returned for the crop of
+each face-linked body sample, a row per pose, with all 33 landmarks as the model returned them, x, y in the crop, z,
+visibility and presence, the 33 world landmarks in metres, the torso direction from them, unrounded, the torso centre
+its facing is measured from, the crop, and which pose the layer kept) and `facing_angles` (its `raw.angles`: at every
+sample time, the angle between each posed person's torso direction and the image direction to each other posed person,
+and their distance, whatever the angle: what the events are thresholded from, so thresholding them again at the layer's
+`cone_deg`, `min_facing_s` and `max_gap_s` gives its events exactly, and at other values the events those would give;
+the node checks the first before it finishes). The landmarks are float32, the rest float64; on a two-minute clip
+(2528 posed samples, 2577 poses, 7747 angles) 2.55 MB and 0.10 MB, about 77 MB and 3 MB an hour at its two to three
+posed people a frame.
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; faces_pyfeat, gaze_heatmaps and bodies_scores hold a row for each of
@@ -84,6 +96,8 @@ weights, which are licensed for non-commercial research only (`academic-only`). 
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
 image, landmarks or box). The shots scores hold no kind: a few numbers a frame for how much the picture changed.
+The facing poses and angles hold none either, like the bodies and facing layers: a skeleton per person (its 33
+landmarks include 11 coarse face points, fewer than the bodies layer's 68) and the angles between people.
 The voice embeddings are identity data too (a voiceprint): `embeddings`. The diarization's turns, like the
 transcript's voices, count as `transcript`. The sounds tags and queries hold no samples, but they are a dense measure
 of the whole soundtrack (as the waveform is), speech classes included: a step that reads them elsewhere needs
