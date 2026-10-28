@@ -32,14 +32,32 @@ SOURCE = f"hf://{REPO}@{REVISION}/{FILE}"   # as the manifest declares it
 def checkpoint(model_id: str):
     """The .nemo file for the node's `model` setting, from the Hugging Face cache (downloaded there when missing)."""
     from huggingface_hub import hf_hub_download
-    from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
+    from huggingface_hub.errors import (GatedRepoError, HfHubHTTPError, LocalEntryNotFoundError, RemoteEntryNotFoundError,
+                                        RepositoryNotFoundError, RevisionNotFoundError)
     if model_id not in CHECKPOINTS:
         raise NodeError("input", f"no NeMo checkpoint for model {model_id!r} (known: {', '.join(CHECKPOINTS)})")
     repo, revision, file = CHECKPOINTS[model_id]
+    where = f"{repo}@{revision[:8]}/{file}"
+    # HfHubHTTPError is the base of the permanent answers too (a missing repo, revision or file, a gated repo): only the
+    # network or the hub failing is worth retrying (transient), the same request gets the same refusal
     try:
         return hf_hub_download(repo, file, revision=revision)
+    except GatedRepoError:   # before RepositoryNotFoundError, which it is a kind of
+        raise NodeError("licence", f"{repo} is gated, and Hugging Face refused this machine's HF_TOKEN (or none) for it: "
+                                   f"check https://hf.co/{repo}") from None
+    except RepositoryNotFoundError:   # deleted, renamed, or not visible to this token (an invalid token gets it too)
+        raise NodeError("input", f"Hugging Face finds no repository {repo} for this machine's HF_TOKEN (or none)") from None
+    except (RevisionNotFoundError, RemoteEntryNotFoundError) as e:   # the pinned commit or the file is gone upstream
+        raise NodeError("internal", f"{where} is not on Hugging Face (the pinned commit or file is gone, so the pin in "
+                                    f"nemo_model.py needs changing): {e}") from None
     except (HfHubHTTPError, LocalEntryNotFoundError) as e:
-        raise NodeError("transient", f"could not download {repo}@{revision[:8]}/{file} from Hugging Face: {e}") from None
+        # a HEAD answer hf_hub_download has no class for (a plain 403, a 5xx) comes wrapped in LocalEntryNotFoundError,
+        # as its cause, as does a failed connection (offline, and not in the cache)
+        answer = e if isinstance(e, HfHubHTTPError) else e.__cause__
+        status = answer.response.status_code if isinstance(answer, HfHubHTTPError) else None
+        if status is not None and 400 <= status < 500 and status not in (408, 429):   # refused: 401, 403, 404, ...
+            raise NodeError("input", f"Hugging Face refused {where} ({status}): {e}") from None
+        raise NodeError("transient", f"could not download {where} from Hugging Face: {e}") from None
 
 
 def device_for(accelerator: str):

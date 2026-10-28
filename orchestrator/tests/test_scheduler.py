@@ -1500,10 +1500,6 @@ def test_validate_refuses_a_score_that_is_not_finite_in_a_list_column(tmp_path):
     assert "sounds_queries.parquet: column probs holds a value that is not finite" in result.stdout, result.stdout
 
 
-
-
-
-
 # --- the faces layer's raw Parquet side files (py-feat's output beyond the layer, and the faces in no track) ----------
 
 def test_the_faces_raw_side_files_say_what_they_hold():
@@ -1600,7 +1596,6 @@ def test_validate_reports_a_bad_facing_side_file_as_a_problem(tmp_path, file, da
     result = _validate(facing_bundle(tmp_path, damage, file))
     assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
-
 
 
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])

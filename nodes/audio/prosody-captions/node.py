@@ -15,7 +15,6 @@ import io
 import threading
 import time
 import wave
-from concurrent.futures import ThreadPoolExecutor
 
 import captions_raw
 import style_captions as sc
@@ -123,12 +122,10 @@ with Node() as node:
                         "usage": r.usage.model_dump(mode="json")}}
 
     t0 = time.time()
-    with ThreadPoolExecutor(sc.WORKERS) as pool:
-        captions = list(pool.map(caption, range(len(units))))
+    captions = sc.fan_out(caption, range(len(units)))   # on a failure, no further call starts
     caption_s = round(time.time() - t0, 1)
     t0 = time.time()
-    with ThreadPoolExecutor(sc.WORKERS) as pool:
-        tagged = list(pool.map(lambda c: tag(c["parsed"]["description"]), captions))
+    tagged = sc.fan_out(lambda c: tag(c["parsed"]["description"]), captions)
     tagger_s = round(time.time() - t0, 1)
 
     for m in prosody["producer"]["models"]:   # the measures' and emotion's models, as the prosody node recorded them

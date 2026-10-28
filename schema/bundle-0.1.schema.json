@@ -527,7 +527,7 @@
           { "name": "source", "arrow": "string", "description": "What the torso direction comes from: torso (both shoulders and both hips visible: yaw and pitch), shoulders (both shoulders, not both hips: yaw only, pitch 0) or none (not both shoulders: no direction, yaw and pitch 0). A landmark is visible when its visibility reaches score_threshold." },
           { "name": "yaw", "arrow": "double", "description": "The torso direction's yaw in degrees, unrounded: 0 facing the camera, positive turned to the subject's right (image left), +-180 back to the camera. The events use it to 0.1 degree." },
           { "name": "pitch", "arrow": "double", "description": "The torso direction's pitch in degrees, unrounded, positive tilted back (torso only, else 0). The events use it to 0.1 degree." },
-          { "name": "centre", "arrow": "fixed_size_list<element: double not null>[2]", "description": "The torso centre [x, y] in source pixels the pose's facing is measured from: the mean of its visible shoulders and hips (as stored to 0.1 px), else the body box's centre." }
+          { "name": "centre", "arrow": "fixed_size_list<element: double not null>[2]", "description": "The torso centre [x, y] in source pixels the pose's facing is measured from: the mean of its shoulders and hips whose visibility, rounded to 0.01, reaches score_threshold (their x and y as stored: in source pixels, rounded to 0.1 px), else the body box's centre. The rounding makes this test differ from source's: a visibility of 0.4951 counts here and not there." }
         ]
       },
       "facing_angles": {
