@@ -1,7 +1,7 @@
 [project]
 name = "perception-env-vision"
 version = "0.1.0"
-description = "Vision nodes on ONNX Runtime: body pose (RTMW + YOLOX-m, via rtmlib)"
+description = "Vision nodes on ONNX Runtime and MediaPipe: body pose (RTMW + YOLOX-m, via rtmlib), facing (MediaPipe Pose Landmarker)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "perception-node",
@@ -13,6 +13,8 @@ dependencies = [
   "onnxruntime==1.31.0 ; sys_platform != 'linux'",
   "onnxruntime-gpu[cuda,cudnn]==1.31.0 ; sys_platform == 'linux'",
   "opencv-python==5.0.0.93",
+  # facing: Pose Landmarker on the CPU (XNNPACK); wheels for macOS arm64, Linux x86_64/aarch64 and Windows
+  "mediapipe==1.1.1",
   "numpy",
 ]
 

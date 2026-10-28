@@ -57,10 +57,22 @@ def load(token: str | None, accelerator: str = "cpu"):
     return pipeline.to(torch.device(device)), device
 
 
-def turns(pipeline, waveform) -> list[dict]:
-    """Speaker turns, [{start, end, speaker}] in pyannote's order: what WhisperX's DiarizationPipeline returned (its
-    `speaker_diarization`, where turns of two speakers may overlap)."""
+def run(pipeline, waveform) -> dict:
+    """Everything the pipeline returns (its DiarizeOutput), as plain values:
+    - speakers: its labels, in its labels() order (SPEAKER_00, ...)
+    - turns: speaker turns, [{start, end, speaker}] in pyannote's order: what WhisperX's DiarizationPipeline returned
+      (its `speaker_diarization`, where turns of two speakers may overlap)
+    - exclusive: its `exclusive_speaker_diarization`, turns of at most one speaker at a time (where turns overlap, one
+      speaker's)
+    - embeddings: its `speaker_embeddings`, a row per speaker in `speakers` order, as nested lists (None if it gave none)
+    """
     import torch
     output = pipeline({"waveform": torch.from_numpy(waveform[None, :]), "sample_rate": RATE})
-    return [{"start": seg.start, "end": seg.end, "speaker": label}
-            for seg, _, label in output.speaker_diarization.itertracks(yield_label=True)]
+
+    def turns(annotation):
+        return [{"start": seg.start, "end": seg.end, "speaker": label} for seg, _, label in annotation.itertracks(yield_label=True)]
+
+    embeddings = output.speaker_embeddings
+    return {"speakers": list(output.speaker_diarization.labels()), "turns": turns(output.speaker_diarization),
+            "exclusive": turns(output.exclusive_speaker_diarization),
+            "embeddings": None if embeddings is None else embeddings.tolist()}

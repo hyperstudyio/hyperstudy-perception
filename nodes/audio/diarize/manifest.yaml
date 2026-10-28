@@ -1,11 +1,15 @@
 id: audio.diarize
-version: 1.0.0
+version: 1.1.0
 stage: transcribe+diarize
 title: Speaker diarization
-description: Who speaks when (pyannote community-1), as each word's and utterance's voice on the transcript
+description: Who speaks when (pyannote community-1), as each word's and utterance's voice on the transcript, with pyannote's speaker turns (the diarization side file) and speaker embeddings (the voice embeddings side file)
 inputs: {audio: audio.wav.v1, transcript: bundle.transcript@0.1}
-# it refines asr's transcript layer (adds the voices): export takes this one
-outputs: {transcript: bundle.transcript@0.1}
+# it refines asr's transcript layer (adds the voices): export takes this one. diarization:
+# layers/transcript_diarization.json, pyannote's speaker turns and exclusive turns; voice_embeddings:
+# layers/transcript_voice_embeddings.json, its speaker embedding per voice. The layer points at both with raw
+# (diarization_raw.py)
+outputs: {transcript: bundle.transcript@0.1, diarization: bundle.transcript_diarization@0.1,
+          voice_embeddings: bundle.transcript_voice_embeddings@0.1}
 runners:
   # torch on the Apple GPU: 6 s for the 119 s OOO clip on an M5 Max (47-53 s on the CPU), the same turns (diarizer.py)
   - {kind: native, env: envs/audio, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}

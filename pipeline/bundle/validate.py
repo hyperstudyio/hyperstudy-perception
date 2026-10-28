@@ -150,7 +150,8 @@ def parquet_problems(name, file, path, spec, doc, notes):
     """A Parquet side file: the PAR1 magic at both ends (what the orchestrator checks too). With pyarrow, its columns
     in order with #/$defs/parquet/<name>'s Arrow types, no nulls, no value that is not finite, and for a per-sample one
     (per_sample: true) a row for each sample of the layer's tracks (face, sample, t), in time order with the heads of
-    one time in the layer's track order. Without pyarrow, the content check is skipped and a note says so."""
+    one time in the layer's track order; for a per-word one (per_word: true) word_problems. Without pyarrow, the
+    content check is skipped and a note says so."""
     data = path.read_bytes()
     if len(data) < 12 or data[:4] != PARQUET_MAGIC or data[-4:] != PARQUET_MAGIC:
         return [f"{name}: {file}: not Parquet (no PAR1 magic at both ends)"]
@@ -175,6 +176,8 @@ def parquet_problems(name, file, path, spec, doc, notes):
         values = table[c] if arrow in ("float", "double") else pc.list_flatten(table[c]) if FLOAT_LIST.match(arrow) else None
         if values is not None and not pc.all(pc.is_finite(values)).as_py():
             problems.append(f"{name}: {file}: column {c} holds a value that is not finite")
+    if not problems and spec.get("per_word"):
+        return word_problems(name, file, table, doc)
     if problems or not spec.get("per_sample"):
         return problems
     if not isinstance(doc.get("tracks"), list):
@@ -195,6 +198,35 @@ def parquet_problems(name, file, path, spec, doc, notes):
         problems.append(f"{name}: {file} does not match the layer's samples: {len(rows)} rows for {len(expected)} "
                         f"samples, first difference at row {first}")
     return problems
+
+
+def word_problems(name, file, table, doc):
+    """A per-word side file (transcript_tokens: a row per token, its word the index of a layer word or -1) must index
+    the layer's words: in order, each word with a token, its start the first token's and its end the last token's. A
+    layer that refines asr's transcript and keeps its tokens must keep its words."""
+    words = doc.get("words")
+    if not isinstance(words, list) or not all(
+            isinstance(w, dict) and all(isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool)
+                                        for k in ("start", "end")) for w in words):
+        return []   # the check reads the shape the layer's schema checks, and its errors report this
+    index, start, end = table["word"].to_pylist(), table["start"].to_pylist(), table["end"].to_pylist()
+    rows = [(i, k) for i, k in enumerate(index) if k != -1]
+    outside = [i for i, k in rows if not 0 <= k < len(words)]
+    if outside:
+        return [f"{name}: {file}: row {outside[0]}'s word {index[outside[0]]} is not one of the layer's {len(words)} "
+                f"words ({len(outside)} rows)"]
+    back = next((i for (_, a), (i, b) in zip(rows, rows[1:]) if b < a), None)
+    if back is not None:
+        return [f"{name}: {file}: row {back}'s word {index[back]} comes after a later word's token"]
+    spans = {}
+    for i, k in rows:
+        spans.setdefault(k, [start[i], end[i]])[1] = end[i]
+    differ = [k for k in range(len(words)) if spans.get(k) != [words[k]["start"], words[k]["end"]]]
+    if differ:
+        k = differ[0]
+        return [f"{name}: {file} does not match the layer's words: {len(differ)} words with no token or another start "
+                f"or end, e.g. word {k}: its tokens span {spans.get(k)}, the layer's word {[words[k]['start'], words[k]['end']]}"]
+    return []
 
 
 def main():

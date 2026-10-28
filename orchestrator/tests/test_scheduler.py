@@ -891,6 +891,59 @@ def test_the_faces_embeddings_are_identity_data_and_need_consent_for_embeddings_
     assert Backend.sends(remote, reader) == ["embeddings", "faces"]
 
 
+TURN = {"start": 0.03096875, "end": 1.0265937500000002, "voice": "voice:SPEAKER_00"}
+DIAR = {"model": "pyannote/speaker-diarization-community-1", "voices": ["voice:SPEAKER_00", "voice:SPEAKER_01"]}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    (DIAR | {"turns": [TURN, TURN | {"voice": "voice:SPEAKER_01"}], "exclusive_turns": [TURN]}, True),
+    ({"model": "p", "voices": [], "turns": [], "exclusive_turns": []}, True),                # no speech
+    (DIAR | {"turns": [TURN | {"voice": "SPEAKER_00"}], "exclusive_turns": []}, False),     # not a voice id
+    (DIAR | {"turns": [TURN | {"start": -0.1}], "exclusive_turns": []}, False),            # before the video
+    (DIAR | {"turns": [{"start": 0.0, "end": 1.0}], "exclusive_turns": []}, False),        # no voice
+    (DIAR | {"voices": ["voice:SPEAKER_00"] * 2, "turns": [], "exclusive_turns": []}, False),   # a voice twice
+    (DIAR | {"turns": [TURN]}, False),                                                     # no exclusive turns
+])
+def test_the_transcript_diarization_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.transcript_diarization@0.1")
+    path = tmp_path / "transcript_diarization.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "transcript" and kind.layer is None and kind.bundle_file == "layers/transcript_diarization.json"
+    assert kind.kinds == ("transcript",)
+
+
+VOICE_EMB = {"model": "WeSpeaker ResNet34", "dims": 256, "normalised": False}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    (VOICE_EMB | {"voices": {"voice:SPEAKER_00": [0.1] * 256, "voice:SPEAKER_01": None}}, True),   # null: no centroid
+    (VOICE_EMB | {"voices": {}}, True),
+    (VOICE_EMB | {"voices": {"SPEAKER_00": [0.1] * 256}}, False),                         # not a voice id
+    (VOICE_EMB | {"voices": {"voice:SPEAKER_00": [0.1] * 255}}, False),                   # a value short
+    (VOICE_EMB | {"dims": 192, "voices": {"voice:SPEAKER_00": [0.1] * 192}}, False),      # another model
+    ({"model": "m", "dims": 256, "voices": {}}, False),                                   # normalisation unstated
+])
+def test_the_transcript_voice_embeddings_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.transcript_voice_embeddings@0.1")
+    path = tmp_path / "transcript_voice_embeddings.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "transcript" and kind.layer is None
+    assert kind.bundle_file == "layers/transcript_voice_embeddings.json"
+
+
+def test_voice_embeddings_are_identity_data_but_the_turns_are_not():
+    """A step reading the voice embeddings on another machine needs consent to embeddings; one reading only the turns
+    does not."""
+    from perception.backends.base import Backend
+    remote = type("Remote", (), {"remote": True})()
+    embeddings = type("Manifest", (), {"inputs": {"e": "bundle.transcript_voice_embeddings@0.1"}})()
+    turns = type("Manifest", (), {"inputs": {"d": "bundle.transcript_diarization@0.1"}})()
+    assert Backend.sends(remote, embeddings) == ["embeddings"]
+    assert Backend.sends(remote, turns) == ["transcript"]
+
+
 FULL_SAMPLE = {"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
 
 
@@ -1068,13 +1121,74 @@ def test_a_raw_pointer_at_a_side_file_its_node_did_not_write_is_not_exported(tmp
         export.bundle(coord, run_id, tmp_path / "bundle")
 
 
-def gaze_bundle(tmp_path, damage, file) -> Path:
-    """An exported gaze bundle after `damage(path of file)`, with the manifest's checksums updated."""
+def refined_gaze_graph(video: Path, uses: str = "test.gaze@1.0.0", **config) -> dict:
+    doc = gaze_graph(video, uses)
+    doc["nodes"].append({"id": "refine", "uses": "test.gaze-refine@1.0.0", "inputs": {"gaze": "$nodes.gaze.gaze"},
+                         "config": config})
+    return doc
+
+
+def test_a_refined_layer_keeps_the_side_files_its_upstream_writer_wrote(tmp_path):
+    """A node that refines a layer and keeps its raw pointers (audio.diarize writes asr's transcript again, with its
+    raw.tokens) is exported with the side files those pointers name, from the upstream node of that layer that wrote
+    them: the refined layer supersedes the upstream one, its side files go with it."""
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
     coord = coordinator(tmp_path)
-    run_id, _ = run(coord, gaze_graph(video))
+    run_id, status = run(coord, refined_gaze_graph(video))
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    assert json.loads((out / "layers" / "gaze.json").read_text())["producer"]["stage"] == "test.gaze-refine"
+    side = out / "layers" / "gaze_heatmaps.parquet"
+    assert side.read_bytes() == HEATMAPS_FIXTURE.read_bytes()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["layers"]["gaze"]["side_files"] == [
+        {"file": "layers/gaze_heatmaps.parquet", "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size}]
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+def test_a_refined_layers_pointer_at_a_side_file_no_writer_of_it_wrote_is_not_exported(tmp_path):
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, refined_gaze_graph(video, uses="test.gaze-no-side@1.0.0"))
+    assert status == "succeeded", coord._tasks(run_id)
+    with pytest.raises(SystemExit, match=r"the gaze layer from refine points at layers/gaze_heatmaps.parquet "
+                                         r"\(raw.heatmaps.file\), which neither refine nor the gaze writers upstream"):
+        export.bundle(coord, run_id, tmp_path / "bundle")
+
+
+def test_a_refined_layers_side_file_from_two_unrelated_upstream_writers_is_not_exported(tmp_path):
+    """Two upstream writers of the layer, neither downstream of the other, both wrote the file the refined layer points
+    at: which one it means is ambiguous, so export stops rather than take the first."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = gaze_graph(video)
+    doc["nodes"] += [{"id": "gaze2", "uses": "test.gaze@1.0.0", "inputs": {"video": "$inputs.video"}},
+                     {"id": "merge", "uses": "test.gaze-merge@1.0.0",
+                      "inputs": {"gaze": "$nodes.gaze.gaze", "other": "$nodes.gaze2.gaze"}}]
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    with pytest.raises(SystemExit, match=r"the gaze layer from merge points at layers/gaze_heatmaps.parquet "
+                                         r"\(raw.heatmaps.file\), which unrelated upstream writers of it wrote: gaze, gaze2"):
+        export.bundle(coord, run_id, tmp_path / "bundle")
+
+
+def gaze_bundle(tmp_path, damage, file, graph=None) -> Path:
+    """An exported gaze bundle (or `graph(video)`'s) after `damage(path of file)`, with the manifest's checksums
+    updated."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, (graph or gaze_graph)(video))
+    assert status == "succeeded", coord._tasks(run_id)
     out = export.bundle(coord, run_id, tmp_path / "bundle")
     damage(out / file)
     manifest = json.loads((out / "manifest.json").read_text())
@@ -1127,6 +1241,48 @@ def test_validate_without_pyarrow_says_it_skipped_the_parquet_content_check(tmp_
     (out / "manifest.json").write_text(json.dumps(manifest))
     result = subprocess.run(bare, capture_output=True, text=True)
     assert result.returncode == 1 and "gaze_heatmaps.parquet: not Parquet" in result.stdout, result.stdout
+
+
+def transcript_graph(video: Path) -> dict:
+    return {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+            "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                      {"id": "asr", "uses": "test.transcript@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+
+
+TOKENS, TRANSCRIPT = "layers/transcript_tokens.parquet", "layers/transcript.json"
+
+
+def _validate(out: Path):
+    return subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                          capture_output=True, text=True)
+
+
+def test_the_transcript_tokens_go_into_the_bundle_and_index_its_words(tmp_path):
+    out = gaze_bundle(tmp_path, lambda p: None, TOKENS, graph=transcript_graph)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert [f["file"] for f in manifest["layers"]["transcript"]["side_files"]] == [TOKENS]
+    assert (out / TOKENS).read_bytes() == (NODES / "transcript" / "transcript_tokens.parquet").read_bytes()
+    result = _validate(out)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("damage, problem", [
+    # a refiner that dropped a word but kept asr's tokens: the last word's tokens index past the layer's words
+    (_with(lambda d: d["words"].pop()), "row 4's word 2 is not one of the layer's 2 words (1 rows)"),
+    (_with(lambda d: d["words"][1].update(end=0.8)),
+     "does not match the layer's words: 1 words with no token or another start or end, e.g. word 1: its tokens span "
+     "[0.48, 0.72], the layer's word [0.48, 0.8]"),
+    # a word inserted before the others: every word's index is off by one
+    (_with(lambda d: d["words"].insert(0, {"w": "Oh", "start": 0.0, "end": 0.08, "voice": None})),
+     "does not match the layer's words: 4 words"),
+    # a word without times is the schema's to report, not a crash in the words check
+    (_with(lambda d: d["words"][0].pop("start")), "transcript: $.words[0]: 'start' is a required property"),
+])
+def test_validate_reports_tokens_that_do_not_index_the_layers_words(tmp_path, damage, problem):
+    out = gaze_bundle(tmp_path, damage, TRANSCRIPT, graph=transcript_graph)
+    result = _validate(out)
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 
 
 # --- the sounds layer's tags and queries (Parquet side files whose scores are fixed-size lists) -----------------------
