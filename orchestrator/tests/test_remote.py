@@ -428,7 +428,7 @@ def test_outputs_kept_on_a_host_are_filed_under_the_hash_this_machines_store_giv
         kept = root / "objects" / a.hash
         assert sorted(p.name for p in kept.iterdir()) == [".complete", "data"], name
         assert artifacts.content_hash(kept / "data") == a.hash, name            # the same bytes there as in the store
-        assert not (there / name).exists()                                     # moved there, not copied
+        assert (there / name).exists()                  # a copy: nothing the node's processes still hold is kept
         assert (kept / "data").stat().st_mode & 0o222 == 0                     # read-only, as inputs are
     assert sorted(p.name for p in (root / "objects").iterdir()) == sorted(a.hash for a in published.values())
     # the next node on that host is not sent them: they are its inputs, by the store's hashes
@@ -437,6 +437,10 @@ def test_outputs_kept_on_a_host_are_filed_under_the_hash_this_machines_store_giv
     sent = after.send_inputs()
     assert "copying" not in capsys.readouterr().out
     assert sent["assets"]["object"] == f"{root}/objects/{published['assets'].hash}/data"
+    # another node that makes the same layer: it is there already, and said so
+    again, _, _ = finished(tmp_path, host, lambda out: (out / "layer.json").write_bytes(b'{"layer": "faces"}'), node="k")
+    again.keep_outputs()
+    assert "[remote] layer.json: on lab already (the same content)" in capsys.readouterr().out
 
 
 def test_an_output_that_changed_on_the_host_after_it_came_back_is_not_kept(tmp_path, host, capsys):
@@ -464,6 +468,32 @@ def test_an_output_with_a_link_in_it_is_never_kept_and_no_link_is_followed(tmp_p
     [kept] = (root / "objects").iterdir()                       # only the layer
     assert kept.name == artifacts.sha256_file(driver.local / "out" / "layer.json")
     assert secret.read_text() == "private" and (there / "linked.json").is_symlink()
+
+
+def test_what_a_process_the_node_left_or_a_hard_link_writes_later_never_reaches_a_kept_output(tmp_path, host):
+    """The node has exited, but a process it left (a worker, an ffmpeg child) still holds an output open for writing,
+    and another output is a hard link to a file outside out/: whatever is written through either after the output is
+    kept must not change it (it would be read under a hash its content no longer has), nor make that file read-only."""
+    from perception import artifacts
+    outside = host / "home" / "notes.txt"
+    outside.write_bytes(b"mine")
+    holder = {}
+
+    def make(out):
+        (out / "layer.json").write_bytes(b'{"layer": "faces"}')
+        holder["f"] = open(out / "layer.json", "r+b")           # held open, as by the process the node left
+        os.link(outside, out / "notes.json")                      # the same file as one outside out/
+    driver, root, there = finished(tmp_path, host, make)
+    driver.keep_outputs()
+    layer, notes = (artifacts.sha256_file(driver.local / "out" / n) for n in ("layer.json", "notes.json"))
+    holder["f"].write(b'{"layer": "later"}')
+    holder["f"].close()
+    with open(outside, "r+b") as f:
+        f.write(b"MINE")
+    for h in (layer, notes):
+        kept = root / "objects" / h / "data"
+        assert (kept.parent / ".complete").exists() and artifacts.sha256_file(kept) == h
+    assert outside.read_bytes() == b"MINE" and outside.stat().st_mode & 0o200   # still the user's own, writable
 
 
 def test_a_failed_node_or_a_cloud_machine_keeps_nothing(tmp_path, host):

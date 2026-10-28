@@ -96,14 +96,17 @@ PUBLISH = r"""publish() {
 # Keep an output where the node made it: entry $2 of out/ ($1), filed as an input is, at $4 (objects/<its hash>) through
 # $3 (this attempt's own name for it) with PUBLISH, and only if its bytes are the ones this machine hashed: each file's
 # sha256 on stdin (sha256sum's format, its paths under $3), and for a tree ($5: its number of files; "file" for a file)
-# no file more and nothing that is neither a file nor a folder (a link the node made). Never through a link: out/ and
-# the entry are refused if they are one, and mv moves the entry itself. Read-only once published, as inputs are.
-# 0: kept, or there already (an input, or another output with the same content); 7: nothing to keep; 6: what is on the
-# host is not what was hashed (a process the node left writing to it): removed, and sent when a node there reads it.
+# no file more and nothing that is neither a file nor a folder (a link the node made). A copy, never the node's own
+# files: a process the node left may still hold one open for writing, and one may be a hard link to a file outside
+# out/; writes through either must not change what is filed under the hash (nor chmod make that file read-only). Never
+# through a link: out/ and the entry are refused if they are one, and cp -P copies a link as a link (then refused).
+# Read-only once published, as inputs are. 0: kept; 8: there already (an input, or another output with the same
+# content); 7: nothing to keep; 6: the copy is not what was hashed (written to since it came back): removed, and sent
+# when a node there reads it.
 KEEP = r"""keep() {
-  [ -e "$4/.complete" ] && return 0
+  [ -e "$4/.complete" ] && return 8
   [ -d "$1" ] && [ ! -L "$1" ] && [ -e "$1/$2" ] && [ ! -L "$1/$2" ] || return 7
-  rm -rf "$3" "$3.sha256" && mkdir -p "$3" && cat > "$3.sha256" && mv "$1/$2" "$3/data" || return 1
+  rm -rf "$3" "$3.sha256" && mkdir -p "$3" && cat > "$3.sha256" && cp -RP "$1/$2" "$3/data" || return 1
   if [ "$5" = file ]; then
     [ -f "$3/data" ] && [ ! -L "$3/data" ]
   else
@@ -439,7 +442,7 @@ echo $pid
         this machine's store will give it, computed here from the copy just brought back with the store's own functions
         (artifacts.sha256_file, artifacts.tree_files), and only once the host has checked that its bytes are the ones
         hashed: a host needs no code of ours to hash a tree, and nothing there is filed under a hash its content does not
-        have. Only outputs at the top of out/ (where nodes write them), and none that holds a link or a special file
+        have. What is filed there is a copy, which nothing the node left running can write to. Only outputs at the top of out/ (where nodes write them), and none that holds a link or a special file
         (the coordinator refuses those). Not on a cloud machine: it is deleted after the attempt. Whatever goes wrong
         here only means an output is sent again when a node there reads it: the results are already here."""
         from .artifacts import sha256_file, special_files, tree_files, tree_hash
@@ -453,7 +456,7 @@ echo $pid
             return
         if not isinstance(response, dict) or response.get("ok") is not True or not isinstance(response.get("outputs"), dict):
             return
-        kept = []
+        kept, there = [], []
         for i, (name, entry) in enumerate(response["outputs"].items()):
             rel = entry.get("path") if isinstance(entry, dict) else None
             # one plain name, as sha256sum's check format reads it (no newline or backslash, which it would escape)
@@ -485,10 +488,14 @@ echo $pid
                 break
             if done.returncode == 0:
                 kept.append(name)
+            elif done.returncode == 8:
+                there.append(name)
             elif done.returncode == 6:
                 say(f"{name} is not kept on {host}: what is there is not what came back here")
         if kept:
             say(f"kept {', '.join(kept)} on {host}, for the nodes there that read them")
+        if there:
+            say(f"{', '.join(there)}: on {host} already (the same content)")
 
     def prepare(self):
         """What `perception setup` does for a node here, done on the host before it starts: its uv environment synced from
