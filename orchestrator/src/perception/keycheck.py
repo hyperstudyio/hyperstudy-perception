@@ -20,7 +20,10 @@ from .runpod import OPENER, RunPod, RunPodError
 
 ANTHROPIC = "https://api.anthropic.com/v1/models?limit=1"
 HUGGING_FACE = "https://huggingface.co/api/whoami-v2"
-HF_FILE = "https://huggingface.co/{repo}/resolve/{revision}/.gitattributes"   # every repo has one, and it is small
+# every repo has one, and it is small. Observed 2026-10-28: a gated repo refuses it with 403 GatedRepo to an account not
+# granted (Llama 3.3, Gemma 2), 401 GatedRepo with no token or a bad one, and serves it (200) once granted (SAM 3,
+# DINOv3, pyannote). Were it ever served to everyone, every model would read granted: check this again if it changes
+HF_FILE = "https://huggingface.co/{repo}/resolve/{revision}/.gitattributes"
 HF_MODEL = "https://huggingface.co/api/models/{repo}"
 CHECKED = ("ANTHROPIC_API_KEY", "HF_TOKEN", "RUNPOD_API_KEY")
 NOT_REACHED = (OSError, http.client.HTTPException)   # no whole answer (a reply cut short is not an OSError)
