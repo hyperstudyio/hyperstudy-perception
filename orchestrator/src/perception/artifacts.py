@@ -228,6 +228,11 @@ class Side:
 # speakers layer carry, counted as transcript): no words, no audio. The transcript voice embeddings are its speaker
 # embedding per voice, a voiceprint: identity data (embeddings), kept apart from the turns so a step reading the turns
 # elsewhere needs no consent to embeddings. Not audio: one vector per voice, from which no sound can be rebuilt.
+# The sounds tags are PANNs' and mn40's scores for all 527 AudioSet classes every 0.32 s and 1 s, and the sounds queries
+# PE-A-Frame's probability for each query every 40 ms: no samples, but a dense measure of the whole soundtrack (as the
+# waveform is), including the speech classes the sounds layer leaves out (male, female and child speech, conversation,
+# whispering...), where the layer (which holds no kind) keeps only labelled events above a threshold. So audio. Not
+# transcript: no words.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -237,6 +242,8 @@ SIDE_FILES: dict[str, Side] = {
     "transcript_tokens": Side("transcript", ("transcript",), "parquet"),
     "transcript_diarization": Side("transcript", ("transcript",)),
     "transcript_voice_embeddings": Side("transcript", ("embeddings",)),
+    "sounds_tags": Side("sounds", ("audio",), "parquet"),
+    "sounds_queries": Side("sounds", ("audio",), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

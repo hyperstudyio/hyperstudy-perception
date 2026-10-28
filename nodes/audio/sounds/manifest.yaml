@@ -1,11 +1,14 @@
 id: audio.sounds
-version: 1.0.0
+version: 1.1.0
 stage: sounds
 title: Sound events
 description: Sounds other than speech, from AudioSet taggers (PANNs Cnn14, EfficientAT mn40) each second, and a fixed list of sounds people make or hear (laughter, applause, crying, a door, a phone...) found by PE-A-Frame
 # the soundtrack at 32 and 48 kHz, read from the video itself: decode's 16 kHz WAV has nothing above 8 kHz
 inputs: {video: video.v1}
-outputs: {sounds: bundle.sounds@0.1}
+# tags and queries: layers/sounds_tags.parquet and layers/sounds_queries.parquet, every score the models computed (the
+# taggers' 527 AudioSet classes per PANNs segment and mn40 step, PE-A-Frame's queries per 40 ms frame), which the layer
+# thresholds into events and points at with raw.tags and raw.queries (sound_scores.py)
+outputs: {sounds: bundle.sounds@0.1, tags: bundle.sounds_tags@0.1, queries: bundle.sounds_queries@0.1}
 config:
   # mn40's 5 s windows scored at once. The windows are independent: batch sizes change scores by about 1e-6 (the layer
   # was the same at 16, 32 and 64 windows, and all at once, on the bake-off's clips). PE-A-Frame, not this, sets the peak.

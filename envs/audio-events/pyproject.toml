@@ -8,6 +8,8 @@ requires-python = ">=3.12,<3.13"
 # rather than the audio one (Parakeet on MLX) or the faces one (a newer torch). transformers 5.20.2 is the release whose
 # PE-A-Frame port models.py corrects (the text tower's final norm). On Linux, PyPI's torch 2.8 wheels are built for
 # CUDA 12.8 and install its runtime as wheels: a machine needs only an NVIDIA driver >= 570.
+# pyarrow writes the raw side files (nodes/audio/sounds/sound_scores.py). Pinned exactly: its version names itself in
+# the files' footers, so the same scores are the same bytes only on the same pyarrow.
 dependencies = [
   "perception-node",
   "torch==2.8.0",
@@ -18,6 +20,7 @@ dependencies = [
   "huggingface-hub",
   "av==16.1.0",
   "numpy",
+  "pyarrow==26.0.0",
 ]
 
 [tool.uv]

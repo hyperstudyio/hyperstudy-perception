@@ -251,6 +251,23 @@
           { "name": "sentence", "arrow": "int32", "description": "Parakeet's sentence: it splits the tokens at . ? and ! (counting from 0)." },
           { "name": "word", "arrow": "int32", "description": "The index in the layer's words of the word the token is part of, or -1 for a token in no word (a word that would be only spaces)." }
         ]
+      },
+      "sounds_tags": {
+        "description": "layers/sounds_tags.parquet, the sounds layer's raw side file (raw.tags): the AudioSet taggers' scores for all 527 classes, of which the layer keeps each 1 s step's top 5 at or above 0.2 as tagger events. A row per model output: PANNs Cnn14_DecisionLevelMax's rows first, one per 0.32 s segment (its CNN pools time by 32 frames; its 100 frames/s output repeats each segment's scores, and the last segment's to the end of the soundtrack, whose frame count is the last PANNs row's end * 100), then EfficientAT mn40's, one per 1 s step [start, end), the scores of the 5 s window centred on it. Each in time order. The file's metadata lists the 527 class names under labels (JSON), in the scores' order (AudioSet's class_labels_indices). Scores are the models' float32 sigmoids, unrounded. Columns are not nullable.",
+        "columns": [
+          { "name": "model", "arrow": "string", "description": "panns or mn40." },
+          { "name": "start", "arrow": "double", "description": "Seconds: PANNs segment i starts at 0.32 * i, mn40 step i at i." },
+          { "name": "end", "arrow": "double", "description": "Seconds: the next row's start, but for the last PANNs segment, which ends with the soundtrack's frames (frames / 100)." },
+          { "name": "scores", "arrow": "fixed_size_list<element: float not null>[527]", "description": "The model's score in [0, 1] for each AudioSet class, in the order of the metadata's labels." }
+        ]
+      },
+      "sounds_queries": {
+        "description": "layers/sounds_queries.parquet, the sounds layer's raw side file (raw.queries): PE-A-Frame large's probability for each text query every 40 ms frame, of which the layer keeps the runs of frames above 0.3 as query events. A row per frame, in time order. The file's metadata lists the queries under queries (JSON), in the probabilities' order. Probabilities are the model's float32 sigmoids, unrounded. Columns are not nullable.",
+        "columns": [
+          { "name": "start", "arrow": "double", "description": "Seconds: frame k starts at k * 0.04." },
+          { "name": "end", "arrow": "double", "description": "Seconds: (k + 1) * 0.04." },
+          { "name": "probs", "arrow": "fixed_size_list<element: float not null>[21]", "description": "PE-A-Frame's probability in [0, 1] for each query, in the order of the metadata's queries." }
+        ]
       }
     },
     "sidePointer": {

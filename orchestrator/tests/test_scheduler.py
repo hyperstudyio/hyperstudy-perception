@@ -1285,6 +1285,52 @@ def test_validate_reports_tokens_that_do_not_index_the_layers_words(tmp_path, da
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 
 
+# --- the sounds layer's tags and queries (Parquet side files whose scores are fixed-size lists) -----------------------
+
+def sounds_bundle(tmp_path, **config) -> Path:
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = faces_graph(video)   # the bundle names its video from the decode stand-in's media
+    doc["nodes"].append({"id": "sounds", "uses": "test.sounds@1.0.0", "inputs": {"video": "$inputs.video"}, "config": config})
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    return export.bundle(coord, run_id, tmp_path / "bundle")
+
+
+def test_the_sounds_scores_count_as_audio_when_a_step_reads_them_elsewhere():
+    """Every tagger score every 0.32 s and every query's probability every 40 ms are a dense measure of the soundtrack,
+    speech classes included, where the sounds layer keeps labelled events: audio, as the waveform is."""
+    from perception.backends.base import Backend
+    remote = type("Remote", (), {"remote": True})()
+    for name in ("sounds_tags", "sounds_queries"):
+        assert artifacts.get(f"bundle.{name}@0.1").kinds == ("audio",)
+        reader = type("Manifest", (), {"inputs": {"scores": f"bundle.{name}@0.1"}})()
+        assert Backend.sends(remote, reader) == ["audio"]
+
+
+def test_the_sounds_side_files_go_into_the_bundle_and_validate(tmp_path):
+    out = sounds_bundle(tmp_path)
+    for name in ("sounds_tags", "sounds_queries"):
+        assert (out / "layers" / f"{name}.parquet").read_bytes() == (NODES / "sounds" / f"{name}.parquet").read_bytes()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert [f["file"] for f in manifest["layers"]["sounds"]["side_files"]] == [
+        "layers/sounds_queries.parquet", "layers/sounds_tags.parquet"]
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+def test_validate_refuses_a_score_that_is_not_finite_in_a_list_column(tmp_path):
+    """The scores are fixed-size lists of float32: their values are checked for finiteness like a float column's."""
+    out = sounds_bundle(tmp_path, queries_fixture="sounds_queries_nan.parquet")
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "sounds_queries.parquet: column probs holds a value that is not finite" in result.stdout, result.stdout
+
+
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])
 def test_changing_the_node_sdk_changes_every_nodes_runner_identity(tmp_path, monkeypatch, backend):
     from perception.backends import native
