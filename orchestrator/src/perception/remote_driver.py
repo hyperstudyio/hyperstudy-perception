@@ -93,28 +93,37 @@ PUBLISH = r"""publish() {
   mv -T "$1" "$2" 2>/dev/null || perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$1" "$2" 2>/dev/null || { chmod -R u+w "$1"; rm -rf "$1"; [ -e "$2/.complete" ]; }
 }"""
 
-# Keep an output where the node made it: entry $2 of out/ ($1), filed as an input is, at $4 (objects/<its hash>) through
-# $3 (this attempt's own name for it) with PUBLISH, and only if its bytes are the ones this machine hashed: each file's
-# sha256 on stdin (sha256sum's format, its paths under $3), and for a tree ($5: its number of files; "file" for a file)
-# no file more and nothing that is neither a file nor a folder (a link the node made). A copy, never the node's own
-# files: a process the node left may still hold one open for writing, and one may be a hard link to a file outside
-# out/; writes through either must not change what is filed under the hash (nor chmod make that file read-only). Never
-# through a link: out/ and the entry are refused if they are one, and cp -P copies a link as a link (then refused).
-# Read-only once published, as inputs are. 0: kept; 8: there already (an input, or another output with the same
-# content); 7: nothing to keep; 6: the copy is not what was hashed (written to since it came back): removed, and sent
-# when a node there reads it.
+# Keep an output where the node made it: entry $2 of out/ ($1), filed as an input is, at $3/$4 (objects/<its hash>)
+# with PUBLISH, and only if its bytes are the ones this machine hashed: each file's sha256 on stdin (sha256sum's format,
+# its paths under data/), and for a tree ($5: its number of files; "file" for a file) no file more and nothing that is
+# neither a file nor a folder (a link the node made). A copy, never the node's own files: a process the node left may
+# still hold one open for writing, and one may be a hard link to a file outside out/; writes through either must not
+# change what is filed under the hash (nor chmod make that file read-only). Copied into a folder of this process's own
+# (mktemp: .keeping-*, a name no driver knows), so nothing else can change it between the check and the publication: a
+# driver that lost touch with the host removes the attempt's uploads (discard_incoming) while this may still run, and
+# part of a tree removed then would otherwise be filed whole, with .complete. Never through a link: out/ and the entry
+# are refused if they are one, and cp -P copies a link as a link (then refused). Read-only once published, as inputs
+# are. A keep that never finished (the host restarted during it) is removed by the next one a day later, or by
+# `perception hosts clean`. 0: kept; 8: there already (an input, or another output with the same content); 7: nothing
+# to keep; 6: the copy is not what was hashed (written to since it came back): removed, and sent when a node there
+# reads it.
 KEEP = r"""keep() {
-  [ -e "$4/.complete" ] && return 8
+  find "$3" -maxdepth 1 -name '.keeping-*' -mmin +1440 -exec chmod -R u+w {} \; -exec rm -rf {} \; 2>/dev/null
+  [ -e "$3/$4/.complete" ] && return 8
   [ -d "$1" ] && [ ! -L "$1" ] && [ -e "$1/$2" ] && [ ! -L "$1/$2" ] || return 7
-  rm -rf "$3" "$3.sha256" && mkdir -p "$3" && cat > "$3.sha256" && cp -RP "$1/$2" "$3/data" || return 1
+  k=$(mktemp -d "$3/.keeping-XXXXXX") || return 1
+  mkdir "$k/obj" && cat > "$k/sums" && cp -RP "$1/$2" "$k/obj/data" || { chmod -R u+w "$k"; rm -rf "$k"; return 1; }
   if [ "$5" = file ]; then
-    [ -f "$3/data" ] && [ ! -L "$3/data" ]
+    [ -f "$k/obj/data" ] && [ ! -L "$k/obj/data" ]
   else
-    [ -d "$3/data" ] && [ ! -L "$3/data" ] && [ -z "$(find "$3/data" ! -type f ! -type d | head -n 1)" ] &&
-      [ $(find "$3/data" -type f | wc -l) -eq "$5" ]
-  fi && (cd "$3" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$3.sha256"; else shasum -a 256 -c -s "$3.sha256"; fi) ||
-    { chmod -R u+w "$3"; rm -rf "$3" "$3.sha256"; return 6; }
-  rm -f "$3.sha256" && touch "$3/.complete" && publish "$3" "$4" && chmod -R a-w "$4"
+    [ -d "$k/obj/data" ] && [ ! -L "$k/obj/data" ] && [ -z "$(find "$k/obj/data" ! -type f ! -type d | head -n 1)" ] &&
+      [ $(find "$k/obj/data" -type f | wc -l) -eq "$5" ]
+  fi && (cd "$k/obj" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$k/sums"; else shasum -a 256 -c -s "$k/sums"; fi) ||
+    { chmod -R u+w "$k"; rm -rf "$k"; return 6; }
+  touch "$k/obj/.complete" && publish "$k/obj" "$3/$4" && chmod -R a-w "$3/$4"
+  done=$?
+  rm -rf "$k"
+  return $done
 }"""
 
 # The host's backstop for a node its driver lost (the laptop gone, a cancel that could not reach the host): every
@@ -457,7 +466,7 @@ echo $pid
         if not isinstance(response, dict) or response.get("ok") is not True or not isinstance(response.get("outputs"), dict):
             return
         kept, there = [], []
-        for i, (name, entry) in enumerate(response["outputs"].items()):
+        for name, entry in response["outputs"].items():
             rel = entry.get("path") if isinstance(entry, dict) else None
             # one plain name, as sha256sum's check format reads it (no newline or backslash, which it would escape)
             if not isinstance(rel, str) or any(c in rel for c in "/\\\n\0"):
@@ -476,12 +485,8 @@ echo $pid
                     count, sums = "file", f"{h}  data\n".encode()
             except (OSError, ValueError):   # unreadable here, or a name that is not text: sent again if read there
                 continue
-            # this attempt's own name for it (by position: the response's names are the node's to choose), which
-            # discard_incoming removes if it is left behind
-            staging = f"{self.root}/objects/.incoming-{self.tag}-output-{i}"
-            self.uploading = True
             try:
-                done = self.sh(f"{PUBLISH}\n{KEEP}\nkeep {q(self.attempt + '/out')} {q(rel)} {q(staging)} {q(self.root + '/objects/' + h)} {count}",
+                done = self.sh(f"{PUBLISH}\n{KEEP}\nkeep {q(self.attempt + '/out')} {q(rel)} {q(self.root + '/objects')} {h} {count}",
                                check=False, data=sums)
             except (Unreachable, subprocess.TimeoutExpired) as e:
                 say(f"could not keep the outputs on {host} ({e}): a node there that reads them is sent them")

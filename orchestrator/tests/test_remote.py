@@ -496,6 +496,39 @@ def test_what_a_process_the_node_left_or_a_hard_link_writes_later_never_reaches_
     assert outside.read_bytes() == b"MINE" and outside.stat().st_mode & 0o200   # still the user's own, writable
 
 
+def test_the_drivers_cleanup_running_while_the_host_still_keeps_an_output_never_publishes_part_of_it(tmp_path, host, monkeypatch):
+    """ssh dropped while the host was keeping an output: the driver gave up on it and removes this attempt's unfinished
+    uploads (discard_incoming) while the host's keep goes on. Its cleanup, part way through a tree just before the host
+    publishes it, must not leave a tree with files missing filed under the whole tree's hash, with .complete."""
+    import perception.remote_driver as rd
+    from perception import artifacts
+    driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
+    # the driver's cleanup (its glob), having removed one file of each of this attempt's uploads when publish runs
+    cleanup = (f'for d in {root}/objects/.incoming-{driver.tag}-*; do [ -d "$d" ] || continue; chmod -R u+w "$d"; '
+               'f=$(find "$d" -type f ! -name .complete | head -n 1); [ -n "$f" ] && rm -f "$f"; done')
+    monkeypatch.setattr(rd, "PUBLISH", rd.PUBLISH.replace("publish() {", "real_publish() {", 1)
+                        + f'\npublish() {{\n  {cleanup}\n  real_publish "$@"\n}}')
+    driver.keep_outputs()
+    filed = [p for p in (root / "objects").iterdir() if not p.name.startswith(".")]
+    assert len(filed) == 2                                       # the layer and the tree, each whole, under its own hash
+    for p in filed:
+        assert (p / ".complete").exists() and artifacts.content_hash(p / "data") == p.name, p.name
+    assert list((root / "objects").glob(".keeping-*")) == []    # and nothing of the keep's own left
+
+
+def test_a_keep_a_host_never_finished_is_swept_after_a_day_and_one_under_way_is_left(tmp_path, host):
+    driver, root, there = finished(tmp_path, host, lambda out: (out / "layer.json").write_bytes(b"{}"))
+    old, new = root / "objects" / ".keeping-old", root / "objects" / ".keeping-new"
+    for d in (old, new):
+        (d / "obj" / "data").mkdir(parents=True)
+        (d / "obj" / "data" / "x").write_bytes(b"part")
+    (old / "obj" / "data" / "x").chmod(0o444)
+    for p in (old / "obj" / "data" / "x", old / "obj" / "data", old / "obj", old):
+        os.utime(p, (time.time() - 2 * 86400,) * 2)
+    driver.keep_outputs()
+    assert not old.exists() and new.exists()
+
+
 def test_a_failed_node_or_a_cloud_machine_keeps_nothing(tmp_path, host):
     driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
     (driver.local / "response.json.part").write_text(json.dumps({"ok": False, "outputs": {"layer.json": {"path": "layer.json"}}}))

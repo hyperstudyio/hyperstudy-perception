@@ -20,7 +20,8 @@ by others:
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
                          or by the host's watchdog when no driver has asked about it for a while (a finished node's
                          results wait a day for its driver)
-An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*) are removed when it ends.
+An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*) are removed when it ends; an output a host never
+finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep there a day later.
 `perception hosts clean NAME` removes the root's inputs, the outputs kept there and code (what stays on the host between
 runs), unless a node is running there or the root is not marked as perception's. A host with a node running there is not
 removed either: that node could no longer be stopped.
