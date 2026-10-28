@@ -1,0 +1,11 @@
+id: test.sounds
+version: 1.0.0
+description: Writes a bundle sounds layer and its Parquet tags and queries side files, as audio.sounds does (export tests)
+inputs: {video: video.v1}
+outputs: {sounds: bundle.sounds@0.1, tags: bundle.sounds_tags@0.1, queries: bundle.sounds_queries@0.1}
+config:
+  queries_fixture: {type: string, default: sounds_queries.parquet, description: "the queries file beside this file to write"}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-sounds, licence_mode: needs-review}

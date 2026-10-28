@@ -13,6 +13,9 @@ dependencies = [
   "torch==2.8.0",
   "torchaudio==2.8.0",
   "torchcodec==0.7.0",
+  # pyarrow writes asr's tokens side file (nodes/audio/asr/raw_tokens.py). Pinned exactly: its version names itself in
+  # the file's footer, so the same tokens are the same bytes only on the same pyarrow
+  "pyarrow==26.0.0",
 ]
 
 [tool.uv]

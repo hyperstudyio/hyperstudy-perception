@@ -1,0 +1,9 @@
+id: test.transcript
+version: 1.0.0
+description: Writes a bundle transcript layer and its Parquet tokens side file, as audio.asr does (validate tests)
+inputs: {video: video.v1}
+outputs: {transcript: bundle.transcript@0.1, tokens: bundle.transcript_tokens@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-asr, licence_mode: commercial-ok}

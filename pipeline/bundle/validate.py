@@ -6,8 +6,9 @@
    (the faces layer's detail.file, mesh.file and embeddings.file; any layer's raw.<role>.file) is among its side
    files. A JSON side file with a schema (#/$defs/side/<name>) validates against it. A Parquet side file must have
    Parquet's magic at both ends; with pyarrow (this project's dev group, which `uv run` installs) its columns must be
-   #/$defs/parquet/<name>'s, none null or not finite, and a per-sample one must hold a row for each of the layer's
-   samples. Without pyarrow that content check is skipped, and the output says so.
+   #/$defs/parquet/<name>'s, none null or not finite (nor any value of a fixed-size list of floats), a per-sample one
+   must hold a row for each of the layer's samples, and one of rows about samples (of_samples) name only samples the
+   layer has. Without pyarrow that content check is skipped, and the output says so.
 3. References: every id a layer points at (a shot, utterance, voice, face track, person, body, hand, object track
    or object identity) is defined by the layer that owns that kind of id. JSON Schema checks an id's shape, not
    whether it exists.
@@ -19,6 +20,7 @@ Usage (from pipeline/bundle/): uv run python validate.py BUNDLE_DIR
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -141,13 +143,17 @@ def side_file_problems(bundle, name, entry, doc, schema, registry, notes):
 
 
 PARQUET_MAGIC = b"PAR1"
+FLOAT_LIST = re.compile(r"^fixed_size_list<element: (float|double)( not null)?>\[\d+\]$")
 
 
 def parquet_problems(name, file, path, spec, doc, notes):
     """A Parquet side file: the PAR1 magic at both ends (what the orchestrator checks too). With pyarrow, its columns
-    in order with #/$defs/parquet/<name>'s Arrow types, no nulls, no value that is not finite (in a float column or a
-    fixed-size list of floats), and for a per-sample one (per_sample: true) a row for each sample of the layer's tracks
-    (face, sample, t), in time order with the heads of one time in the layer's track order. Without pyarrow, the content check is skipped and a note says so."""
+    in order with #/$defs/parquet/<name>'s Arrow types, no nulls, no value that is not finite, and for a per-sample one
+    (per_sample: true) a row for each sample of the layer's tracks (face, sample, t), in time order with the heads of
+    one time in the layer's track order; for one with of_samples: true, every row (track, sample, t) one of the layer's
+    samples. The track column and the layer field it holds are the spec's track ({column, field}; by default face).
+    For a per-word one (per_word: true) word_problems. Without pyarrow, the content check is skipped and a note says
+    so."""
     data = path.read_bytes()
     if len(data) < 12 or data[:4] != PARQUET_MAGIC or data[-4:] != PARQUET_MAGIC:
         return [f"{name}: {file}: not Parquet (no PAR1 magic at both ends)"]
@@ -166,20 +172,20 @@ def parquet_problems(name, file, path, spec, doc, notes):
     if got != want:
         return [f"{name}: {file}: columns are {got}, not {want}"]
     problems = [f"{name}: {file}: column {c} has {table[c].null_count} nulls" for c, _ in want if table[c].null_count]
-    import pyarrow as pa
     import pyarrow.compute as pc
-    for field in table.schema:   # a float column, or a fixed-size list of floats (each value of each list)
-        column = table[field.name]
-        if pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(field.type.value_type):
-            column = pc.list_flatten(column)
-        elif not pa.types.is_floating(field.type):
-            continue
-        if not pc.all(pc.is_finite(column)).as_py():
-            problems.append(f"{name}: {file}: column {field.name} holds a value that is not finite")
-    if problems or not spec.get("per_sample"):
+    for c, arrow in want:
+        # a float column, or a fixed-size list of floats (a row of scores): every value finite
+        values = table[c] if arrow in ("float", "double") else pc.list_flatten(table[c]) if FLOAT_LIST.match(arrow) else None
+        if values is not None and not pc.all(pc.is_finite(values)).as_py():
+            problems.append(f"{name}: {file}: column {c} holds a value that is not finite")
+    if not problems and spec.get("per_word"):
+        return word_problems(name, file, table, doc)
+    if problems or not (spec.get("per_sample") or spec.get("of_samples")):
         return problems
     if not isinstance(doc.get("tracks"), list):
-        return [f"{name}: {file} is per sample, but the layer has no tracks"]
+        return [f"{name}: {file} names the layer's samples, but the layer has no tracks"]
+    # the column that names a row's track and the layer's track field it holds: by default face (gaze_heatmaps)
+    column, field = spec.get("track", {}).get("column", "face"), spec.get("track", {}).get("field")
     order = []
     for k, track in enumerate(t for t in doc["tracks"] if isinstance(t, dict)):
         samples = track.get("samples")
@@ -187,15 +193,50 @@ def parquet_problems(name, file, path, spec, doc, notes):
                 isinstance(s, dict) and isinstance(s.get("t"), (int, float)) and not isinstance(s.get("t"), bool)
                 for s in samples):
             return problems   # the rows check reads the shape the layer's schema checks, and its errors report this
-        face = track.get("face", track.get("id"))
+        face = track.get(field) if field else track.get("face", track.get("id"))
         order += [(s["t"], k, face, j) for j, s in enumerate(samples)]
     expected = [(face, j, t) for t, _, face, j in sorted(order, key=lambda x: (x[0], x[1]))]
-    rows = list(zip(table["face"].to_pylist(), table["sample"].to_pylist(), table["t"].to_pylist()))
+    rows = list(zip(table[column].to_pylist(), table["sample"].to_pylist(), table["t"].to_pylist()))
+    if not spec.get("per_sample"):   # of_samples: every row names one of the layer's samples (track, sample, t)
+        known = set(expected)
+        unknown = [i for i, row in enumerate(rows) if row not in known]
+        if unknown:
+            problems.append(f"{name}: {file}: {len(unknown)} rows name no sample of the layer, first row {unknown[0]}")
+        return problems
     if rows != expected:
         first = next((i for i, (a, b) in enumerate(zip(rows, expected)) if a != b), min(len(rows), len(expected)))
         problems.append(f"{name}: {file} does not match the layer's samples: {len(rows)} rows for {len(expected)} "
                         f"samples, first difference at row {first}")
     return problems
+
+
+def word_problems(name, file, table, doc):
+    """A per-word side file (transcript_tokens: a row per token, its word the index of a layer word or -1) must index
+    the layer's words: in order, each word with a token, its start the first token's and its end the last token's. A
+    layer that refines asr's transcript and keeps its tokens must keep its words."""
+    words = doc.get("words")
+    if not isinstance(words, list) or not all(
+            isinstance(w, dict) and all(isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool)
+                                        for k in ("start", "end")) for w in words):
+        return []   # the check reads the shape the layer's schema checks, and its errors report this
+    index, start, end = table["word"].to_pylist(), table["start"].to_pylist(), table["end"].to_pylist()
+    rows = [(i, k) for i, k in enumerate(index) if k != -1]
+    outside = [i for i, k in rows if not 0 <= k < len(words)]
+    if outside:
+        return [f"{name}: {file}: row {outside[0]}'s word {index[outside[0]]} is not one of the layer's {len(words)} "
+                f"words ({len(outside)} rows)"]
+    back = next((i for (_, a), (i, b) in zip(rows, rows[1:]) if b < a), None)
+    if back is not None:
+        return [f"{name}: {file}: row {back}'s word {index[back]} comes after a later word's token"]
+    spans = {}
+    for i, k in rows:
+        spans.setdefault(k, [start[i], end[i]])[1] = end[i]
+    differ = [k for k in range(len(words)) if spans.get(k) != [words[k]["start"], words[k]["end"]]]
+    if differ:
+        k = differ[0]
+        return [f"{name}: {file} does not match the layer's words: {len(differ)} words with no token or another start "
+                f"or end, e.g. word {k}: its tokens span {spans.get(k)}, the layer's word {[words[k]['start'], words[k]['end']]}"]
+    return []
 
 
 def main():

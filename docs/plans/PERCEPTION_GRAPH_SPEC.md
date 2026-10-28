@@ -79,7 +79,7 @@ policy:
   retries: 2
 nodes:
   - id: decode
-    uses: core.decode@1.0.0
+    uses: core.decode@1.1.0
     inputs: {video: '$inputs.video'}
   - id: faces
     uses: vision.face-track@1.0.0

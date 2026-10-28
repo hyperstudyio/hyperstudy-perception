@@ -1,0 +1,9 @@
+id: test.bodies
+version: 1.0.0
+description: Writes a bundle bodies layer and its Parquet scores and duplicates side files, as vision.body-pose does (validate tests)
+inputs: {video: video.v1}
+outputs: {bodies: bundle.bodies@0.1, scores: bundle.bodies_scores@0.1, duplicates: bundle.bodies_duplicates@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-pose, licence_mode: academic-only}

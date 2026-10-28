@@ -85,7 +85,8 @@ def _side(name: str) -> Callable[[Path], list[str]]:
             return [f"not JSON: {e}"]
         validator = Draft202012Validator({"$ref": f"{schema['$id']}#/$defs/side/{name}"}, registry=registry)
         problems = [f"{e.json_path}: {e.message[:200]}" for e in list(validator.iter_errors(doc))[:20]]
-        return problems or _named_lengths(doc, SIDE_NAMED.get(name, {}))
+        # only a side file with named arrays has them to count (and tracks: not every side file is keyed by track)
+        return problems or (_named_lengths(doc, SIDE_NAMED[name]) if name in SIDE_NAMED else [])
     return check
 
 
@@ -217,6 +218,26 @@ class Side:
 # together a coarse picture of where the people and things in each frame are, beyond the gaze layer's one peak per
 # head, so they count as frames. Not faces: no face image, landmarks or box, only the face track ids and times the gaze
 # layer (which holds no kind) has too.
+# The shots scores are PySceneDetect's per-frame numbers for how much the picture changed from the frame before (mean
+# hue, saturation, luma and edge differences, their weighted mean and its ratio to its neighbours'): a handful of
+# scalars a frame, from which no picture, face or person can be recovered, only when and how much it changes. No kind.
+# The transcript tokens are Parakeet's subword tokens with their times and confidences: the words the transcript layer
+# holds, split finer, so they count as transcript, as the layer does. Not audio: the confidences say how sure the model
+# was of each token, a number per token, no sound.
+# The transcript diarization is pyannote's speaker turns, who speaks when (the voices the transcript layer and the
+# speakers layer carry, counted as transcript): no words, no audio. The transcript voice embeddings are its speaker
+# embedding per voice, a voiceprint: identity data (embeddings), kept apart from the turns so a step reading the turns
+# elsewhere needs no consent to embeddings. Not audio: one vector per voice, from which no sound can be rebuilt.
+# The sounds tags are PANNs' and mn40's scores for all 527 AudioSet classes every 0.32 s and 1 s, and the sounds queries
+# PE-A-Frame's probability for each query every 40 ms: no samples, but a dense measure of the whole soundtrack (as the
+# waveform is), including the speech classes the sounds layer leaves out (male, female and child speech, conversation,
+# whispering...), where the layer (which holds no kind) keeps only labelled events above a threshold. So audio. Not
+# transcript: no words.
+# The bodies scores are YOLOX-m's score for every body sample, and the bodies duplicates the detections dropped as
+# second detections of a person (box, score, RTMW keypoints, the sample they duplicated): the same kind of data as the
+# bodies layer, so they hold its kinds, none. Like the layer's, their 133 COCO-WholeBody keypoints include 68 face
+# landmarks, which faces_detail's py-feat landmarks count as faces: if the bodies layer is ever counted as faces for
+# them, these files go with it (no pixels, face images or identity embeddings either way).
 # The faces pyfeat file is the rest of py-feat's output per track sample (detection score, unrounded box, head
 # translation, blendshapes, mesh depth): face geometry and expression, no identity vector, so faces. The faces untracked
 # file holds every face py-feat detected that tracking left out, with all of py-feat's values for it, its ArcFace
@@ -228,6 +249,14 @@ SIDE_FILES: dict[str, Side] = {
     "faces_pyfeat": Side("faces", ("faces",), "parquet"),
     "faces_untracked": Side("faces", ("faces", "embeddings"), "parquet"),
     "gaze_heatmaps": Side("gaze", ("frames",), "parquet"),
+    "shots_scores": Side("shots", (), "parquet"),
+    "transcript_tokens": Side("transcript", ("transcript",), "parquet"),
+    "transcript_diarization": Side("transcript", ("transcript",)),
+    "transcript_voice_embeddings": Side("transcript", ("embeddings",)),
+    "sounds_tags": Side("sounds", ("audio",), "parquet"),
+    "sounds_queries": Side("sounds", ("audio",), "parquet"),
+    "bodies_scores": Side("bodies", (), "parquet"),
+    "bodies_duplicates": Side("bodies", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

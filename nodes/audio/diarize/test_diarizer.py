@@ -101,3 +101,42 @@ def test_a_device_torch_cannot_use_is_refused_not_replaced_by_the_cpu(stubs, acc
     with pytest.raises(NodeError) as e:
         diarizer.load("hf_x", accelerator)
     assert e.value.code == "resources"
+
+
+class Segment:
+    def __init__(self, start, end):
+        self.start, self.end = start, end
+
+
+class Annotation:
+    """pyannote.core's Annotation, as far as run() reads it."""
+    def __init__(self, turns):
+        self.turns = turns
+
+    def itertracks(self, yield_label=False):
+        return [(Segment(s, e), i, label) for i, (s, e, label) in enumerate(self.turns)]
+
+    def labels(self):
+        return sorted({label for _, _, label in self.turns})
+
+
+def test_run_keeps_everything_the_pipeline_returns(stubs):
+    """Its overlapping turns (the voices' source), its exclusive turns and its speaker embeddings, in its orders."""
+    import numpy as np
+    sys.modules["torch"].from_numpy = lambda a: a
+    turns = [(0.5, 2.0, "SPEAKER_01"), (1.0, 1.5, "SPEAKER_00"), (2.0, 3.0, "SPEAKER_00")]
+    output = types.SimpleNamespace(speaker_diarization=Annotation(turns),
+                                   exclusive_speaker_diarization=Annotation([turns[0], turns[2]]),
+                                   speaker_embeddings=np.array([[0.25] * 4, [-0.5] * 4]))
+    given = {}
+
+    def pipeline(file):
+        given.update(file)
+        return output
+
+    found = diarizer.run(pipeline, np.zeros(16000, np.float32))
+    assert given["sample_rate"] == 16000 and given["waveform"].shape == (1, 16000)
+    assert found == {"speakers": ["SPEAKER_00", "SPEAKER_01"],
+                     "turns": [{"start": s, "end": e, "speaker": label} for s, e, label in turns],
+                     "exclusive": [{"start": s, "end": e, "speaker": label} for s, e, label in (turns[0], turns[2])],
+                     "embeddings": [[0.25] * 4, [-0.5] * 4]}
