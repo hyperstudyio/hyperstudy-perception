@@ -117,16 +117,16 @@ def assign_wearers(tracks, bodies: dict[int, list], body_fps: float, classes: di
 
 # --- identities -----------------------------------------------------------------------------------------------------
 
-def pair_score(a, b, different: set[frozenset], c: dict) -> float | None:
+def pair_score(a, b, different: set[frozenset], c: dict, sizes: tuple[float, float] | None = None) -> float | None:
     """Adjusted cosine for linking a and b, or None when they may never be one object. c: the linking settings
-    (cross_name_margin, same_wearer_bonus, min_link_px)."""
+    (cross_name_margin, same_wearer_bonus, min_link_px). sizes: their track_size, when already known."""
     if overlaps(a, b) or a["embedding"] is None or b["embedding"] is None:
         return None
     wa, wb = a.get("wearer"), b.get("wearer")
     if wa and wb and wa != wb and frozenset((wa, wb)) in different:
         return None   # worn by two different people
     same_wearer = bool(wa) and wa == wb
-    if min(track_size(a), track_size(b)) < c["min_link_px"] and not same_wearer:
+    if min(sizes or (track_size(a), track_size(b))) < c["min_link_px"] and not same_wearer:
         return None   # too small to identify by appearance alone
     score = float(a["embedding"] @ b["embedding"])
     if a["label"] != b["label"]:
@@ -134,6 +134,72 @@ def pair_score(a, b, different: set[frozenset], c: dict) -> float | None:
     if same_wearer:
         score += c["same_wearer_bonus"]
     return score
+
+
+def duplicate_groups(members, duplicate_iou: float) -> list[list[int]]:
+    """Groups of member indices that are one object tracked under two names at once (duplicates), in order of their
+    first member. Only tracks of one shot can be duplicates, so only those pairs are compared."""
+    group = list(range(len(members)))   # union-find
+
+    def root(i):
+        while group[i] != i:
+            group[i] = group[group[i]]
+            i = group[i]
+        return i
+    by_shot: dict[int, list[int]] = {}
+    for i, t in enumerate(members):
+        by_shot.setdefault(t["shot"], []).append(i)
+    for same_shot in by_shot.values():
+        for x, i in enumerate(same_shot):
+            for j in same_shot[x + 1:]:
+                if duplicates(members[i], members[j], duplicate_iou):
+                    group[root(j)] = root(i)
+    clusters: dict[int, list[int]] = {}
+    for i in range(len(members)):
+        clusters.setdefault(root(i), []).append(i)
+    return list(clusters.values())
+
+
+def average_linkage(members, groups: list[list[int]], different: set[frozenset], c: dict) -> list[list[int]]:
+    """Merge groups while some pair of them has every cross pair linkable and an average score >= the threshold: the
+    best such pair first (the first in group order on a tie), the later group appended to the earlier one, as the
+    bake-off's loop did. Group-to-group sums, counts and vetoes are kept and updated on each merge, so a merge costs
+    one pass over the groups rather than over every pair of tracks."""
+    g = len(groups)
+    of = {i: k for k, grp in enumerate(groups) for i in grp}
+    total, count = np.zeros((g, g)), np.zeros((g, g))
+    blocked = np.eye(g, dtype=bool)
+    sizes = [track_size(t) for t in members]
+    for i in range(len(members)):
+        for j in range(i + 1, len(members)):
+            a, b = of[i], of[j]
+            if a == b:
+                continue
+            s = pair_score(members[i], members[j], different, c, (sizes[i], sizes[j]))
+            if s is None:
+                blocked[a, b] = blocked[b, a] = True
+            else:
+                total[a, b] += s
+                total[b, a] += s
+                count[a, b] += 1
+                count[b, a] += 1
+    alive = np.ones(g, dtype=bool)
+    lower = np.tril(np.ones((g, g), dtype=bool))   # each pair once, as (earlier, later)
+    while True:
+        avg = np.where(blocked | lower | ~alive[:, None] | ~alive[None, :], -np.inf, total / np.maximum(count, 1))
+        k = int(np.argmax(avg))   # the first maximum in row-major order: the bake-off's scan order
+        i, j = divmod(k, g)
+        if not avg[i, j] >= c["link_threshold"]:
+            break
+        groups[i] += groups[j]
+        alive[j] = False
+        for m in (total, count):
+            m[i, :] += m[j, :]
+            m[:, i] = m[i, :]
+        blocked[i, :] |= blocked[j, :]
+        blocked[:, i] = blocked[i, :]
+        blocked[i, i] = True
+    return [grp for k, grp in enumerate(groups) if alive[k]]
 
 
 def link_identities(tracks, classes: dict, different: set[frozenset], c: dict) -> list[dict]:
@@ -145,37 +211,9 @@ def link_identities(tracks, classes: dict, different: set[frozenset], c: dict) -
     for family in sorted({classes[t["label"]]["family"] for t in tracks}):
         members = [t for t in tracks if classes[t["label"]]["family"] == family]
         lookalike = all(classes[t["label"]]["kind"] == "lookalike" for t in members)
-        n = len(members)
-        score = [[pair_score(members[i], members[j], different, c) if i != j else None for j in range(n)] for i in range(n)]
-        group = list(range(n))   # union-find over duplicate pairs
-
-        def root(i):
-            while group[i] != i:
-                group[i] = group[group[i]]
-                i = group[i]
-            return i
-        for i in range(n):
-            for j in range(i + 1, n):
-                if duplicates(members[i], members[j], c["duplicate_iou"]):
-                    group[root(j)] = root(i)
-        clusters: dict[int, list[int]] = {}
-        for i in range(n):
-            clusters.setdefault(root(i), []).append(i)
-        groups = list(clusters.values())
-        while not lookalike:
-            best = None
-            for i in range(len(groups)):
-                for j in range(i + 1, len(groups)):
-                    pairs = [score[a][b] for a in groups[i] for b in groups[j]]
-                    if any(p is None for p in pairs):
-                        continue
-                    avg = float(np.mean(pairs))
-                    if avg >= c["link_threshold"] and (best is None or avg > best[0]):
-                        best = (avg, i, j)
-            if best is None:
-                break
-            _, i, j = best
-            groups[i] += groups.pop(j)
+        groups = duplicate_groups(members, c["duplicate_iou"])
+        if not lookalike:
+            groups = average_linkage(members, groups, different, c)
         found = [[members[i] for i in g] for g in groups]
         found.sort(key=lambda g: min(t["start"] for t in g))
         for cluster in found:
@@ -205,8 +243,9 @@ def slug(text: str) -> str:
 
 
 def crop_files(identities: list[dict]) -> dict[str, str]:
-    """{identity id: crops/<slug>.jpg}, the path convert_bakeoff gave each identity's crop. Two ids with one slug
-    ("t-shirt 1", "t shirt 1") would overwrite one crop there; here the later one gets a _2 suffix."""
+    """{identity id: crops/objects/<slug>.jpg}: convert_bakeoff's file name for each identity's crop, in a folder of its
+    own (convert put it in crops/, beside face-track's face_<i>.jpg, which an object called "face" would collide with).
+    Two ids with one slug ("t-shirt 1", "t shirt 1") would overwrite one crop there; here the later one gets _2."""
     files, used = {}, set()
     for identity in identities:
         base = slug(identity["id"])
@@ -215,7 +254,7 @@ def crop_files(identities: list[dict]) -> dict[str, str]:
             k += 1
             name = f"{base}_{k}"
         used.add(name)
-        files[identity["id"]] = f"crops/{name}.jpg"
+        files[identity["id"]] = f"crops/objects/{name}.jpg"
     return files
 
 

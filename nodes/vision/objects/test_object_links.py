@@ -159,10 +159,13 @@ def test_the_representative_view_is_closest_to_the_identitys_mean():
     assert representative_view({"tracks": ["obj:9"]}, {"obj:9": track("obj:9", "chair", 1, [1.0])}) is None
 
 
-def test_crop_files_are_convert_bakeoffs_and_never_collide():
+def test_crop_files_are_named_as_convert_bakeoff_named_them_and_never_collide():
+    """In their own folder: face-track writes crops/face_<i>.jpg and crops/person_<name>.jpg, and an object Haiku
+    called "face" would otherwise be crops/face_1.jpg, which stops the bundle export (two nodes write one asset)."""
     assert slug("camo t-shirt 1") == "camo_t_shirt_1"
-    files = crop_files([{"id": "t-shirt 1"}, {"id": "t shirt 1"}, {"id": "necklace 12"}])
-    assert files == {"t-shirt 1": "crops/t_shirt_1.jpg", "t shirt 1": "crops/t_shirt_1_2.jpg", "necklace 12": "crops/necklace_12.jpg"}
+    files = crop_files([{"id": "t-shirt 1"}, {"id": "t shirt 1"}, {"id": "necklace 12"}, {"id": "face 1"}])
+    assert files == {"t-shirt 1": "crops/objects/t_shirt_1.jpg", "t shirt 1": "crops/objects/t_shirt_1_2.jpg",
+                     "necklace 12": "crops/objects/necklace_12.jpg", "face 1": "crops/objects/face_1.jpg"}
 
 
 def test_the_layer_is_what_convert_bakeoff_wrote():
@@ -181,3 +184,58 @@ def test_the_layer_is_what_convert_bakeoff_wrote():
                                        "end": 2.167, "samples": [{**s, "t": 2.0}, {**s, "t": 2.167}]}]
     assert layer_content(6, [], [], [{"id": "chair 1", "label": "chair", "family": "chair", "worn_by": [], "tracks": []}],
                          {}, {})["identities"][0]["crop"] is None
+
+
+# --- linking at a film's scale ----------------------------------------------------------------------------------------
+
+def bake_off_link(members, different, c):
+    """The bake-off's merge loop (objects.py link_identities), for one non-lookalike family: groups of member indices."""
+    n = len(members)
+    score = [[pair_score(members[i], members[j], different, c) if i != j else None for j in range(n)] for i in range(n)]
+    groups = [[i] for i in range(n)]
+    while True:
+        best = None
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                pairs = [score[a][b] for a in groups[i] for b in groups[j]]
+                if any(p is None for p in pairs):
+                    continue
+                avg = float(np.mean(pairs))
+                if avg >= c["link_threshold"] and (best is None or avg > best[0]):
+                    best = (avg, i, j)
+        if best is None:
+            return groups
+        _, i, j = best
+        groups[i] += groups.pop(j)
+
+
+def chairs(n, shots, seed):
+    """n chair tracks over `shots` shots, a few looks each with noise, some on screen together."""
+    rng = np.random.default_rng(seed)
+    looks = rng.normal(size=(6, 16))
+    out = []
+    for k in range(n):
+        shot = int(rng.integers(shots))
+        start = float(rng.integers(0, 4))
+        e = looks[k % 6] + rng.normal(scale=0.6, size=16)
+        out.append(track(f"obj:{k}", "chair", shot, [start, start + 0.5], box=(100 * k, 100, 80, 80), embedding=e / np.linalg.norm(e)))
+    return out
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_linking_merges_as_the_bake_offs_loop_did(seed):
+    tracks = chairs(40, 12, seed)
+    want = sorted(sorted(f"obj:{i}" for i in g) for g in bake_off_link(tracks, set(), CFG))
+    got = sorted(sorted(i["tracks"]) for i in link_identities(tracks, CLASSES, set(), CFG))
+    assert got == want and len(got) < 40   # and some tracks did link
+
+
+def test_linking_a_films_tracks_takes_seconds_not_hours():
+    """A family of a film's size (the bake-off's loop grew with the cube of it), and a large lookalike family, which
+    never links and needs no pair scores at all."""
+    import time
+    t0 = time.time()
+    link_identities(chairs(400, 120, 0), CLASSES, set(), CFG)
+    lights = [track(f"obj:{k}", "tree", k // 10, [1.0, 1.5], box=(30 * (k % 10), 0, 20, 20), embedding=unit(1, 0)) for k in range(3000)]
+    assert len(link_identities(lights, CLASSES, set(), CFG)) == 3000
+    assert time.time() - t0 < 5

@@ -18,7 +18,7 @@ Before any of that, nothing uploaded or paid for yet: the gated models must be o
 3 session must fit in this machine's memory (budget.py).
 5. Identities (linking.py): worn tracks get a wearer, the person (faces layer) whose posed body (bodies layer, linked to
    a face track) holds them; tracks of one family are merged by average-linkage clustering of adjusted cosines.
-   Each identity's crop (assets/crops/) is its embedded view closest to the identity's mean embedding.
+   Each identity's crop (assets/crops/objects/) is its embedded view closest to the identity's mean embedding.
 
 Licence: SAM 3 and DINOv3 are under Meta's own licences (commercial use permitted, with conditions; gated on Hugging
 Face), the names and checks are Claude's output under the Anthropic API terms; the layer refers to the faces layer's
@@ -196,14 +196,14 @@ with Node() as node:
         raise NodeError("input", f"a body track's shot {e} is not in the shots layer") from None
     assign_wearers(tracks, bodies_at, bodies["fps"], classes, c["wearer_share"])
     identities = link_identities(tracks, classes, different_people(faces, c["different_person_distance"]), c)
-    crops_dir = node.path("crops", "assets") / "crops"
-    crops_dir.mkdir(parents=True, exist_ok=True)
+    assets = node.path("crops", "assets")
+    (assets / "crops" / "objects").mkdir(parents=True, exist_ok=True)
     by_id = {t["id"]: t for t in tracks}
     crops = {}
     for identity, file in crop_files(identities).items():
         view = representative_view(next(i for i in identities if i["id"] == identity), by_id)
         if view is not None:
-            Image.fromarray(view).save(crops_dir.parent / file, quality=90)
+            Image.fromarray(view).save(assets / file, quality=90)
             crops[identity] = f"assets/{file}"
 
     node.model(SEGMENTER, licence_mode="commercial-ok", source=f"hf://{SEGMENTER}@{SEGMENTER_REVISION}", revision=SEGMENTER_REVISION,
