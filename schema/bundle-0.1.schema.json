@@ -204,8 +204,8 @@
           { "name": "delta_lum", "arrow": "double", "description": "Mean absolute difference of the HSV value (luma) channel from the frame before, in 8-bit levels." },
           { "name": "delta_edges", "arrow": "double", "description": "Mean absolute difference of the dilated Canny edge maps (0 or 255 a pixel) from the frame before." },
           { "name": "adaptive_ratio", "arrow": "double", "description": "content_val over the mean content_val of the window_width frames on each side, capped at 255 (255 when that mean is 0 and content_val >= min_content_val, 0 when the mean is 0 and it is not)." }
-          ]
-        },
+        ]
+      },
       "transcript_tokens": {
         "description": "layers/transcript_tokens.parquet, the transcript layer's raw side file (raw.tokens): every subword token Parakeet TDT returned (parakeet-mlx 0.5.3, greedy decoding), of which the layer keeps only the words they merge into and those words' times. One row per token, in time order. A token whose text starts with a space starts a word; the others extend it, never across a sentence. Greedy decoding has no alternative hypotheses. Columns are not nullable. Per word: the word column indexes the transcript layer's words in order, each word with a token, its start the first token's and its end the last token's (validate.py checks this).",
         "per_word": true,
