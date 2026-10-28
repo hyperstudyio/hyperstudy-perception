@@ -115,19 +115,29 @@ def load_segmenter(device, token: str | None):
     return _from_hub(load, SEGMENTER)
 
 
+def check_access(token: str | None):
+    """Both gated models' config at their pinned revisions, from the Hugging Face cache or the hub: done before the
+    node uploads or spends anything, so a token Hugging Face refuses fails the node first."""
+    from huggingface_hub import hf_hub_download
+    for repo, revision in ((SEGMENTER, SEGMENTER_REVISION), (EMBEDDER, EMBEDDER_REVISION)):
+        _from_hub(lambda: hf_hub_download(repo, "config.json", revision=revision, token=token), repo)
+
+
 def load_embedder(device, token: str | None):
     from transformers import AutoModel
     return _from_hub(lambda: AutoModel.from_pretrained(EMBEDDER, revision=EMBEDDER_REVISION, token=token).to(device).eval(), EMBEDDER)
 
 
-def segment_shot(segmenter, frames, times, nouns, device, frame_sample) -> dict:
+def segment_shot(segmenter, frames: list, times, nouns, device, frame_sample) -> dict:
     """SAM 3 over one shot, all its nouns as text prompts: {SAM 3 object id: {label, score, samples}}. A session never
-    spans a cut; SAM 3 detects on every frame and tracks with memory, so objects entering mid-shot are picked up."""
+    spans a cut; SAM 3 detects on every frame and tracks with memory, so objects entering mid-shot are picked up.
+    Empties `frames` once the session holds its own copy: the RGB frames are not needed for the pass (budget.py)."""
     import torch
     model, processor = segmenter
     with torch.inference_mode():
-        session = processor.init_video_session(video=list(frames), inference_device=device, processing_device="cpu",
+        session = processor.init_video_session(video=frames, inference_device=device, processing_device="cpu",
                                                video_storage_device="cpu", dtype=segmenter_dtype(device))
+        frames.clear()
         processor.add_text_prompt(session, nouns)
         tracks = {}
         for out in model.propagate_in_video_iterator(inference_session=session):

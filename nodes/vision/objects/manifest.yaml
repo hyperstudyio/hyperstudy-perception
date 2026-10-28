@@ -28,6 +28,9 @@ runners:
   # the bake-off
   - {kind: native, env: envs/gaze, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 16}
   - {kind: native, env: envs/gaze, entry: node.py, accelerator: cpu}
+# memory: the models and the work, plus a SAM 3 session that holds every frame of a shot: ~31 MB a 1080p frame while it
+# is made, 6 MB after (budget.py). 16 GB holds shots up to about 45 s at 6 fps; a longer shot needs more, and one this
+# machine cannot hold at all fails the node at the start
 resources: {cpu_cores: 4, memory_gb: 16, gpu: exclusive}
 # Sent to Anthropic: each shot's keyframes, and crops of video frames around each track (the crop check), with the
 # object names. Nothing of the faces or bodies layers is sent.

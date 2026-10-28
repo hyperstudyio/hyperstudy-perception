@@ -81,10 +81,11 @@ def upright(frame) -> np.ndarray:
     return np.ascontiguousarray(np.rot90(rgb, round((frame.rotation or 0) / 90) % 4))
 
 
-def shot_frames(container, start: float, end: float, fps: float) -> tuple[list[np.ndarray], list[float]]:
+def shot_frames(container, start: float, end: float, fps: float, wanted: set[float] | None = None) -> tuple[list, list[float]]:
     """[start, end) at `fps` as upright RGB frames, and their times start + k / fps (to the millisecond), as the bake-off
     decoded and timed them (the module says how). Times at or after `end` are left out: fps rounding can emit one frame
-    past the cut. `container` is an open PyAV container; only the frames kept are converted and held."""
+    past the cut. `container` is an open PyAV container. With `wanted` (times), only those frames are converted and
+    held; the others are None."""
     v = container.streams.video[0]
     tb = v.time_base
     video_start = Fraction(v.start_time or 0) * tb
@@ -92,6 +93,12 @@ def shot_frames(container, start: float, end: float, fps: float) -> tuple[list[n
     container.seek(int((video_start + s) / tb), stream=v, backward=True)   # the keyframe at or before START
     span = round_half_away(length / tb) * tb   # -t in the stream's time base, as the trim filter holds it
     ticker, frames, previous, first, stop = Ticker(fps), [], None, None, None
+
+    def emit(frame, repeat):
+        for _ in range(repeat):
+            t = round(start + len(frames) / fps, 3)
+            frames.append(upright(frame) if wanted is None or t in wanted else None)
+
     for frame in container.decode(v):
         if frame.pts is None:
             continue
@@ -101,14 +108,10 @@ def shot_frames(container, start: float, end: float, fps: float) -> tuple[list[n
         first = t if first is None else first
         if t - first >= span:
             break
-        repeat = ticker.push(t)
-        if repeat:
-            frames += [upright(previous)] * repeat
+        emit(previous, ticker.push(t))
         previous, stop = frame, t + (frame.duration * tb if frame.duration else 1 / Fraction(v.average_rate))
     if previous is not None:
-        repeat = ticker.finish(stop)
-        if repeat:
-            frames += [upright(previous)] * repeat
+        emit(previous, ticker.finish(stop))
     times = [round(start + k / fps, 3) for k in range(len(frames))]
     keep = sum(1 for t in times if t < end)
     return frames[:keep], times[:keep]

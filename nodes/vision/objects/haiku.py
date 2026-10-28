@@ -119,8 +119,28 @@ def spent(tokens_in: int, tokens_out: int) -> float:
     return round((tokens_in * PRICE_PER_MTOK[0] + tokens_out * PRICE_PER_MTOK[1]) / 1e6, 4)
 
 
+def name_classes_max_tokens(n_names: int) -> int:
+    """Room for the name classification's reply: the bake-off's 4000 tokens for a clip's few dozen names, and about 40
+    a name beyond that (an entry is ~25 tokens), so a long film's vocabulary is not cut off."""
+    return max(4000, 2000 + 40 * n_names)
+
+
+def reply_json(response):
+    """The JSON a structured reply holds, or NodeError: refused, cut off at max_tokens, or with no text."""
+    if response.stop_reason == "refusal":
+        raise NodeError("input", f"refusal: {response.stop_details}")
+    if response.stop_reason == "max_tokens":
+        raise NodeError("internal", "Haiku's reply reached max_tokens: its JSON is cut off")
+    text = next((b.text for b in response.content if b.type == "text"), None)
+    if text is None:
+        raise NodeError("internal", f"no text block in the response (stop_reason {response.stop_reason})")
+    return json.loads(text)
+
+
 class Haiku:
     """Structured Haiku calls, each billed through spend(tokens_in, tokens_out) as soon as it returns."""
+
+    STREAM_FROM = 16000   # the SDK wants a long reply streamed (a non-streaming request could time out)
 
     def __init__(self, api_key: str, spend):
         import anthropic
@@ -129,21 +149,20 @@ class Haiku:
 
     def ask(self, content: list, schema: dict, max_tokens: int = 1000):
         import anthropic
+        request = dict(model=MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}],
+                       output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}})
         try:
-            response = self.client.messages.create(
-                model=MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}],
-                output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}})
+            if max_tokens >= self.STREAM_FROM:
+                with self.client.messages.stream(**request) as stream:
+                    response = stream.get_final_message()
+            else:
+                response = self.client.messages.create(**request)
         except (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError) as e:
             raise NodeError("transient", f"{type(e).__name__}: {e}") from None   # the SDK already retried twice
         except anthropic.AuthenticationError:
             raise NodeError("input", "the Anthropic API rejected the key (ANTHROPIC_API_KEY)") from None
         self.spend(response.usage.input_tokens, response.usage.output_tokens)   # billed even if the reply is then rejected
-        if response.stop_reason == "refusal":
-            raise NodeError("input", f"refusal: {response.stop_details}")
-        text = next((b.text for b in response.content if b.type == "text"), None)
-        if text is None:
-            raise NodeError("internal", f"no text block in the response (stop_reason {response.stop_reason})")
-        return json.loads(text)
+        return reply_json(response)
 
     def vocabulary(self, images: list[bytes], earlier: set[str]) -> list[str]:
         prompt = f"{VOCAB_INSTRUCTIONS}\n\nNames used in earlier shots: {', '.join(sorted(earlier)) or '(none yet)'}"
@@ -151,7 +170,7 @@ class Haiku:
 
     def name_classes(self, names: list[str]) -> list[dict]:
         text = NAMES_INSTRUCTIONS + "\n\nNames:\n" + "\n".join(names)
-        return self.ask([{"type": "text", "text": text}], NAMES_SCHEMA, max_tokens=4000)["names"]
+        return self.ask([{"type": "text", "text": text}], NAMES_SCHEMA, max_tokens=name_classes_max_tokens(len(names)))["names"]
 
     def check_crops(self, label: str, strips: list) -> list[dict]:
         content = []

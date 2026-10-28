@@ -91,11 +91,15 @@ def context_view(frame, box):
     return out
 
 
-def context_strip(track, frame_at):
-    """The crop check's image for a track: context_view at CONTEXT_MOMENTS of its samples, left to right, separated
-    by white bars."""
+def context_samples(track) -> list[dict]:
+    """The samples at CONTEXT_MOMENTS of a track: the crop check's three moments."""
     samples = track["samples"]
-    picks = [samples[min(len(samples) - 1, int(m * len(samples)))] for m in CONTEXT_MOMENTS]
+    return [samples[min(len(samples) - 1, int(m * len(samples)))] for m in CONTEXT_MOMENTS]
+
+
+def context_strip(track, frame_at):
+    """The crop check's image for a track: context_view at its context_samples, left to right, separated by white
+    bars."""
     bar = np.full((CONTEXT_PX, 6, 3), 255, np.uint8)
-    views = [context_view(frame_at[s["t"]], s["box"]) for s in picks]
+    views = [context_view(frame_at[s["t"]], s["box"]) for s in context_samples(track)]
     return np.hstack([x for v in views for x in (v, bar)][:-1])
