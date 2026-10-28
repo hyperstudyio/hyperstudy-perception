@@ -189,7 +189,7 @@
           { "name": "sample", "arrow": "int32", "description": "The sample's index in that track's samples." },
           { "name": "t", "arrow": "double", "description": "The sample's time, as the layer's." },
           { "name": "inout", "arrow": "float", "description": "Gaze-LLE's in-frame score in [0, 1], unrounded (the layer's in_frame is it to 3 places)." },
-          { "name": "max", "arrow": "float", "description": "The heatmap's largest value (a sigmoid: in (0, 1)), the scale of heat." },
+          { "name": "max", "arrow": "float", "description": "The heatmap's largest value, the scale of heat: a sigmoid's, in [0, 1] in float32 (0 only for a map that is all zeros, whose cells are all 0)." },
           { "name": "heat", "arrow": "fixed_size_binary[4096]", "description": "The 64x64 heatmap over the whole frame as uint8, row-major: byte 64 * row + col is the cell whose centre is ((col + 0.5) / 64 * width, (row + 0.5) / 64 * height) in source pixels." }
         ]
       }
