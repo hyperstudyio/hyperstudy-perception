@@ -8,7 +8,7 @@ Then:
 1. Vocabulary (haiku.py): Claude Haiku 5.5 sees each shot's three keyframes (decode's) and names up to 8 concrete,
    trackable objects in generic detector nouns, told the names it used in earlier shots so one bike stays "bicycle".
    Clothing, shoes, hats, glasses and necklaces are not its to name (step 2 finds them on every person); a name it gives
-   anyway that is one of the body nouns is left out.
+   anyway that the body pass asks for (a garment noun, or "person") is left out (garments.session_names).
 2. Segment and track (models.py), shot by shot; each shot is decoded at `fps` (shot_frames.py, the bake-off's ffmpeg
    frames):
    a. Clothing from bodies (garments.py): at `clothing_fps`, every body of the bodies layer present at that frame is
@@ -188,9 +188,8 @@ with Node() as node:
             raise NodeError("input", f"shot {shot['index']} has no keyframes: the object names come from them")
         named = clean_names(haiku.vocabulary(images, earlier), MAX_OBJECTS)
         earlier.update(named)
-        # the body pass finds these on every person; as a session prompt they would be a second copy
-        body_named[shot["index"]] = [n for n in named if n in garments.NOUNS]
-        vocabulary[shot["index"]] = [n for n in named if n not in garments.NOUNS]
+        # the body pass's own nouns (garments, "person") are not session prompts
+        vocabulary[shot["index"]], body_named[shot["index"]] = garments.session_names(named)
     # the names' families, kinds and whether they are worn: from the vocabulary alone, so before the GPU work
     names = sorted({n for shot_names in vocabulary.values() for n in shot_names})
     try:

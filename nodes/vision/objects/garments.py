@@ -59,6 +59,13 @@ CHIN = 23 + 8
 BODY_POINTS = tuple(range(0, 23))
 
 
+def session_names(names: list[str]) -> tuple[list[str], list[str]]:
+    """(a shot's session prompts, the names left out): a vocabulary name the body pass asks for (PROMPTS) is not a
+    session prompt. A garment would be found twice; "person" would make people objects (Haiku named it in 5 NES shots
+    despite the rule against people), and the people are the faces and bodies layers'."""
+    return [n for n in names if n not in PROMPTS], [n for n in names if n in PROMPTS]
+
+
 def crop_box(box, width: int, height: int) -> tuple[int, int, int, int]:
     """The crop around a body box [x, y, w, h]: a square CROP_SCALE times its longer side about its centre, inside the
     frame (cut where it leaves it), as (x0, y0, x1, y1) in whole pixels."""

@@ -7,7 +7,7 @@ import pytest
 
 import garments
 from garments import (KEEP_SCORE, NOUNS, PROMPTS, Series, body_person, crop_box, garment_tracks, head_point, owner,
-                      person_owner, pick, regions)
+                      person_owner, pick, regions, session_names)
 
 SEEN = 9.0   # a keypoint score above the bodies layer's threshold (3.0)
 
@@ -45,6 +45,13 @@ def test_the_prompts_are_the_nouns_then_person():
     assert PROMPTS == (*NOUNS, "person")
     assert set(NOUNS.values()) == set(garments.FAMILIES)
     assert garments.classes()["jacket"] == {"family": "upper-body clothing", "kind": "individual", "worn": True}
+
+
+def test_the_body_pass_takes_its_own_nouns_out_of_the_vocabulary():
+    """A vocabulary name the body pass asks for is not a session prompt: a garment would be found twice, and "person"
+    (NES: Haiku named it in 5 shots despite the rule against people) made people into objects."""
+    assert session_names(["helmet", "person", "jacket", "bicycle", "necklace"]) == (["helmet", "bicycle"],
+                                                                                    ["person", "jacket", "necklace"])
 
 
 def test_a_crop_is_a_square_about_the_body_inside_the_frame():

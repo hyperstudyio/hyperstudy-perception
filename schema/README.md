@@ -114,8 +114,8 @@ check against the people's masks made of it (`kept`, `trimmed`, `covers_person`,
 person and enclosed shares it was judged on, and each detection scoring at least 0.3 in each body crop (the garment
 nouns and `person`), with its score, the body whose crop it is and why it is or is not one of that body's items
 (`item`, `person`, `below_keep`, `not_this_body`, `not_picked`); a row with a track names the layer sample it became,
-so the thresholds (keep score, person shares, the slots' regions) can be revisited; OBJECTS_MASKS_SIZE). Outlines and
-boxes, no pixels or face data: no kind.
+so the thresholds (keep score, person shares, the slots' regions) can be revisited; 24,063 rows, 2.0 MB for OOO clip 1's
+two minutes, about 60 MB an hour with a panel of seven on screen). Outlines and boxes, no pixels or face data: no kind.
 The prosody layer's: `prosody_tracks` (its `raw.tracks`: Praat's frames the measures and the contour come from, the
 first-pass pitch and the intensity every 10 ms over the clip, and per utterance its speaker's second-pass pitch over it,
 its harmonicity frames and its glottal pulses; unrounded; a row per frame, so every word's and utterance's pitch, HNR
