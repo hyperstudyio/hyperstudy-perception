@@ -37,6 +37,10 @@ jobs:
       # version the envs lock), Pillow and the node SDK. They run with nothing on PATH: no ffmpeg is needed.
       - name: pytest
         run: uv run --no-project --with pytest --with numpy --with av==16.1.0 --with pillow --with-editable ./sdk pytest -q nodes
+      # Active speakers' environment (envs/gaze) locks PyAV 17.1.0, whose FFmpeg 8.1 makes the grey crops the bake-off's
+      # ffmpeg 8.1.1 program made; its grey-bytes test skips under 16.1.0 above and runs here
+      - name: pytest (active speakers, PyAV 17.1.0 as envs/gaze locks it)
+        run: uv run --no-project --with pytest --with numpy --with av==17.1.0 --with pillow --with-editable ./sdk pytest -q nodes/vision/active-speaker
 
   package:
     name: Package (built, installed as the app installs it, decoding with nothing but uv on PATH)

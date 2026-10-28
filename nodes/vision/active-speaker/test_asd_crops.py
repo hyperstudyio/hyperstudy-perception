@@ -1,6 +1,12 @@
 """What LR-ASD is given per face track (asd_crops.py), and the 25 fps grey frames it is cut from (video25.py), without
 the model. Run: uv run --project envs/gaze --with pytest pytest nodes/vision/active-speaker"""
 
+import hashlib
+import re
+from fractions import Fraction
+from pathlib import Path
+
+import av
 import numpy as np
 import pytest
 
@@ -125,3 +131,47 @@ def test_frames_are_turned_upright(rotated):
     (_, gray), *_ = list(grey_frames(rotated))
     assert gray.shape == (64, 32)
     assert gray[:24].mean() + 20 < gray[40:].mean()
+
+
+def bt709_clip(path):
+    """Three 32x16 frames of limited-range yuv420p tagged BT.709 (as OOO and most H.264 files are), with varied
+    chroma, stored raw (no lossy codec: every FFmpeg decodes the same bytes)."""
+    with av.open(str(path), "w", format="matroska") as out:
+        s = out.add_stream("rawvideo", rate=10)
+        s.width, s.height, s.pix_fmt = 32, 16, "yuv420p"
+        cc = s.codec_context
+        cc.color_range, cc.colorspace, cc.color_primaries, cc.color_trc = 1, 1, 1, 1
+        rng = np.random.default_rng(0)
+        for i in range(3):
+            y = (16 + (np.arange(32 * 16).reshape(16, 32) * 7 + i * 13) % 220).astype(np.uint8)
+            u, v = (rng.integers(16, 241, (8, 16), dtype=np.uint8).reshape(-1, 32) for _ in range(2))
+            frame = av.VideoFrame.from_ndarray(np.concatenate([y, u, v]), format="yuv420p")
+            frame.pts, frame.time_base = i, Fraction(1, 10)
+            out.mux(s.encode(frame))
+        out.mux(s.encode())
+
+
+def ffmpeg_version() -> tuple[int, ...]:
+    return tuple(int(x) for x in av.ffmpeg_version_info.split("-")[0].split(".")[:2])
+
+
+@pytest.mark.skipif(ffmpeg_version() < (8, 1), reason=f"PyAV's FFmpeg {av.ffmpeg_version_info} is older than envs/gaze's 8.1 "
+                                                       "(CI runs this test again with PyAV 17.1.0)")
+def test_grey_frames_are_ffmpeg_8_1s_the_programs_the_bake_off_cut_its_crops_with(tmp_path):
+    """FFmpeg converts BT.709 limited-range YUV to grey through its chroma, and 8.1 rounds it otherwise than 8.0: these
+    are the bytes of 8.1.1 (PyAV 17.1.0, and the ffmpeg 8.1.1 program the bake-off cut its crops with; 8.1.2 and 9.0.2
+    give the same). PyAV 16.1.0's 8.0.1 starts [22, 27, 41, 46, 41, 49, 72, 77]; on OOO it differed in 82% of pixels,
+    by up to 3 levels."""
+    bt709_clip(tmp_path / "bt709.mkv")
+    frames = list(grey_frames(tmp_path / "bt709.mkv"))
+    assert len(frames) == 8 and frames[0][1][0, :8].tolist() == [23, 28, 42, 47, 43, 51, 72, 79]
+    assert hashlib.sha256(b"".join(g.tobytes() for _, g in frames)).hexdigest() == \
+        "226b64fd5fdb9a1c7ba878c199c0d69e6c6bc2c42f8ee293c6012b0af12fef64"
+
+
+def test_envs_gaze_locks_a_pyav_with_ffmpeg_8_1_or_later():
+    """PyAV 17.1.0 is the first release carrying FFmpeg 8.1 (the test above): a relock back to 16.1.0, the other
+    environments' version, would silently change LR-ASD's input."""
+    lock = (Path(__file__).resolve().parents[3] / "envs" / "gaze" / "uv.lock").read_text()
+    version = re.search(r'\[\[package\]\]\nname = "av"\nversion = "([0-9.]+)"', lock).group(1)
+    assert tuple(int(x) for x in version.split(".")) >= (17, 1), version
