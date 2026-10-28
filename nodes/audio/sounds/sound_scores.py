@@ -42,6 +42,7 @@ import numpy as np
 from sound_events import PANNS_FPS
 
 PANNS_SEGMENT = 32          # Cnn14's frames per segment: five 2x poolings of time
+CHECK_SEGMENTS = 1024       # segments compared at once in panns_segments: 17 MB of comparisons
 PE_FPS = 25                 # PE-A-Frame's 40 ms frames (sound_events.PE_HOP at 48 kHz)
 ROW_GROUP_ROWS = 4096       # 8.6 MB of tagger scores a group before compression (about 22 min of PANNs)
 # OOO clip 1 (tags, queries; byte stream split on the scores): zstd 3 881 + 215 KB, 9 873 + 213, 19 867 + 206 (0.1 s
@@ -67,8 +68,16 @@ def panns_segments(framewise: np.ndarray) -> np.ndarray:
     """The segments Cnn14 computed, from its frame-wise output (stitched from chunks that start on its 32-frame grid,
     sound_events.PANNS_GRID): every PANNS_SEGMENT-th frame of the whole segments. A frame-wise output that is not those
     segments repeated is a ValueError: the side file would not give back what the layer pooled."""
-    segments = framewise[:len(framewise) // PANNS_SEGMENT * PANNS_SEGMENT:PANNS_SEGMENT]
-    if not np.array_equal(panns_framewise(segments, len(framewise)), framewise):
+    k = len(framewise) // PANNS_SEGMENT
+    if k == 0:
+        raise ValueError(f"PANNs' frame-wise scores ({len(framewise)} frames) hold no whole {PANNS_SEGMENT}-frame segment")
+    # a copy, 32 times smaller, so that the frames can be freed; compared a block at a time, in place of building the
+    # repeated frames (an hour's frames are 760 MB)
+    segments = framewise[:k * PANNS_SEGMENT:PANNS_SEGMENT].copy()
+    whole = framewise[:k * PANNS_SEGMENT].reshape(k, PANNS_SEGMENT, -1)
+    repeated = all((whole[a:a + CHECK_SEGMENTS] == segments[a:a + CHECK_SEGMENTS, None]).all()
+                   for a in range(0, k, CHECK_SEGMENTS)) and (framewise[k * PANNS_SEGMENT:] == segments[-1]).all()
+    if not repeated:
         raise ValueError(f"PANNs' frame-wise scores ({len(framewise)} frames) are not its {PANNS_SEGMENT}-frame "
                          "segments repeated")
     return segments

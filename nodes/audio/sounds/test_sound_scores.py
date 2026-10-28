@@ -10,7 +10,7 @@ import pytest
 
 from sound_events import (PANNS_FPS, PE_HOP, QUERIES, audioset_labels, plan_chunks, sound_events, spans, stitch,
                           step_max, tag_rows)
-from sound_scores import (PANNS_SEGMENT, QUERIES_DESCRIPTION, QUERIES_FILE, ROW_GROUP_ROWS, TAGS_DESCRIPTION, TAGS_FILE,
+from sound_scores import (CHECK_SEGMENTS, PANNS_SEGMENT, QUERIES_DESCRIPTION, QUERIES_FILE, ROW_GROUP_ROWS, TAGS_DESCRIPTION, TAGS_FILE,
                           panns_framewise, panns_segments, read_queries, read_tags, write_queries, write_tags)
 
 SCHEMA = Path(__file__).resolve().parents[3] / "schema" / "bundle-0.1.schema.json"
@@ -62,6 +62,21 @@ def test_frame_wise_scores_that_are_not_repeated_segments_are_refused():
         panns_segments(framewise)
     with pytest.raises(ValueError, match="do not make"):
         panns_framewise(framewise[:3], 3 * PANNS_SEGMENT + PANNS_SEGMENT)
+    with pytest.raises(ValueError, match="no whole 32-frame segment"):
+        panns_segments(framewise[:PANNS_SEGMENT - 1])
+
+
+@pytest.mark.parametrize("frame", [5, (CHECK_SEGMENTS + 3) * PANNS_SEGMENT + 7, -1])
+def test_every_frame_is_checked_and_the_segments_do_not_hold_the_frames(frame):
+    """Compared CHECK_SEGMENTS at a time: a frame off in a later block, or in the frames past the last segment, is
+    refused. The segments are a copy, so the frames can be freed."""
+    rng = np.random.default_rng(2)
+    framewise = cnn14_framewise(lambda n: scores(rng, n, 3), (CHECK_SEGMENTS + 40) * GRID + 9 * HOP)
+    segments = panns_segments(framewise)
+    assert segments.base is None and len(segments) > CHECK_SEGMENTS
+    framewise[frame, 1] = np.nextafter(framewise[frame, 1], np.float32(2))
+    with pytest.raises(ValueError, match="not its 32-frame segments repeated"):
+        panns_segments(framewise)
 
 
 # --- the files --------------------------------------------------------------------------------------------------------
