@@ -498,8 +498,10 @@ def test_what_a_process_the_node_left_or_a_hard_link_writes_later_never_reaches_
 
 def test_the_drivers_cleanup_running_while_the_host_still_keeps_an_output_never_publishes_part_of_it(tmp_path, host, monkeypatch):
     """ssh dropped while the host was keeping an output: the driver gave up on it and removes this attempt's unfinished
-    uploads (discard_incoming) while the host's keep goes on. Its cleanup, part way through a tree just before the host
-    publishes it, must not leave a tree with files missing filed under the whole tree's hash, with .complete."""
+    uploads (discard_incoming, by its names: .incoming-<tag>-*) while the host's keep goes on. Its cleanup, run part way
+    just before the host publishes, must not leave an output with files missing filed under its whole hash, with
+    .complete. Keep stages in a folder of its own (.keeping-*) that the cleanup's names never match, so here it removes
+    nothing; staged under the attempt's names (as before), the layer was filed with no data."""
     import perception.remote_driver as rd
     from perception import artifacts
     driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
