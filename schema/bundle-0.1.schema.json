@@ -139,6 +139,68 @@
               } } }
           }
         }
+      },
+      "faces_mesh": {
+        "description": "layers/faces_mesh.json, the faces layer's mesh side file (its mesh.file): py-feat's 478-point 2D face mesh per face track sample, keyed by the layer's track ids, one entry per sample of that track in order. Large; readers fetch it only when they draw the mesh.",
+        "type": "object",
+        "required": ["points", "tracks"],
+        "properties": {
+          "points": { "const": 478, "description": "Mesh points per sample." },
+          "layout": { "type": "string", "description": "The order of each sample's xy." },
+          "tracks": {
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/id/face" },
+            "additionalProperties": { "type": "array", "items": {
+              "type": "object", "required": ["t", "xy"],
+              "properties": {
+                "t": { "$ref": "#/$defs/time" },
+                "xy": { "type": "array", "items": { "type": "integer" }, "minItems": 956, "maxItems": 956, "description": "478 points: all x, then all y, in source pixels, rounded to integers." }
+              } } }
+          }
+        }
+      },
+      "faces_embeddings": {
+        "description": "layers/faces_embeddings.json, the faces layer's embeddings side file (its embeddings.file): the 512-d ArcFace identity embedding (InsightFace w600k_r50 weights, via py-feat Detectorv2) per face track sample, keyed by the layer's track ids, one entry per sample of that track in order; the vectors the layer's people and person_pairs were computed from. Identity data, and research-only (academic-only) weights, as for the faces layer.",
+        "type": "object",
+        "required": ["model", "dims", "normalised", "tracks"],
+        "properties": {
+          "model": { "type": "string", "description": "The embedding model." },
+          "dims": { "const": 512, "description": "Values per embedding." },
+          "normalised": { "type": "boolean", "description": "Whether each v is L2-normalised. py-feat's ArcFace output is not (false): normalise before taking cosine distances." },
+          "tracks": {
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/id/face" },
+            "additionalProperties": { "type": "array", "items": {
+              "type": "object", "required": ["t", "v"],
+              "properties": {
+                "t": { "$ref": "#/$defs/time" },
+                "v": { "type": "array", "items": { "type": "number" }, "minItems": 512, "maxItems": 512, "description": "The embedding, rounded to 4 decimal places." }
+              } } }
+          }
+        }
+      }
+    },
+    "parquet": {
+      "gaze_heatmaps": {
+        "description": "layers/gaze_heatmaps.parquet, the gaze layer's raw side file (raw.heatmaps): Gaze-LLE's whole output for every head, of which the layer keeps the peak, the in-frame score and the target. One row per sample of the gaze layer's tracks, in time order (the heads of one frame in the layer's track order). Each heatmap is quantised relative to its own maximum: cell = floor(255 * heat / max), so heat is in [cell, cell + 1) / 255 * max and (cell + 0.5) / 255 * max is within max / 510 of it; only the maximum is 255, so the stored map's argmax is the cell of the layer's peak. Columns are not nullable.",
+        "per_sample": true,
+        "columns": [
+          { "name": "face", "arrow": "string", "description": "The face track (face:N): the gaze layer's tracks[].face." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that track's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the layer's." },
+          { "name": "inout", "arrow": "float", "description": "Gaze-LLE's in-frame score in [0, 1], unrounded (the layer's in_frame is it to 3 places)." },
+          { "name": "max", "arrow": "float", "description": "The heatmap's largest value, the scale of heat: a sigmoid's, in [0, 1] in float32 (0 only for a map that is all zeros, whose cells are all 0)." },
+          { "name": "heat", "arrow": "fixed_size_binary[4096]", "description": "The 64x64 heatmap over the whole frame as uint8, row-major: byte 64 * row + col is the cell whose centre is ((col + 0.5) / 64 * width, (row + 0.5) / 64 * height) in source pixels." }
+        ]
+      }
+    },
+    "sidePointer": {
+      "type": "object", "required": ["file", "format", "description"],
+      "description": "Where one of a layer's side files is, in what format, and what it holds.",
+      "properties": {
+        "file": { "type": "string", "pattern": "^layers/[a-z][a-z0-9_]*\\.(json|parquet)$", "description": "layers/<name>.<format>: a side file the manifest lists under this layer's side_files." },
+        "format": { "enum": ["json", "parquet"], "description": "json: validates against #/$defs/side/<name>. parquet: Apache Parquet, columns as #/$defs/parquet/<name>." },
+        "description": { "type": "string", "minLength": 1, "description": "One line: what the file holds." }
       }
     },
     "layerBase": {
@@ -146,7 +208,13 @@
       "properties": {
         "layer": { "$ref": "#/$defs/layerName" },
         "schema_version": { "$ref": "#/$defs/semver" },
-        "producer": { "$ref": "#/$defs/producer" }
+        "producer": { "$ref": "#/$defs/producer" },
+        "raw": {
+          "type": "object",
+          "description": "The layer's raw side files: what its model returned beyond what the layer draws, by role (e.g. heatmaps). Optional; the faces layer's detail, mesh and embeddings point at its side files the older way.",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+          "additionalProperties": { "$ref": "#/$defs/sidePointer" }
+        }
       }
     },
 
@@ -235,7 +303,11 @@
             "properties": { "a": { "$ref": "#/$defs/id/person" }, "b": { "$ref": "#/$defs/id/person" },
               "distance": { "type": "number" }, "co_visible": { "type": "boolean" } } } },
           "detail": { "type": ["object", "null"], "required": ["file"], "properties": {
-            "file": { "type": "string" }, "fields": { "type": "array", "items": { "type": "string" } } } }
+            "file": { "type": "string" }, "fields": { "type": "array", "items": { "type": "string" } } } },
+          "mesh": { "type": ["object", "null"], "required": ["file"], "description": "Where the faces_mesh side file is.",
+            "properties": { "file": { "type": "string" } } },
+          "embeddings": { "type": ["object", "null"], "required": ["file"], "description": "Where the faces_embeddings side file is.",
+            "properties": { "file": { "type": "string" } } }
         }
       },
 

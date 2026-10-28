@@ -1,11 +1,13 @@
 id: vision.gaze
-version: 1.0.0
+version: 1.1.0
 stage: gaze
 title: Gaze targets
 description: Where each tracked face looks (Gaze-LLE ViT-L/14 heatmaps and in-frame scores), its target face or out of frame, and looks_at, mutual gaze and joint attention events
 # Faces only for now; objects as targets come with an objects input (gaze_targets.py says how)
 inputs: {video: video.v1, media: media.v1, faces: bundle.faces@0.1}
-outputs: {gaze: bundle.gaze@0.1}
+# heatmaps: layers/gaze_heatmaps.parquet, the rest of Gaze-LLE's output for every head (its whole heatmap, as uint8
+# relative to its maximum, and its unrounded in-frame score), which the layer points at with raw.heatmaps (heatmaps.py)
+outputs: {gaze: bundle.gaze@0.1, heatmaps: bundle.gaze_heatmaps@0.1}
 config:
   # the face box scaled about its centre: the head box Gaze-LLE is given, and a face target's region (the bake-off's 1.2)
   head_box_scale: {type: number, minimum: 1, maximum: 2, default: 1.2}

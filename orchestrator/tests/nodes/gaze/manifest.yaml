@@ -1,0 +1,13 @@
+id: test.gaze
+version: 1.0.0
+description: Writes a bundle gaze layer and its Parquet heatmaps side file, as vision.gaze does (export tests)
+inputs: {video: video.v1}
+outputs: {gaze: bundle.gaze@0.1, heatmaps: bundle.gaze_heatmaps@0.1}
+config:
+  heatmaps_file: {type: string, default: layers/gaze_heatmaps.parquet, description: "what the gaze layer's raw.heatmaps.file says"}
+  heatmaps_format: {type: string, default: parquet, description: "what the gaze layer's raw.heatmaps.format says"}
+  heatmaps_bytes: {type: string, default: fixture, description: "fixture: gaze_heatmaps.parquet beside this file; else these bytes"}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-gaze, licence_mode: needs-review}

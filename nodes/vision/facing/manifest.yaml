@@ -1,0 +1,24 @@
+id: vision.facing
+version: 1.0.0
+stage: facing
+title: Facing
+description: Who faces whom, from each person's torso direction in 3D (MediaPipe Pose Landmarker heavy on the bodies layer's people), and whether it is mutual
+# the people are body-pose's (one person-box pass for every node); only bodies linked to a face track are posed
+inputs: {video: video.v1, media: media.v1, bodies: bundle.bodies@0.1}
+outputs: {facing: bundle.facing@0.1}
+config:
+  cone_deg: {type: number, exclusiveMinimum: 0, maximum: 180, default: 60.0,description: "a person faces another inside this angle of their torso direction"}
+  min_facing_s: {type: number, minimum: 0, default: 1.0, description: "shortest facing event, in seconds"}
+  max_gap_s: {type: number, minimum: 0, default: 0.3, description: "facing samples this close are one event"}
+runners:
+  # MediaPipe on the CPU (XNNPACK) only, everywhere: its Metal delegate posed fewer people and swapped shoulders on the
+  # bake-off's boxes (models.py). mediapipe 1.1.1 has wheels for macOS arm64, Linux x86_64 and aarch64, and Windows
+  - {kind: native, env: envs/vision, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 4, memory_gb: 2, gpu: none}
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
+models:
+  - {id: "MediaPipe Pose Landmarker heavy (pose_landmarker_heavy.task float16 v1, BlazePose GHUM 3D)",
+     source: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task",
+     sha256: 64437af838a65d18e5ba7a0d39b465540069bc8aae8308de3e318aad31fcbc7b, size_gb: 0.031,
+     licence: "Apache-2.0, code (MediaPipe) and model (BlazePose GHUM 3D model card)", licence_mode: commercial-ok}

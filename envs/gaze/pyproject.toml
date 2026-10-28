@@ -8,6 +8,8 @@ requires-python = ">=3.12,<3.13"
 # exactly as the bake-off did. On Linux PyPI's torch 2.14 wheels are built for CUDA 13 (an NVIDIA driver >= 580).
 # Not merged into envs/vision: torch pins its CUDA 13 libraries exactly (cuDNN 9.24, CUDA runtime 13.0), which would
 # move onnxruntime-gpu's (cuDNN 9.27, runtime 13.4) under body pose.
+# pyarrow writes the heatmaps side file (nodes/vision/gaze/heatmaps.py). Pinned exactly: its version names itself in
+# the file's footer, so the same maps are the same bytes only on the same pyarrow.
 # Active speakers (nodes/vision/active-speaker) ran in the bake-off on these same torch, numpy and OpenCV versions
 # (tools/perception-bakeoff/asd/uv.lock), so it shares this lock: it adds scipy (the crop smoothing and the voice
 # assignment), python_speech_features (the MFCCs LR-ASD was trained on; an sdist, pure Python) and PyAV (its 25 fps
@@ -23,6 +25,7 @@ dependencies = [
   "opencv-python==5.0.0.93",
   "numpy",
   "pillow",
+  "pyarrow==26.0.0",
   "scipy==1.18.1",
   "python-speech-features==0.6",
   "av==17.1.0",

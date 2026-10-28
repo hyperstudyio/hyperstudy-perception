@@ -774,9 +774,10 @@ def faces_graph(video: Path, **config) -> dict:
                       {"id": "faces", "uses": "test.faces@1.0.0", "inputs": {"video": "$inputs.video"}, "config": config}]}
 
 
-def test_a_layers_side_file_goes_into_the_bundle_with_it(tmp_path):
-    """face-track's detail output becomes layers/faces_detail.json, listed under the faces layer's side_files, which is
-    where the annotator looks for the file the layer's detail.file names (and the only bundle file it reads by path)."""
+def test_a_layers_side_files_go_into_the_bundle_with_it(tmp_path):
+    """face-track's detail, mesh and embeddings outputs become layers/faces_detail.json, layers/faces_mesh.json and
+    layers/faces_embeddings.json, listed under the faces layer's side_files, which is where the annotator looks for the
+    files the layer's detail.file, mesh.file and embeddings.file name (and the only bundle files it reads by path)."""
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
@@ -785,11 +786,20 @@ def test_a_layers_side_file_goes_into_the_bundle_with_it(tmp_path):
     assert status == "succeeded", coord._tasks(run_id)
     out = export.bundle(coord, run_id, tmp_path / "bundle")
     manifest = json.loads((out / "manifest.json").read_text())
-    side = out / "layers" / "faces_detail.json"
-    stored = Path(json.loads(coord._tasks(run_id)["faces"]["outputs"])["detail"]["path"])
-    assert side.read_bytes() == stored.read_bytes()
+    outputs = json.loads(coord._tasks(run_id)["faces"]["outputs"])
+    detail, mesh = out / "layers" / "faces_detail.json", out / "layers" / "faces_mesh.json"
+    embeddings = out / "layers" / "faces_embeddings.json"
+    assert detail.read_bytes() == Path(outputs["detail"]["path"]).read_bytes()
+    assert mesh.read_bytes() == Path(outputs["mesh"]["path"]).read_bytes()
+    assert embeddings.read_bytes() == Path(outputs["embeddings"]["path"]).read_bytes()
     assert manifest["layers"]["faces"]["side_files"] == [
-        {"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size}]
+        {"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(detail), "bytes": detail.stat().st_size},
+        {"file": "layers/faces_embeddings.json", "sha256": artifacts.sha256_file(embeddings),
+         "bytes": embeddings.stat().st_size},
+        {"file": "layers/faces_mesh.json", "sha256": artifacts.sha256_file(mesh), "bytes": mesh.stat().st_size}]
+    layer = json.loads((out / "layers" / "faces.json").read_text())
+    assert layer["mesh"] == {"file": "layers/faces_mesh.json"} and layer["detail"]["file"] == "layers/faces_detail.json"
+    assert layer["embeddings"] == {"file": "layers/faces_embeddings.json"}
     assert "side_files" not in manifest["layers"]["shots"]
     validate = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
     result = subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
@@ -797,14 +807,15 @@ def test_a_layers_side_file_goes_into_the_bundle_with_it(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_a_layer_pointing_at_a_side_file_its_node_did_not_write_is_not_exported(tmp_path):
+@pytest.mark.parametrize("pointer", ["detail", "mesh", "embeddings"])
+def test_a_layer_pointing_at_a_side_file_its_node_did_not_write_is_not_exported(tmp_path, pointer):
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
     coord = coordinator(tmp_path)
-    run_id, status = run(coord, faces_graph(video, detail_file="layers/faces_mesh.json"))
+    run_id, status = run(coord, faces_graph(video, **{f"{pointer}_file": "layers/faces_other.json"}))
     assert status == "succeeded", coord._tasks(run_id)
-    with pytest.raises(SystemExit, match="points at layers/faces_mesh.json"):
+    with pytest.raises(SystemExit, match=rf"points at layers/faces_other.json \({pointer}.file\)"):
         export.bundle(coord, run_id, tmp_path / "bundle")
 
 
@@ -822,6 +833,64 @@ def test_the_faces_detail_type_checks_its_shape(tmp_path):
     assert artifacts.get("bundle.faces_detail@0.1").side_of == "faces" and artifacts.get("bundle.faces_detail@0.1").layer is None
 
 
+MESH_SAMPLE = {"t": 1.0, "xy": [12] * 956}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    ({"points": 478, "layout": "all x, then all y", "tracks": {"face:3": [MESH_SAMPLE]}}, True),
+    ({"points": 478, "tracks": {}}, True),                                                    # no tracks; layout optional
+    ({"points": 478, "tracks": {"3": [MESH_SAMPLE]}}, False),                                 # not a face track id
+    ({"points": 478, "tracks": {"face:3": [MESH_SAMPLE | {"xy": [12] * 478}]}}, False),       # x only
+    ({"points": 478, "tracks": {"face:3": [MESH_SAMPLE | {"xy": [12.5] * 956}]}}, False),     # not whole pixels
+    ({"points": 468, "tracks": {"face:3": [MESH_SAMPLE]}}, False),                            # another mesh
+    ({"points": 478, "tracks": {"face:3": [{"t": 1.0}]}}, False),                             # no xy
+    ({"tracks": {"face:3": [MESH_SAMPLE]}}, False),                                           # no points
+])
+def test_the_faces_mesh_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.faces_mesh@0.1")
+    path = tmp_path / "faces_mesh.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "faces" and kind.layer is None and kind.bundle_file == "layers/faces_mesh.json"
+    assert kind.kinds == ("faces",)
+
+
+EMB_SAMPLE = {"t": 1.0, "v": [-0.5] * 512}
+EMB = {"model": "ArcFace", "dims": 512, "normalised": False}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE, EMB_SAMPLE | {"t": 1.125}]}}, True),
+    (EMB | {"tracks": {}}, True),                                                          # no tracks
+    (EMB | {"normalised": True, "tracks": {"face:3": [EMB_SAMPLE]}}, True),
+    (EMB | {"tracks": {"3": [EMB_SAMPLE]}}, False),                                       # not a face track id
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE | {"v": [0.1] * 511}]}}, False),            # a value short
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE | {"v": [0.1] * 513}]}}, False),            # a value over
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE | {"v": ["0.1"] * 512}]}}, False),        # not numbers
+    (EMB | {"dims": 128, "tracks": {"face:3": [EMB_SAMPLE | {"v": [0.1] * 128}]}}, False),   # another model
+    (EMB | {"tracks": {"face:3": [{"t": 1.0}]}}, False),                                # no v
+    ({"model": "ArcFace", "dims": 512, "tracks": {}}, False),                          # normalisation unstated
+    ({"dims": 512, "normalised": False, "tracks": {}}, False),                           # model unnamed
+])
+def test_the_faces_embeddings_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.faces_embeddings@0.1")
+    path = tmp_path / "faces_embeddings.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "faces" and kind.layer is None and kind.bundle_file == "layers/faces_embeddings.json"
+
+
+def test_the_faces_embeddings_are_identity_data_and_need_consent_for_embeddings_to_leave_the_machine():
+    """A step that reads the embeddings on another machine sends them there: the policy's allow_upload and the run's
+    consent must name embeddings, not only faces."""
+    from perception.backends.base import Backend
+    kind = artifacts.get("bundle.faces_embeddings@0.1")
+    assert "embeddings" in kind.kinds and set(kind.kinds) == {"faces", "embeddings"}
+    remote = type("Remote", (), {"remote": True})()
+    reader = type("Manifest", (), {"inputs": {"embeddings": "bundle.faces_embeddings@0.1"}})()
+    assert Backend.sends(remote, reader) == ["embeddings", "faces"]
+
+
 FULL_SAMPLE = {"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
 
 
@@ -834,8 +903,8 @@ def test_a_faces_detail_sample_must_hold_every_field_one_value_per_name(tmp_path
     assert artifacts.get("bundle.faces_detail@0.1").validate(path)
 
 
-def bundle_validation(tmp_path, damage) -> subprocess.CompletedProcess:
-    """validate.py on an exported faces bundle after `damage(side_file_path)`, with the manifest's checksum updated
+def bundle_validation(tmp_path, damage, file="layers/faces_detail.json") -> subprocess.CompletedProcess:
+    """validate.py on an exported faces bundle after `damage(path of file)`, with the manifest's checksums updated
     (export records whatever bytes it copied)."""
     from perception import export
     video = tmp_path / "clip.mp4"
@@ -843,11 +912,11 @@ def bundle_validation(tmp_path, damage) -> subprocess.CompletedProcess:
     coord = coordinator(tmp_path)
     run_id, _ = run(coord, faces_graph(video))
     out = export.bundle(coord, run_id, tmp_path / "bundle")
-    side = out / "layers" / "faces_detail.json"
-    damage(side)
+    damage(out / file)
     manifest = json.loads((out / "manifest.json").read_text())
-    manifest["layers"]["faces"]["side_files"] = [{"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(side),
-                                                  "bytes": side.stat().st_size}]
+    for entry in manifest["layers"].values():
+        for f in [entry, *entry.get("side_files", [])]:
+            f.update(sha256=artifacts.sha256_file(out / f["file"]), bytes=(out / f["file"]).stat().st_size)
     (out / "manifest.json").write_text(json.dumps(manifest))
     validate = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
     return subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
@@ -862,16 +931,202 @@ def _with(change):
     return damage
 
 
-@pytest.mark.parametrize("damage, problem", [
-    (lambda p: p.write_text("{not json"), "not JSON"),
-    (_with(lambda d: d["tracks"].update({"face:0": ["not a sample", 3]})), "face:0"),
-    (_with(lambda d: d["tracks"]["face:0"][0].update(au=[0.1, 0.2])), "au has 2 values for 1 au_names"),
-    (_with(lambda d: d["tracks"].pop("face:0")), "does not match the layer's track samples"),
+DETAIL, MESH, EMBEDDINGS = "layers/faces_detail.json", "layers/faces_mesh.json", "layers/faces_embeddings.json"
+
+
+@pytest.mark.parametrize("file, damage, problem", [
+    (DETAIL, lambda p: p.write_text("{not json"), "not JSON"),
+    (DETAIL, _with(lambda d: d["tracks"].update({"face:0": ["not a sample", 3]})), "face:0"),
+    (DETAIL, _with(lambda d: d["tracks"]["face:0"][0].update(au=[0.1, 0.2])), "au has 2 values for 1 au_names"),
+    (DETAIL, _with(lambda d: d["tracks"].pop("face:0")), "does not match the layer's track samples"),
+    (MESH, lambda p: p.write_text("{not json"), "faces_mesh.json: not JSON"),
+    (MESH, _with(lambda d: d["tracks"]["face:0"][0].update(xy=[1] * 955)), "faces_mesh.json: $.tracks"),
+    (MESH, _with(lambda d: d["tracks"].pop("face:0")), "faces_mesh.json does not match the layer's track samples"),
+    (MESH, _with(lambda d: d["tracks"]["face:0"][1].update(t=0.25)), "faces_mesh.json does not match the layer's track samples"),
+    ("layers/faces.json", _with(lambda d: d.update(mesh={"file": "layers/faces_other.json"})),
+     "mesh.file layers/faces_other.json is not one of the layer's side files"),
+    (EMBEDDINGS, lambda p: p.write_text("{not json"), "faces_embeddings.json: not JSON"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"]["face:0"][0].update(v=[0.25] * 511)), "faces_embeddings.json: $.tracks"),
+    (EMBEDDINGS, _with(lambda d: d.update(dims=511)), "faces_embeddings.json: $.dims"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"].pop("face:0")), "faces_embeddings.json does not match the layer's track samples"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"]["face:0"][1].update(t=0.25)),
+     "faces_embeddings.json does not match the layer's track samples"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"]["face:0"].pop()), "faces_embeddings.json does not match the layer's track samples"),
+    ("layers/faces.json", _with(lambda d: d.update(embeddings={"file": "layers/faces_other.json"})),
+     "embeddings.file layers/faces_other.json is not one of the layer's side files"),
 ])
-def test_validate_reports_a_bad_side_file_as_a_problem(tmp_path, damage, problem):
-    result = bundle_validation(tmp_path, damage)
+def test_validate_reports_a_bad_side_file_as_a_problem(tmp_path, file, damage, problem):
+    result = bundle_validation(tmp_path, damage, file)
     assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
+
+
+# --- Parquet side files (the gaze layer's heatmaps) -------------------------------------------------------------
+
+HEATMAPS_FIXTURE = NODES / "gaze" / "gaze_heatmaps.parquet"   # written by vision.gaze's writer (make_fixture.py)
+VALIDATE = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
+
+
+def gaze_graph(video: Path, uses: str = "test.gaze@1.0.0", **config) -> dict:
+    doc = faces_graph(video)
+    doc["nodes"].append({"id": "gaze", "uses": uses, "inputs": {"video": "$inputs.video"}, "config": config})
+    return doc
+
+
+def test_every_side_file_is_described_by_the_bundle_schema():
+    """A JSON side file validates against #/$defs/side/<name>, and a Parquet one's columns are #/$defs/parquet/<name>
+    (what validate.py checks with pyarrow): a step that adds a side file adds both, and nothing there is unregistered."""
+    defs = json.loads(artifacts.BUNDLE_SCHEMA.read_text())["$defs"]
+    for fmt, where in (("json", "side"), ("parquet", "parquet")):
+        assert set(defs[where]) == {n for n, s in artifacts.SIDE_FILES.items() if s.format == fmt}
+    for name, side in artifacts.SIDE_FILES.items():
+        kind = artifacts.get(f"bundle.{name}@0.1")
+        assert (kind.side_of, kind.bundle_file, kind.kinds) == (side.layer, f"layers/{name}.{side.format}", side.kinds)
+        assert side.layer in artifacts.BUNDLE_LAYERS and kind.layer is None
+
+
+def test_the_parquet_side_type_checks_the_format_not_the_columns(tmp_path):
+    """The orchestrator has no pyarrow: a Parquet side file is checked by its PAR1 magic at both ends and a footer length
+    that fits. Its columns are the writing node's to test (nodes/vision/gaze/test_heatmaps.py) and validate.py's."""
+    check = artifacts.get("bundle.gaze_heatmaps@0.1").validate
+    good = HEATMAPS_FIXTURE.read_bytes()
+    path = tmp_path / "gaze_heatmaps.parquet"
+    path.write_bytes(good)
+    assert check(path) == []
+    footer = int.from_bytes(good[-8:-4], "little")
+    for bad, problem in [(b"", "0 bytes"), (b"PAR1PAR1", "8 bytes"), (b"{}" + good[2:], "starts with"),
+                         (good[:-4] + b"PARE", "ends with"), (good[:-1], "ends with"),
+                         (good[:-8] + (len(good)).to_bytes(4, "little") + b"PAR1", "does not fit"),
+                         (good[:-8] + (0).to_bytes(4, "little") + b"PAR1", "does not fit"),
+                         (good[:4] + good[-(footer + 7):], "does not fit"), (b'{"tracks": {}}', "not Parquet")]:
+        path.write_bytes(bad)
+        assert any(problem in p for p in check(path)), (bad[:16], check(path))
+
+
+def test_the_gaze_heatmaps_count_as_frames_when_a_step_reads_them_elsewhere():
+    """Gaze-LLE's heatmaps are computed from the whole frame: together a coarse picture of where people and things are
+    in it. A step that reads them on another machine needs the policy to allow frames (not faces: no face image or
+    geometry is in them)."""
+    from perception.backends.base import Backend
+    assert artifacts.get("bundle.gaze_heatmaps@0.1").kinds == ("frames",)
+    remote = type("Remote", (), {"remote": True})()
+    reader = type("Manifest", (), {"inputs": {"heatmaps": "bundle.gaze_heatmaps@0.1"}})()
+    assert Backend.sends(remote, reader) == ["frames"]
+
+
+def test_a_layers_parquet_side_file_goes_into_the_bundle_byte_for_byte(tmp_path):
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, gaze_graph(video))
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    side = out / "layers" / "gaze_heatmaps.parquet"
+    assert side.read_bytes() == HEATMAPS_FIXTURE.read_bytes()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["layers"]["gaze"]["side_files"] == [
+        {"file": "layers/gaze_heatmaps.parquet", "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size}]
+    layer = json.loads((out / "layers" / "gaze.json").read_text())
+    assert layer["raw"]["heatmaps"] | {"description": None} == {"file": "layers/gaze_heatmaps.parquet", "format": "parquet",
+                                                                 "description": None}
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("config, problem", [
+    ({"heatmaps_bytes": "not parquet at all"}, "output heatmaps (bundle.gaze_heatmaps@0.1): not Parquet"),
+    ({"heatmaps_format": "json"}, "raw.heatmaps: layers/gaze_heatmaps.parquet is not named as a json file"),
+    ({"heatmaps_file": "layers/gaze_heatmaps.json", "heatmaps_format": "json"},
+     "raw.heatmaps: gaze_heatmaps is a parquet side file, not json"),
+    ({"heatmaps_file": "layers/gaze_other.parquet"},
+     "raw.heatmaps: layers/gaze_other.parquet is not a side file of the gaze layer"),
+    ({"heatmaps_file": "layers/faces_mesh.json", "heatmaps_format": "json"},
+     "raw.heatmaps: layers/faces_mesh.json is not a side file of the gaze layer"),
+    ({"heatmaps_file": "../gaze_heatmaps.parquet"}, "$.raw.heatmaps.file"),
+    ({"heatmaps_format": "arrow"}, "$.raw.heatmaps.format"),
+])
+def test_a_bad_parquet_side_file_or_raw_pointer_is_not_published(tmp_path, config, problem):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, gaze_graph(video, **config))
+    task = coord._tasks(run_id)["gaze"]
+    assert status == "failed" and task["error_code"] == "schema", task
+    assert problem in task["error"], task["error"]
+
+
+def test_a_raw_pointer_at_a_side_file_its_node_did_not_write_is_not_exported(tmp_path):
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, gaze_graph(video, uses="test.gaze-no-side@1.0.0"))
+    assert status == "succeeded", coord._tasks(run_id)
+    with pytest.raises(SystemExit, match=r"points at layers/gaze_heatmaps.parquet \(raw.heatmaps.file\)"):
+        export.bundle(coord, run_id, tmp_path / "bundle")
+
+
+def gaze_bundle(tmp_path, damage, file) -> Path:
+    """An exported gaze bundle after `damage(path of file)`, with the manifest's checksums updated."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, _ = run(coord, gaze_graph(video))
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    damage(out / file)
+    manifest = json.loads((out / "manifest.json").read_text())
+    for entry in manifest["layers"].values():
+        for f in [entry, *entry.get("side_files", [])]:
+            f.update(sha256=artifacts.sha256_file(out / f["file"]), bytes=(out / f["file"]).stat().st_size)
+    (out / "manifest.json").write_text(json.dumps(manifest))
+    return out
+
+
+HEATMAPS, GAZE = "layers/gaze_heatmaps.parquet", "layers/gaze.json"
+
+
+@pytest.mark.parametrize("file, damage, problem", [
+    (HEATMAPS, lambda p: p.write_bytes(p.read_bytes()[:-1]), "gaze_heatmaps.parquet: not Parquet"),
+    (HEATMAPS, lambda p: p.write_bytes(p.read_bytes()[:4] + bytes(64) + p.read_bytes()[68:]), "not readable as Parquet"),
+    (GAZE, _with(lambda d: d["tracks"][0]["samples"][1].update(t=0.25)), "does not match the layer's samples"),
+    (GAZE, _with(lambda d: d["tracks"][0]["samples"].pop()), "does not match the layer's samples: 2 rows for 1 samples"),
+    (GAZE, _with(lambda d: d["tracks"][0].update(face="face:1")), "does not match the layer's samples"),
+    (GAZE, _with(lambda d: d["raw"]["heatmaps"].update(file="layers/gaze_other.parquet")),
+     "raw.heatmaps.file layers/gaze_other.parquet is not one of the layer's side files"),
+    (GAZE, _with(lambda d: d["raw"]["heatmaps"].update(format="json")),
+     "raw.heatmaps.file layers/gaze_heatmaps.parquet is not a json file"),
+    (GAZE, _with(lambda d: d["raw"]["heatmaps"].pop("description")), "gaze: $.raw.heatmaps"),
+    # a sample with no time is the schema's error to report, not a crash sorting the samples for the rows check
+    (GAZE, _with(lambda d: d["tracks"][0]["samples"][1].pop("t")), "gaze: $.tracks[0].samples[1]: 't' is a required"),
+])
+def test_validate_reports_a_bad_parquet_side_file_as_a_problem(tmp_path, file, damage, problem):
+    out = gaze_bundle(tmp_path, damage, file)
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
+
+
+def test_validate_without_pyarrow_says_it_skipped_the_parquet_content_check(tmp_path):
+    """pyarrow is validate.py's dev dependency: without it the bundle can still be valid, but the output says the
+    Parquet columns were not checked rather than passing in silence. Parquet's magic is checked either way."""
+    out = gaze_bundle(tmp_path, lambda p: None, HEATMAPS)
+    bare = ["uv", "run", "--no-project", "--with", "jsonschema>=4.23", "--with", "referencing>=0.35",
+            "python", "-I", str(VALIDATE), str(out)]
+    result = subprocess.run(bare, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "note: gaze: layers/gaze_heatmaps.parquet: Parquet content not checked (pyarrow is not installed" in result.stdout
+    assert "1 check skipped" in result.stdout
+    (out / HEATMAPS).write_bytes((out / HEATMAPS).read_bytes()[:-1])
+    manifest = json.loads((out / "manifest.json").read_text())
+    manifest["layers"]["gaze"]["side_files"][0].update(sha256=artifacts.sha256_file(out / HEATMAPS),
+                                                       bytes=(out / HEATMAPS).stat().st_size)
+    (out / "manifest.json").write_text(json.dumps(manifest))
+    result = subprocess.run(bare, capture_output=True, text=True)
+    assert result.returncode == 1 and "gaze_heatmaps.parquet: not Parquet" in result.stdout, result.stdout
 
 
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])

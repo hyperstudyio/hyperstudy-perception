@@ -63,6 +63,9 @@ crops/, keyframes/   small images for review (optional)
   the file on first open and checks the hash.
 - Large per-frame arrays (face landmarks and mesh, per-frame scores) move to Arrow/Parquet side files once films
   are long; the JSON keeps pointers. The 2-minute panel clip's per-frame face data was already ~14 MB of JSON.
+  Since 2026-10-27 every step keeps its model's full per-sample output in side files beside its layer (the layer's
+  `raw` pointers), JSON when small and Parquet for large arrays; the gaze heatmaps were the first Parquet one
+  (schema/README.md, "Side files").
 - Every record carries its licence mode, so a commercial deployment can refuse academic-only layers.
 - Corrections file: `perception-corrections/1` (already used by the prototype): video sha256, bundle version, ops.
 
