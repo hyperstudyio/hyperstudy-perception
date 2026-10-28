@@ -242,6 +242,11 @@ class Side:
 # translation, blendshapes, mesh depth): face geometry and expression, no identity vector, so faces. The faces untracked
 # file holds every face py-feat detected that tracking left out, with all of py-feat's values for it, its ArcFace
 # embedding among them (to revisit clustering as well as tracking): faces and embeddings, like faces_embeddings.
+# The gestures evidence is every hand sample's rule measurements: counts of hand keypoints near the mouth or on the face,
+# each keypoint's distance to the mouth in face sizes, the face box's side, finger ratios, the wrist's rise over the
+# shoulder, and the face or object track pointed at. Scalars about the hand's pose relative to the face and body, with
+# no landmark, face box position, pixel or embedding: the kinds of the hands and bodies layers (none), whose keypoints
+# place the hand and the head far more precisely than these distances do.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -257,6 +262,7 @@ SIDE_FILES: dict[str, Side] = {
     "sounds_queries": Side("sounds", ("audio",), "parquet"),
     "bodies_scores": Side("bodies", (), "parquet"),
     "bodies_duplicates": Side("bodies", (), "parquet"),
+    "gestures_evidence": Side("gestures", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

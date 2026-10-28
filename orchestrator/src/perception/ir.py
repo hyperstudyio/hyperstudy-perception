@@ -178,7 +178,8 @@ def compile_graph(doc: dict, registry: Registry) -> Graph:
         for name, want in m.inputs.items():
             text = n.inputs.get(name)
             if text is None:
-                problems.append(f"node {n.id}: input {name!r} ({want}) is not connected")
+                if name not in m.optional_inputs:   # an optional one left out: the node runs without it
+                    problems.append(f"node {n.id}: input {name!r} ({want}) is not connected")
                 continue
             ref = parse_ref(text)
             if ref is None:

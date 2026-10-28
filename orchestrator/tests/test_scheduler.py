@@ -96,6 +96,27 @@ def test_graph_errors_are_all_reported(tmp_path, rec):
     assert "no node test.work@9.0.0 (available: test.work@1.0.0)" in text
 
 
+def test_an_optional_input_may_be_left_unconnected_and_the_node_runs_without_it(tmp_path, rec):
+    coord = coordinator(tmp_path)
+    optional = lambda **inputs: {"id": "c", "uses": "test.optional@1.0.0", "inputs": inputs, "config": {"record_dir": rec}}
+    nodes = [work("a", record_dir=rec), work("b", record_dir=rec, add=10)]
+    run_id, status = run(coord, graph_doc(tmp_path, nodes + [optional(a="$nodes.a.out")]))
+    assert status == "succeeded" and output(coord, run_id, "c") == {"value": 2}        # a's 1, plus its own 1
+    run_id, status = run(coord, graph_doc(tmp_path, nodes + [optional(a="$nodes.a.out", b="$nodes.b.out")]))
+    assert status == "succeeded" and output(coord, run_id, "c") == {"value": 12}       # connected, it is read
+    with pytest.raises(GraphError, match="input 'a' \\(json.v1\\) is not connected"):  # a required one still must be
+        compile_graph(graph_doc(tmp_path, nodes + [optional(b="$nodes.b.out")]), coord.registry)
+
+
+def test_an_optional_input_must_be_one_of_the_nodes_inputs():
+    from pydantic import ValidationError
+    from perception.manifests import Manifest
+    doc = {"id": "x", "version": "1.0.0", "inputs": {"a": "json.v1"}, "outputs": {"out": "json.v1"}, "runners": [{"kind": "self"}]}
+    assert Manifest.model_validate({**doc, "optional_inputs": ["a"]}).optional_inputs == ["a"]
+    with pytest.raises(ValidationError, match="optional_inputs: b is not one of this node's inputs"):
+        Manifest.model_validate({**doc, "optional_inputs": ["b"]})
+
+
 # --- running ----------------------------------------------------------------------------------------------------
 
 def test_independent_nodes_run_in_parallel_and_dependent_ones_wait(tmp_path, rec):

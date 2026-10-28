@@ -71,10 +71,22 @@ def coordinator(args) -> Coordinator:
     return Coordinator(Store(home()), registry(args), backends(), load_secrets())
 
 
-def only(doc: dict, chosen: list[str]) -> dict:
+def only(doc: dict, chosen: list[str], reg: Registry) -> dict:
     """The graph with just the chosen nodes and the nodes they need (their inputs' $nodes.X, transitively); graph outputs
-    of nodes left out go too. The app's stage picker: run part of a graph."""
+    of nodes left out go too. An optional input (the manifest's optional_inputs) does not make a node needed: it stays
+    connected when its node is chosen (or needed otherwise), and is dropped when it is not. The app's stage picker: run
+    part of a graph."""
     nodes = {n.get("id"): n for n in doc.get("nodes", [])}
+
+    def optional(node: dict) -> list[str]:
+        try:
+            return reg.get(node.get("uses", "")).optional_inputs
+        except KeyError:   # an unknown node: compile_graph reports it
+            return []
+
+    def node_of(ref) -> str | None:
+        return ref.split(".")[1] if isinstance(ref, str) and ref.startswith("$nodes.") else None
+
     keep, todo = set(), [c for item in chosen for c in item.split(",") if c]
     while todo:
         name = todo.pop()
@@ -83,11 +95,15 @@ def only(doc: dict, chosen: list[str]) -> dict:
         if name in keep:
             continue
         keep.add(name)
-        for ref in nodes[name].get("inputs", {}).values():
-            if isinstance(ref, str) and ref.startswith("$nodes."):
-                todo.append(ref.split(".")[1])
-    outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (isinstance(v, str) and v.startswith("$nodes.") and v.split(".")[1] not in keep)}
-    return {**doc, "nodes": [n for n in doc["nodes"] if n.get("id") in keep], **({"outputs": outputs} if "outputs" in doc else {})}
+        todo += [node_of(ref) for key, ref in nodes[name].get("inputs", {}).items()
+                 if node_of(ref) and key not in optional(nodes[name])]
+    kept = []
+    for n in doc["nodes"]:
+        if n.get("id") in keep:
+            dropped = [k for k, ref in n.get("inputs", {}).items() if k in optional(n) and node_of(ref) and node_of(ref) not in keep]
+            kept.append({**n, "inputs": {k: v for k, v in n["inputs"].items() if k not in dropped}} if dropped else n)
+    outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (node_of(v) and node_of(v) not in keep)}
+    return {**doc, "nodes": kept, **({"outputs": outputs} if "outputs" in doc else {})}
 
 
 def graph_path(arg: str) -> Path:
@@ -140,7 +156,7 @@ def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs:
             raise GraphError([f"--place {name}: the graph has no node {name!r}"])
         node["place"] = place
     if chosen:   # after --place and --set: they may name a node --only leaves out (it goes, with them)
-        doc = only(doc, chosen)
+        doc = only(doc, chosen, reg)
     for item in inputs or []:   # --input name=path overrides a graph input's location
         name, _, value = item.partition("=")
         if name not in doc.get("inputs", {}):
@@ -243,7 +259,7 @@ def cmd_nodes(args):
         options, why = coord.placements(m)
         nodes.append({
             "ref": m.ref, "id": m.id, "version": m.version, "stage": m.stage or m.id, "description": m.description,
-            "inputs": m.inputs, "outputs": m.outputs, "config": m.config, "places": [p.label for p in options], "why_not": why,
+            "inputs": m.inputs, "optional_inputs": m.optional_inputs, "outputs": m.outputs, "config": m.config, "places": [p.label for p in options], "why_not": why,
             "cost": m.cost.model_dump() if m.cost else None, "uploads": list(m.privacy.external_upload), "secrets": m.secrets,
             "models": [x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for x in m.models],
             "gpu": m.resources.gpu})
