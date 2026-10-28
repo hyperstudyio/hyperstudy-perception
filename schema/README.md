@@ -20,6 +20,10 @@ layers/sounds_tags.parquet
 layers/sounds_queries.parquet
 layers/bodies_scores.parquet
 layers/bodies_duplicates.parquet
+layers/prosody_tracks.parquet
+layers/prosody_speakers.json
+layers/prosody_emotion.json
+layers/prosody_captions.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -71,6 +75,19 @@ which the layer keeps only the box; one row per sample) and `bodies_duplicates` 
 dropped as a second detection of a person, with the sample it duplicated, their head/shoulder distance, and its own
 box and 133 keypoints, so the de-duplication can be revisited). Both are the models' float32 values, unrounded; on a
 two-minute clip of five people (3136 samples, 28 duplicates) 18 KB and 34 KB, about 0.5 MB and 1.0 MB an hour.
+The prosody layer's: `prosody_tracks` (its `raw.tracks`: Praat's frames the measures and the contour come from, the
+first-pass pitch and the intensity every 10 ms over the clip, and per utterance its speaker's second-pass pitch over it,
+its harmonicity frames and its glottal pulses; unrounded; a row per frame, so every word's and utterance's pitch, HNR
+and jitter and every contour bin can be computed again; 0.47 MB for a two-minute clip, about 14 MB an hour),
+`prosody_speakers` (its `raw.speakers`: each speaker's pitch floor and ceiling and where they come from, the median the
+semitones are relative to, octave-jump counts, the settings, and the contour in Hz; 18 KB, about 0.5 MB an hour) and
+`prosody_emotion` (its `raw.emotion`: the Odyssey baseline's arousal, dominance and valence per utterance as float32,
+where the layer keeps 6 places, and the samples it read; 10 KB, about 0.3 MB an hour), all three the prosody node's;
+and the delivery captions node's `prosody_captions` (its `raw.captions`: per utterance the prompt sent to OpenAI and the
+raw replies of gpt-audio-1.5 and the tagger, with token usage, the instructions and prices in its metadata; Parquet
+for its text, about 4 MB an hour as JSON). The tracks and the
+speakers file are a dense measure of the voice (pitch and loudness every 10 ms): `audio`. The emotion file is three
+numbers an utterance: no kind. The captions file quotes the transcript: `transcript`.
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; faces_pyfeat, gaze_heatmaps and bodies_scores hold a row for each of

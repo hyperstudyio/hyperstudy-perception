@@ -211,6 +211,84 @@
               { "type": "null", "description": "A voice the pipeline has no centroid for (it pads that row with zeros)." }] }
           }
         }
+      },
+      "prosody_speakers": {
+        "description": "layers/prosody_speakers.json, a raw side file of the prosody layer (raw.speakers): the per-speaker pitch analysis behind the layer's semitones, and the 20 Hz contour in Hz. Pitch is Praat's To Pitch (ac) run twice: at first_pass_hz over the clip, then per speaker with a floor and ceiling of range_factors times the 35th and 65th percentiles of the first pass's voiced frames in that speaker's words (or first_pass_hz for a speaker with under min_voiced_frames of them). Semitones are 12 log2(f0 / median_hz), median_hz as stored (to 0.1 Hz). Speakers are the layer's names (contour.speakers).",
+        "type": "object",
+        "required": ["model", "pitch", "settings", "speakers", "contour"],
+        "properties": {
+          "model": { "type": "string", "description": "Parselmouth and Praat versions." },
+          "pitch": { "type": "string", "description": "The pitch method." },
+          "settings": { "type": "object", "description": "The analysis settings (pitch step, first-pass range, range factors, final-movement window and threshold, pause minimum, intensity minimum pitch, contour step, word cap, prominence)." },
+          "speakers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["floor_hz", "ceiling_hz", "range_source", "median_hz", "voiced_s", "utterances", "octave_jumps", "octave_jumps_first_pass"],
+              "properties": {
+                "floor_hz": { "type": "number", "description": "The second pass's pitch floor." },
+                "ceiling_hz": { "type": "number", "description": "The second pass's pitch ceiling." },
+                "range_source": { "type": "string", "description": "speaker (from their first-pass frames) or default (too little voiced speech)." },
+                "median_hz": { "type": ["number", "null"], "description": "Median second-pass F0 over the speaker's words, to 0.1 Hz: the semitones' reference. Null with no voiced frame in their words." },
+                "voiced_s": { "type": "number", "description": "Seconds of voiced second-pass frames in their words." },
+                "utterances": { "type": "integer", "minimum": 0 },
+                "octave_jumps": { "$ref": "#/$defs/side/prosody_speakers/$defs/jumps", "description": "In the second pass." },
+                "octave_jumps_first_pass": { "$ref": "#/$defs/side/prosody_speakers/$defs/jumps" }
+              }
+            }
+          },
+          "contour": {
+            "type": "object",
+            "required": ["step", "t0", "speakers", "f0_hz"],
+            "properties": {
+              "step": { "type": "number" },
+              "t0": { "type": "number" },
+              "speakers": { "type": "array", "items": { "type": "string" }, "description": "As the layer's contour.speakers." },
+              "f0_hz": { "type": "array", "items": { "type": ["number", "null"] }, "description": "Per bin, the median second-pass F0 (Hz, to 0.1) of the speaker whose utterance covers it; the layer's f0_st is it in semitones re that speaker's median_hz." }
+            }
+          }
+        },
+        "$defs": {
+          "jumps": {
+            "type": "object",
+            "required": ["pairs", "share_gt_12st", "n_gt_12st"],
+            "description": "10 ms steps between two voiced frames in the speaker's words, and how many jump more than an octave.",
+            "properties": {
+              "pairs": { "type": "integer", "minimum": 0 },
+              "share_gt_12st": { "type": ["number", "null"] },
+              "n_gt_12st": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      },
+      "prosody_emotion": {
+        "description": "layers/prosody_emotion.json, a raw side file of the prosody layer (raw.emotion): the speech emotion model's (the Odyssey 2024 baseline's) raw output per utterance, which the layer keeps to 6 places under emotion.dimensional_odyssey, and the samples of decode's audio it read (from the utterance's start to its analysed end, the words capped at 1.2 s each), normalised as input_norm says.",
+        "type": "object",
+        "required": ["model", "outputs", "rate", "min_samples", "input", "input_norm", "utterances"],
+        "properties": {
+          "model": { "type": "string" },
+          "outputs": { "type": "array", "items": { "type": "string" }, "description": "The order of values: arousal, dominance, valence." },
+          "rate": { "type": "integer", "description": "Samples per second." },
+          "min_samples": { "type": "integer", "description": "A clip shorter than this has no output (null values; the layer's emotion is then empty)." },
+          "input": { "type": "string" },
+          "input_norm": { "type": "object", "required": ["mean", "std", "epsilon"], "description": "The model's input is (x - mean) / (std + epsilon), x the samples as int16 / 32768.",
+                          "properties": { "mean": { "type": "number" }, "std": { "type": "number" }, "epsilon": { "type": "number" } } },
+          "utterances": {
+            "type": "array",
+            "description": "In the layer's utterance order.",
+            "items": {
+              "type": "object",
+              "required": ["utt", "samples", "values"],
+              "properties": {
+                "utt": { "$ref": "#/$defs/id/utt" },
+                "samples": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2, "description": "[a, b): the samples read." },
+                "values": { "oneOf": [
+                  { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "The float32 outputs, unrounded, in outputs order." },
+                  { "type": "null", "description": "A clip under min_samples." }] }
+              }
+            }
+          }
+        }
       }
     },
     "parquet": {
@@ -292,6 +370,34 @@
           { "name": "dist", "arrow": "float", "description": "The median distance between the two detections' head and shoulder joints visible in both, over the smaller box's sqrt(area): below duplicate_head_dist." },
           { "name": "box", "arrow": "fixed_size_list<element: float not null>[4]", "description": "The detection's box [x, y, w, h] in source pixels." },
           { "name": "kpts", "arrow": "fixed_size_list<element: float not null>[399]", "description": "RTMW's 133 keypoints for this box, in the layer's keypoint_names order, each x, y (source pixels), score (the layer's scale)." }
+        ]
+      },
+      "prosody_tracks": {
+        "description": "layers/prosody_tracks.parquet, a raw side file of the prosody layer (raw.tracks): Praat's frames (Parselmouth), of which the layer keeps per-word and per-utterance summaries and the 20 Hz contour. Rows in this order: track pitch_first_pass (every 10 ms frame of the clip, To Pitch (ac) at 75-600 Hz, the pass that sets each speaker's range), intensity (every 10 ms frame of the clip, To Intensity at 75 Hz), then per utterance in the layer's order: pitch (its speaker's second-pass frames from its start to its analysed end, both included: every frame its words', its own and its contour bins' pitch is computed from), harmonicity (To Harmonicity (cc) on its audio: hnr_db is the mean of its frames above -200) and pulses (the glottal pulses of To PointProcess (periodic, cc) on its audio, from which jitter is computed). Unrounded. Columns are not nullable.",
+        "columns": [
+          { "name": "track", "arrow": "string", "description": "pitch_first_pass, intensity, pitch, harmonicity or pulses." },
+          { "name": "utt", "arrow": "int32", "description": "The utterance's number N (utt:N) for pitch, harmonicity and pulses; -1 for the clip-wide tracks." },
+          { "name": "speaker", "arrow": "int32", "description": "The utterance's speaker, an index into the layer's contour.speakers (whose pitch track and range it is); -1 for the clip-wide tracks." },
+          { "name": "t", "arrow": "double", "description": "Seconds from the audio's first sample: the frame's centre, or the pulse's time." },
+          { "name": "value", "arrow": "double", "description": "pitch: F0 in Hz, 0 where unvoiced (Praat's); intensity: dB (Praat floors silence at -300); harmonicity: dB, -200 where Praat finds no periodicity; pulses: 0." },
+          { "name": "strength", "arrow": "double", "description": "pitch: the selected candidate's strength (autocorrelation); 0 for the other tracks." }
+        ]
+      },
+      "prosody_captions": {
+        "description": "layers/prosody_captions.parquet, a raw side file of the prosody layer (raw.captions), written by the delivery captions step: per utterance, what was sent to the OpenAI API (the prompt; the snippet's audio is not kept, only its times) and what came back, raw, of which the layer keeps captions.gpt (the parsed description, tags and emphasized_words, the tagger's tags_from_text, and the costs). The file's metadata holds, as JSON under request, what every call shares: model, tagger, context_s, rate, prices_usd_per_mtok, tags (the vocabulary by group), tag_notes, instructions and tagger_instructions (the system prompts), caption_schema and tag_schema. One row per utterance, in the layer's order. Captions are sampled: a rerun gives others. Columns are not nullable.",
+        "columns": [
+          { "name": "utt", "arrow": "string", "description": "The utterance (utt:N)." },
+          { "name": "snippet_start", "arrow": "double", "description": "Start of the audio sent, in seconds: the utterance's start less context_s, or 0." },
+          { "name": "snippet_end", "arrow": "double", "description": "End of the audio sent: its analysed end plus context_s, or the clip's end." },
+          { "name": "prompt", "arrow": "string", "description": "The user text sent with the audio." },
+          { "name": "caption_model", "arrow": "string", "description": "The model that answered the caption call, as the API names it." },
+          { "name": "caption_finish_reason", "arrow": "string", "description": "Its finish reason." },
+          { "name": "caption_arguments", "arrow": "string", "description": "Its function call's arguments, as returned: JSON with description, tags and emphasized_words." },
+          { "name": "caption_usage", "arrow": "string", "description": "The API's usage object for the call, as JSON (prompt, audio and completion tokens)." },
+          { "name": "tagger_model", "arrow": "string", "description": "The model that answered the tagger call." },
+          { "name": "tagger_finish_reason", "arrow": "string", "description": "Its finish reason." },
+          { "name": "tagger_content", "arrow": "string", "description": "Its reply, as returned: JSON with tags (the layer's tags_from_text)." },
+          { "name": "tagger_usage", "arrow": "string", "description": "The API's usage object for the call, as JSON." }
         ]
       },
       "faces_pyfeat": {
@@ -584,7 +690,8 @@
             "additionalProperties": { "type": "object", "required": ["model", "licence_mode"],
               "properties": { "model": { "type": "string" }, "licence_mode": { "$ref": "#/$defs/licenceMode" } } } },
           "utterances": { "type": "array", "items": { "type": "object", "required": ["utt"],
-            "properties": { "utt": { "$ref": "#/$defs/id/utt" }, "speaker": { "type": ["string", "null"] },
+            "properties": { "utt": { "$ref": "#/$defs/id/utt" }, "speaker": { "type": ["string", "null"], "description": "Whose pitch range and median the utterance is measured against: a person's label (Person C), or a diarized voice (SPEAKER_00, or off-screen SPEAKER_00)." },
+              "speaker_source": { "type": ["string", "null"], "description": "Where the speaker comes from. The pipeline: asd_face or asd_voice_link (the speakers layer's person, via LR-ASD's speaking face or the voice's link), offscreen_voice (the speakers layer predicts an off-screen voice), diarized_voice (a speaking face with no person). Bake-off bundles: hand_label, lrasd_link, ..." },
               "measures": { "type": "object" },
               "words": { "type": "array" },
               "emotion": { "type": "object", "description": "Per emotion_models key: {arousal, valence, dominance} or categorical scores." },

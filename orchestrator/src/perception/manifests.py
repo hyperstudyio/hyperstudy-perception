@@ -54,8 +54,8 @@ class Cost(Strict):
     config value (the model), `usd` is a table keyed by that value and `by` names the config key."""
     usd: float | dict[str, float]                # per unit, an upper estimate
     by: str | None = None                        # the config key `usd` is keyed by
-    per: Literal["shot", "minute", "run"]
-    input: str | None = None                     # the input holding the units (shots layer; media for minutes)
+    per: Literal["shot", "utterance", "minute", "run"]
+    input: str | None = None                     # the input holding the units (shots layer; transcript layer for utterances; media for minutes)
 
     def unit_usd(self, config: dict) -> float:
         return self.usd[config[self.by]] if isinstance(self.usd, dict) else self.usd
@@ -117,11 +117,15 @@ class Manifest(Strict):
             if self.cost.input not in self.inputs:
                 raise ValueError(f"cost: per {self.cost.per} counts units in an input, but cost.input "
                                  f"{self.cost.input!r} is not one of this node's inputs ({', '.join(self.inputs) or 'none'})")
-            # what manifest_cost reads: the shots of a shots layer, or the duration of media.v1
+            # what manifest_cost reads: the shots of a shots layer, the utterances of a transcript layer, or the
+            # duration of media.v1
             kind = self.inputs[self.cost.input]
-            if (self.cost.per == "shot") != kind.startswith("bundle.shots@") or (self.cost.per == "minute") != (kind == "media.v1"):
+            if ((self.cost.per == "shot") != kind.startswith("bundle.shots@")
+                    or (self.cost.per == "utterance") != kind.startswith("bundle.transcript@")
+                    or (self.cost.per == "minute") != (kind == "media.v1")):
                 raise ValueError(f"cost: per {self.cost.per} cannot be counted in {self.cost.input} ({kind}); "
-                                 "shots come from a bundle.shots layer, minutes from media.v1")
+                                 "shots come from a bundle.shots layer, utterances from a bundle.transcript layer, "
+                                 "minutes from media.v1")
         return self
 
     @model_validator(mode="after")

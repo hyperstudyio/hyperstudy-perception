@@ -626,6 +626,27 @@ def test_a_cost_per_unit_must_name_the_input_it_counts():
     Manifest.model_validate({**doc, "cost": {"usd": 0.1, "per": "shot", "input": "shots"}})
     with pytest.raises(ValueError, match="per minute cannot be counted in shots"):
         Manifest.model_validate({**doc, "cost": {"usd": 0.1, "per": "minute", "input": "shots"}})
+    with pytest.raises(ValueError, match="per utterance cannot be counted in shots"):
+        Manifest.model_validate({**doc, "cost": {"usd": 0.1, "per": "utterance", "input": "shots"}})
+
+
+def test_a_cost_per_utterance_counts_the_transcript_layers_utterances(tmp_path):
+    """The prosody captions are billed per utterance: the estimate reserved is the price times the utterances of the
+    transcript layer the node reads, and a transcript cannot be counted in shots or minutes."""
+    from perception.manifests import Manifest
+    from perception.scheduler import manifest_cost
+    from perception.store import Artifact
+    doc = {"id": "x", "version": "1.0.0", "inputs": {"transcript": "bundle.transcript@0.1"}, "outputs": {},
+           "runners": [{"kind": "self", "entry": "node.py"}], "cost": {"usd": 0.008, "per": "utterance", "input": "transcript"}}
+    m = Manifest.model_validate(doc)
+    path = tmp_path / "transcript.json"
+    path.write_text(json.dumps({"layer": "transcript", "words": [], "voices": [],
+                                "utterances": [{"id": f"utt:{i}"} for i in range(86)]}))
+    got = manifest_cost(m, {}, {"transcript": Artifact(hash="0" * 64, shape="file", type="bundle.transcript@0.1", path=path)})
+    assert got == pytest.approx(0.688)
+    for per in ("shot", "minute"):
+        with pytest.raises(ValueError, match=f"per {per} cannot be counted in transcript"):
+            Manifest.model_validate({**doc, "cost": {"usd": 0.1, "per": per, "input": "transcript"}})
 
 
 def test_a_failed_attempt_is_charged_what_it_spent(tmp_path):
