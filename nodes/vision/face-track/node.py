@@ -4,11 +4,12 @@ py-feat Detectorv2 (RetinaFace + multitask model + ArcFace) on frames sampled at
 within each shot and clustered into people (tracking.py). Writes one crop per person (thumbnails.py: shortlisted by size and
 frontality, chosen on exposure, colour cast and sharpness) and one per track (its largest face), referenced from the
 layer as assets/crops/... Also writes the layer's side files (face_detail.py), for every track sample: in a bundle,
-layers/faces_detail.json (py-feat's 68 landmarks, action units, emotions, valence and arousal, head pose and gaze) and
-layers/faces_mesh.json (py-feat's 478-point face mesh).
+layers/faces_detail.json (py-feat's 68 landmarks, action units, emotions, valence and arousal, head pose and gaze),
+layers/faces_mesh.json (py-feat's 478-point face mesh) and layers/faces_embeddings.json (the ArcFace identity
+embeddings the tracks were clustered on).
 
 Licence: py-feat's code is MIT, but the Detectorv2 multitask weights are non-commercial and InsightFace-derived
-ArcFace weights are research-only, so this layer is academic-only.
+ArcFace weights are research-only, so this layer and its side files (the embeddings above all) are academic-only.
 """
 
 import multiprocessing
@@ -120,10 +121,13 @@ with Node() as node:
     try:
         detail = face_detail.side_file([[(r["t"], fex.loc[r["index"], detail_columns]) for r in t["rows"]] for t in tracks], aus)
         mesh = face_detail.mesh_file([[(r["t"], fex.loc[r["index"], face_detail.MESH].tolist()) for r in t["rows"]] for t in tracks])
+        # the vectors tracking.py clustered on (detection_rows read them from py-feat's Identity_1 ... Identity_512)
+        embeddings = face_detail.embeddings_file([[(r["t"], r["embedding"].tolist()) for r in t["rows"]] for t in tracks])
     except ValueError as e:   # a value JSON cannot hold (NaN)
         raise NodeError("internal", str(e)) from None
     node.write_json("detail", "faces_detail.json", detail)
     node.write_json("mesh", "faces_mesh.json", mesh)
+    node.write_json("embeddings", "faces_embeddings.json", embeddings)
 
     pairs = [{**p, "a": f"person:{p['a']}", "b": f"person:{p['b']}"} for p in person_pairs(tracks, labels, names)]
     node.write_json("faces", "faces.json", {
@@ -131,6 +135,6 @@ with Node() as node:
         "producer": node.producer(timings={"detect_s": detect_s, "thumbnails_s": thumbnails_s, "crops_s": crops_s}, device=device),
         "sample_fps": c["fps"], "angles": face_detail.ANGLES,
         "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": face_detail.reference(),
-        "mesh": face_detail.mesh_reference()})
+        "mesh": face_detail.mesh_reference(), "embeddings": face_detail.embeddings_reference()})
     node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures,
                decode_workers=workers)

@@ -158,6 +158,26 @@
               } } }
           }
         }
+      },
+      "faces_embeddings": {
+        "description": "layers/faces_embeddings.json, the faces layer's embeddings side file (its embeddings.file): the 512-d ArcFace identity embedding (InsightFace w600k_r50 weights, via py-feat Detectorv2) per face track sample, keyed by the layer's track ids, one entry per sample of that track in order; the vectors the layer's people and person_pairs were computed from. Identity data, and research-only (academic-only) weights, as for the faces layer.",
+        "type": "object",
+        "required": ["model", "dims", "normalised", "tracks"],
+        "properties": {
+          "model": { "type": "string", "description": "The embedding model." },
+          "dims": { "const": 512, "description": "Values per embedding." },
+          "normalised": { "type": "boolean", "description": "Whether each v is L2-normalised. py-feat's ArcFace output is not (false): normalise before taking cosine distances." },
+          "tracks": {
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/id/face" },
+            "additionalProperties": { "type": "array", "items": {
+              "type": "object", "required": ["t", "v"],
+              "properties": {
+                "t": { "$ref": "#/$defs/time" },
+                "v": { "type": "array", "items": { "type": "number" }, "minItems": 512, "maxItems": 512, "description": "The embedding, rounded to 4 decimal places." }
+              } } }
+          }
+        }
       }
     },
     "layerBase": {
@@ -256,6 +276,8 @@
           "detail": { "type": ["object", "null"], "required": ["file"], "properties": {
             "file": { "type": "string" }, "fields": { "type": "array", "items": { "type": "string" } } } },
           "mesh": { "type": ["object", "null"], "required": ["file"], "description": "Where the faces_mesh side file is.",
+            "properties": { "file": { "type": "string" } } },
+          "embeddings": { "type": ["object", "null"], "required": ["file"], "description": "Where the faces_embeddings side file is.",
             "properties": { "file": { "type": "string" } } }
         }
       },
