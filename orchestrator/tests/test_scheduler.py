@@ -1068,6 +1068,47 @@ def test_a_raw_pointer_at_a_side_file_its_node_did_not_write_is_not_exported(tmp
         export.bundle(coord, run_id, tmp_path / "bundle")
 
 
+def refined_gaze_graph(video: Path, uses: str = "test.gaze@1.0.0", **config) -> dict:
+    doc = gaze_graph(video, uses)
+    doc["nodes"].append({"id": "refine", "uses": "test.gaze-refine@1.0.0", "inputs": {"gaze": "$nodes.gaze.gaze"},
+                         "config": config})
+    return doc
+
+
+def test_a_refined_layer_keeps_the_side_files_its_upstream_writer_wrote(tmp_path):
+    """A node that refines a layer and keeps its raw pointers (audio.diarize writes asr's transcript again, with its
+    raw.tokens) is exported with the side files those pointers name, from the upstream node of that layer that wrote
+    them: the refined layer supersedes the upstream one, its side files go with it."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, refined_gaze_graph(video))
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    assert json.loads((out / "layers" / "gaze.json").read_text())["producer"]["stage"] == "test.gaze-refine"
+    side = out / "layers" / "gaze_heatmaps.parquet"
+    assert side.read_bytes() == HEATMAPS_FIXTURE.read_bytes()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["layers"]["gaze"]["side_files"] == [
+        {"file": "layers/gaze_heatmaps.parquet", "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size}]
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+def test_a_refined_layers_pointer_at_a_side_file_no_writer_of_it_wrote_is_not_exported(tmp_path):
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    run_id, status = run(coord, refined_gaze_graph(video, uses="test.gaze-no-side@1.0.0"))
+    assert status == "succeeded", coord._tasks(run_id)
+    with pytest.raises(SystemExit, match=r"the gaze layer from refine points at layers/gaze_heatmaps.parquet "
+                                         r"\(raw.heatmaps.file\), which neither refine nor the gaze writers upstream"):
+        export.bundle(coord, run_id, tmp_path / "bundle")
+
+
 def gaze_bundle(tmp_path, damage, file) -> Path:
     """An exported gaze bundle after `damage(path of file)`, with the manifest's checksums updated."""
     from perception import export

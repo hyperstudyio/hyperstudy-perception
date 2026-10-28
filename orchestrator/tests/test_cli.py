@@ -329,5 +329,5 @@ def test_models_list_gives_each_node_its_title_service_keys_and_choices_with_pri
     model = next(s for s in captions["settings"] if s["key"] == "model")
     assert model["value"] == "claude-haiku-5-5" and model["choices"] == ["claude-haiku-5-5", "claude-opus-5-5"]
     assert set(model["prices"]) == set(model["choices"]) and model["per"]
-    asr = next(n for n in out["nodes"] if n["node"] == "audio.asr@1.0.0")
+    asr = next(n for n in out["nodes"] if n["node"] == "audio.asr@1.1.0")
     assert asr["service"] is None and asr["secrets"] == []

@@ -10,6 +10,7 @@ layers/faces_detail.json      side files: the model output a layer does not draw
 layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
+layers/transcript_tokens.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -29,6 +30,10 @@ The gaze layer's: `gaze_heatmaps` (its `raw.heatmaps`: Gaze-LLE's 64x64 heatmap 
 keeps the peak, with the unrounded in-frame score; one row per sample; each map as uint8 relative to its own maximum,
 `floor(255 * heat / max)`, with that maximum as float32, so `(cell + 0.5) / 255 * max` is within `max / 510` of the
 model's value and the stored map's argmax is the layer's peak; about 0.9 KB a head, 2.4 MB for a two-minute clip).
+The transcript layer's: `transcript_tokens` (its `raw.tokens`: every subword token Parakeet returned, of which the
+layer keeps the words they merge into, with its vocabulary id, text, start and end, parakeet-mlx's entropy confidence
+as float32, its sentence, and the index of the layer word it is part of; one row per token; about 15 bytes a token,
+10 KB for a two-minute clip). Its kind is `transcript`, as the layer's.
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
@@ -78,7 +83,9 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    (`nodes/vision/gaze/heatmaps.py` and its tests are the pattern). Write rows in fixed-size groups as they come
    rather than holding a film's worth in memory.
 5. **Export and validate.** `perception export` copies every side file a layer's node wrote, byte for byte, lists it
-   under the layer's `side_files`, and stops if a pointer names a file that node did not write. validate.py checks
+   under the layer's `side_files`, and stops if a pointer names a file that node did not write. A node that refines a
+   layer and keeps its pointers (diarize writes asr's transcript again, keeping `raw.tokens`) is exported with the
+   side files those pointers name from the upstream writer of the layer that wrote them. validate.py checks
    pointers, checksums, JSON side schemas and Parquet magic; with pyarrow (its dev group, which `uv run` installs) it
    also reads each Parquet file's columns and rows, and without pyarrow it says it skipped that check.
 

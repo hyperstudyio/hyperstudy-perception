@@ -55,7 +55,7 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
             effective[i] = max([own[i], *(licence(u) for u in graph.nodes[i].upstream)], key=LICENCE_ORDER.index)
         return effective[i]
 
-    media, layers, asset_trees, writers, sides = None, {}, [], {}, {}
+    media, layers, refined, asset_trees, writers, sides = None, {}, {}, [], {}, {}
     for node_id, t in tasks.items():
         for name, a in json.loads(t["outputs"]).items():
             kind = artifacts.get(a["type"])
@@ -74,6 +74,7 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
         if len(last) != 1 or any(o is not last[0] and last[0][0] not in graph.descendants(o[0]) for o in ws):
             raise SystemExit(f"the {layer_name} layer is written by unrelated nodes: {', '.join(w[0] for w in ws)}")
         layers[layer_name] = last[0]
+        refined[layer_name] = [w[0] for w in ws if w is not last[0]]   # the writers it supersedes, all upstream of it
     if media is None:
         raise SystemExit("the run has no media.v1 artifact (a decode node): the bundle cannot name its video")
 
@@ -90,17 +91,26 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
         dest.write_text(json.dumps(doc, separators=(",", ":")))
         entries[name] = {"file": f"layers/{name}.json", "sha256": artifacts.sha256_file(dest), "bytes": dest.stat().st_size,
                          "licence_mode": licence(node_id), "stage": graph.nodes[node_id].manifest.stage or graph.nodes[node_id].manifest.id}
-        # its side files, byte for byte: those the node that wrote this layer wrote with it (a layer's ids are its own)
+        # its side files, byte for byte: those the node that wrote this layer wrote with it (a layer's ids are its own),
+        # and those it points at that an upstream writer of the layer wrote: a node that refines a layer and keeps its
+        # pointers (diarize keeps asr's raw.tokens) keeps the ids they index. The nearest such writer's, if several
+        copies = dict(sides.get((node_id, name), []))
+        for field, referenced in artifacts.side_pointers(doc):   # detail.file, ..., raw.<role>.file
+            if referenced in copies:
+                continue
+            upstream = [w for w in refined[name] if referenced in dict(sides.get((w, name), []))]
+            if not upstream:
+                by = (f"neither {node_id} nor the {name} writers upstream of it ({', '.join(refined[name])}) wrote"
+                      if refined[name] else f"{node_id} did not write")
+                raise SystemExit(f"the {name} layer from {node_id} points at {referenced} ({field}), which {by}")
+            nearest = next(w for w in upstream if not any(o in graph.descendants(w) for o in upstream))
+            copies[referenced] = dict(sides[(nearest, name)])[referenced]
         side_files = []
-        for file, src in sorted(sides.get((node_id, name), [])):
+        for file, src in sorted(copies.items()):
             side = out / file
             shutil.copyfile(src, side)
             side.chmod(0o644)
             side_files.append({"file": file, "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size})
-        for field, referenced in artifacts.side_pointers(doc):   # detail.file, ..., raw.<role>.file
-            if referenced not in {s["file"] for s in side_files}:
-                raise SystemExit(f"the {name} layer from {node_id} points at {referenced} ({field}), "
-                                 f"which {node_id} did not write")
         if side_files:
             entries[name]["side_files"] = side_files
     assets = []
