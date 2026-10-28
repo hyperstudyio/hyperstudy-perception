@@ -1268,7 +1268,9 @@ def test_two_exclusive_gpu_nodes_on_a_host_with_two_cards_run_together_each_on_i
            "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
            "nodes": [gpu("g1"), gpu("g2"), gpu("g3")]}
     run_id = start(coord, doc)
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    status = asyncio.run(coord.run(run_id))
+    t = coord._tasks(run_id)
+    assert status == "succeeded", {n: (x["state"], x["error_code"], x["error"], log_of(coord, run_id, n)[-1500:]) for n, x in t.items()}
     t = coord._tasks(run_id)
     first, second, third = sorted(t.values(), key=lambda x: x["started_at"])
     assert {first["gpu"], second["gpu"]} == {0, 1}                       # one on each card, at once
