@@ -10,6 +10,8 @@ layers/faces_detail.json      side files: the model output a layer does not draw
 layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
+layers/shots_scores.parquet
+layers/transcript_tokens.parquet
 layers/transcript_diarization.json
 layers/transcript_voice_embeddings.json
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
@@ -31,6 +33,16 @@ The gaze layer's: `gaze_heatmaps` (its `raw.heatmaps`: Gaze-LLE's 64x64 heatmap 
 keeps the peak, with the unrounded in-frame score; one row per sample; each map as uint8 relative to its own maximum,
 `floor(255 * heat / max)`, with that maximum as float32, so `(cell + 0.5) / 255 * max` is within `max / 510` of the
 model's value and the stored map's argmax is the layer's peak; about 0.9 KB a head, 2.4 MB for a two-minute clip).
+The shots layer's: `shots_scores` (its `raw.scores`: PySceneDetect AdaptiveDetector's numbers for every frame, of which
+the layer keeps the cuts: content_val, the hue, saturation, luma and edge deltas it is a weighted mean of, and
+adaptive_ratio, with the detector's parameters in the file's metadata; a cut is a frame whose adaptive_ratio and
+content_val reach adaptive_threshold and min_content_val, min_scene_len frames after the last, so the cuts can be
+re-thresholded from the file, and the node checks the stored scores give the layer's cuts exactly; one row per frame,
+about 32 B a frame, 113 KB for a two-minute clip, 3.4 MB an hour at 29.97 fps).
+The transcript layer's: `transcript_tokens` (its `raw.tokens`: every subword token Parakeet returned, of which the
+layer keeps the words they merge into, with its vocabulary id, text, start and end, parakeet-mlx's entropy confidence
+as float32, its sentence, and the index of the layer word it is part of; one row per token; about 15 bytes a token,
+10 KB for a two-minute clip). Its kind is `transcript`, as the layer's.
 The transcript layer's: `transcript_diarization` (its `raw.diarization`: pyannote's speaker turns, overlapping where two
 voices speak at once, from which each word takes the voice whose turns overlap it longest, and its exclusive turns, one
 voice at a time; times unrounded, so the turns give exactly the layer's voices; about 9 KB for a two-minute clip, 0.3 MB
@@ -38,15 +50,18 @@ an hour) and `transcript_voice_embeddings` (its `raw.voice_embeddings`: pyannote
 the centroid of that voice's WeSpeaker ResNet34 embeddings, not L2-normalised, to 4 decimal places; about 2 KB a voice).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
-of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
+of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples;
+transcript_tokens' word column indexes the transcript layer's words in order, each word spanning its first token's
+start to its last token's end).
 
 The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's
 `allow_upload` and the run's consent to name `embeddings`. Like the faces layer, they come from InsightFace's ArcFace
 weights, which are licensed for non-commercial research only (`academic-only`). The gaze heatmaps hold no pixels, but
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
-image, landmarks or box). The voice embeddings are identity data too (a voiceprint): `embeddings`. The diarization's
-turns, like the transcript's voices, count as `transcript`.
+image, landmarks or box). The shots scores hold no kind: a few numbers a frame for how much the picture changed.
+The voice embeddings are identity data too (a voiceprint): `embeddings`. The diarization's turns, like the
+transcript's voices, count as `transcript`.
 
 ## Side files: keeping a model's full output
 
@@ -71,8 +86,8 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    for its content rather than its source: say why in the comment there.
 2. **Describe it** in `bundle-0.1.schema.json`: a JSON one as a schema at `#/$defs/side/<name>`, which the orchestrator
    validates every output against; a Parquet one as its columns at `#/$defs/parquet/<name>` (name, Arrow type as
-   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, which
-   validate.py then checks). A test fails while a registered side file is not described, or a described one is not
+   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, or
+   `per_word: true` when its `word` column indexes a transcript layer's words, which validate.py then checks). A test fails while a registered side file is not described, or a described one is not
    registered.
 3. **Write it** from the node: declare an output of type `bundle.<name>@0.1` in its manifest, write the file
    (`node.write_json`, or `node.path` and your Parquet writer), and put the `raw` pointer in the layer. Bump the node's
@@ -86,7 +101,9 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    (`nodes/vision/gaze/heatmaps.py` and its tests are the pattern). Write rows in fixed-size groups as they come
    rather than holding a film's worth in memory.
 5. **Export and validate.** `perception export` copies every side file a layer's node wrote, byte for byte, lists it
-   under the layer's `side_files`, and stops if a pointer names a file that node did not write. validate.py checks
+   under the layer's `side_files`, and stops if a pointer names a file that node did not write. A node that refines a
+   layer and keeps its pointers (diarize writes asr's transcript again, keeping `raw.tokens`) is exported with the
+   side files those pointers name from the upstream writer of the layer that wrote them. validate.py checks
    pointers, checksums, JSON side schemas and Parquet magic; with pyarrow (its dev group, which `uv run` installs) it
    also reads each Parquet file's columns and rows, and without pyarrow it says it skipped that check.
 

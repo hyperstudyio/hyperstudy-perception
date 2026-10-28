@@ -3,7 +3,9 @@ name = "perception-env-core"
 version = "0.1.0"
 description = "CPU nodes: decoding, shots, keyframes, audio extraction (FFmpeg through PyAV's wheels: none needed on the machine)"
 requires-python = ">=3.12,<3.13"
-dependencies = ["perception-node", "scenedetect==0.7.2", "av==16.1.0", "pillow==13.0.0"]
+# pyarrow writes the shot scores side file (nodes/core/decode/shot_scores.py). Pinned exactly: its version names itself
+# in the file's footer, so the same scores are the same bytes only on the same pyarrow.
+dependencies = ["perception-node", "scenedetect==0.7.2", "av==16.1.0", "pillow==13.0.0", "pyarrow==26.0.0"]
 
 [tool.uv]
 package = false

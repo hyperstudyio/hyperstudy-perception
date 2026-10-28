@@ -225,6 +225,32 @@
           { "name": "max", "arrow": "float", "description": "The heatmap's largest value, the scale of heat: a sigmoid's, in [0, 1] in float32 (0 only for a map that is all zeros, whose cells are all 0)." },
           { "name": "heat", "arrow": "fixed_size_binary[4096]", "description": "The 64x64 heatmap over the whole frame as uint8, row-major: byte 64 * row + col is the cell whose centre is ((col + 0.5) / 64 * width, (row + 0.5) / 64 * height) in source pixels." }
         ]
+      },
+      "shots_scores": {
+        "description": "layers/shots_scores.parquet, the shots layer's raw side file (raw.scores): what PySceneDetect's AdaptiveDetector computed for every frame, of which the layer keeps only the cuts. One row per frame the detector scored, in order. A cut is a frame, not among the first or last window_width, with adaptive_ratio >= adaptive_threshold and content_val >= min_content_val, at least min_scene_len frames after the previous cut (or the first frame), counting frames as round(seconds between their t * frame_rate); the layer's shots start at the cuts (t to 3 places). The detector's parameters are the file's metadata under the key detector, as JSON: adaptive_threshold, min_content_val, min_scene_len (frames), window_width, weights (of the deltas in content_val), luma_only, kernel_size (of the edge dilation), frame_size (the downscaled frame it scored, [width, height]) and frame_rate. What the detector does not compute is 0: the first frame's content_val and deltas (it has no frame before it, and the detector scores it 0) and the adaptive_ratio of the first and last window_width frames (no full window around them; none can be a cut). Columns are not nullable.",
+        "columns": [
+          { "name": "frame", "arrow": "int32", "description": "The frame's index among those the detector scored, from 0." },
+          { "name": "t", "arrow": "double", "description": "The frame's time in seconds, as PySceneDetect places it (its OpenCV position, to the microsecond)." },
+          { "name": "content_val", "arrow": "double", "description": "The frame's score: the weighted mean of the deltas (weights in the metadata; by default hue, saturation and luma equally, edges not at all)." },
+          { "name": "delta_hue", "arrow": "double", "description": "Mean absolute difference of the HSV hue channel from the frame before, in 8-bit levels." },
+          { "name": "delta_sat", "arrow": "double", "description": "Mean absolute difference of the HSV saturation channel from the frame before, in 8-bit levels." },
+          { "name": "delta_lum", "arrow": "double", "description": "Mean absolute difference of the HSV value (luma) channel from the frame before, in 8-bit levels." },
+          { "name": "delta_edges", "arrow": "double", "description": "Mean absolute difference of the dilated Canny edge maps (0 or 255 a pixel) from the frame before." },
+          { "name": "adaptive_ratio", "arrow": "double", "description": "content_val over the mean content_val of the window_width frames on each side, capped at 255 (255 when that mean is 0 and content_val >= min_content_val, 0 when the mean is 0 and it is not)." }
+        ]
+      },
+      "transcript_tokens": {
+        "description": "layers/transcript_tokens.parquet, the transcript layer's raw side file (raw.tokens): every subword token Parakeet TDT returned (parakeet-mlx 0.5.3, greedy decoding), of which the layer keeps only the words they merge into and those words' times. One row per token, in time order. A token whose text starts with a space starts a word; the others extend it, never across a sentence. Greedy decoding has no alternative hypotheses. Columns are not nullable. Per word: the word column indexes the transcript layer's words in order, each word with a token, its start the first token's and its end the last token's (validate.py checks this).",
+        "per_word": true,
+        "columns": [
+          { "name": "id", "arrow": "int32", "description": "The token's id in Parakeet's 8192-token SentencePiece vocabulary." },
+          { "name": "text", "arrow": "string", "description": "The token's text, a leading space for SentencePiece's word boundary." },
+          { "name": "start", "arrow": "double", "description": "When the token was emitted, in seconds to 3 places: its encoder frame times 0.08 s." },
+          { "name": "end", "arrow": "double", "description": "start plus the token's duration as TDT predicts it (0 to 4 frames of 0.08 s), in seconds to 3 places. A word's start and end in the layer are its first token's start and its last token's end." },
+          { "name": "confidence", "arrow": "float", "description": "parakeet-mlx's confidence in [0, 1], as computed: 1 - H / ln(8193), H the entropy of the softmax over the vocabulary and the blank at the step that emitted the token. A sentence's confidence is the geometric mean of its tokens'." },
+          { "name": "sentence", "arrow": "int32", "description": "Parakeet's sentence: it splits the tokens at . ? and ! (counting from 0)." },
+          { "name": "word", "arrow": "int32", "description": "The index in the layer's words of the word the token is part of, or -1 for a token in no word (a word that would be only spaces)." }
+        ]
       }
     },
     "sidePointer": {
