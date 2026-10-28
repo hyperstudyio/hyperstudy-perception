@@ -54,8 +54,8 @@ class Cost(Strict):
     config value (the model), `usd` is a table keyed by that value and `by` names the config key."""
     usd: float | dict[str, float]                # per unit, an upper estimate
     by: str | None = None                        # the config key `usd` is keyed by
-    per: Literal["shot", "minute", "run"]
-    input: str | None = None                     # the input holding the units (shots layer; media for minutes)
+    per: Literal["shot", "utterance", "minute", "run"]
+    input: str | None = None                     # the input holding the units (shots layer; transcript layer for utterances; media for minutes)
 
     def unit_usd(self, config: dict) -> float:
         return self.usd[config[self.by]] if isinstance(self.usd, dict) else self.usd
@@ -99,6 +99,11 @@ class Manifest(Strict):
     description: str = ""
     stage: str | None = None                 # the bundle producer's stage name (default: the node id)
     inputs: dict[str, str] = Field(default_factory=dict)      # name -> artifact type
+    # inputs a graph may leave unconnected: the node runs without them (its request has no such input). `--only` does
+    # not pull in the node that feeds one, and drops the connection when it leaves that node out: gestures and gaze take
+    # the objects layer (pointing and gaze targets) when the run makes it, and run without it when the user leaves
+    # objects out. A graph that connects one makes the node wait for it (CompiledNode.optional_upstream)
+    optional_inputs: list[str] = Field(default_factory=list)
     outputs: dict[str, str]                                    # name -> artifact type
     config: dict[str, dict] = Field(default_factory=dict)     # name -> JSON Schema (with default)
     runners: list[Runner]
@@ -116,16 +121,30 @@ class Manifest(Strict):
     directory: Path = Field(default=Path("."), exclude=True)
 
     @model_validator(mode="after")
+    def _optional_inputs_are_inputs(self):
+        if unknown := [name for name in self.optional_inputs if name not in self.inputs]:
+            raise ValueError(f"optional_inputs: {', '.join(unknown)} is not one of this node's inputs "
+                             f"({', '.join(self.inputs) or 'none'})")
+        # the budget counts a billable node's units in its cost.input (plan, the reservation): it must be connected
+        if self.cost and self.cost.per != "run" and self.cost.input in self.optional_inputs:
+            raise ValueError(f"optional_inputs: {self.cost.input} holds the units cost counts (cost.input), so it cannot be optional")
+        return self
+
+    @model_validator(mode="after")
     def _cost_counts_an_input(self):
         if self.cost and self.cost.per != "run":
             if self.cost.input not in self.inputs:
                 raise ValueError(f"cost: per {self.cost.per} counts units in an input, but cost.input "
                                  f"{self.cost.input!r} is not one of this node's inputs ({', '.join(self.inputs) or 'none'})")
-            # what manifest_cost reads: the shots of a shots layer, or the duration of media.v1
+            # what manifest_cost reads: the shots of a shots layer, the utterances of a transcript layer, or the
+            # duration of media.v1
             kind = self.inputs[self.cost.input]
-            if (self.cost.per == "shot") != kind.startswith("bundle.shots@") or (self.cost.per == "minute") != (kind == "media.v1"):
+            if ((self.cost.per == "shot") != kind.startswith("bundle.shots@")
+                    or (self.cost.per == "utterance") != kind.startswith("bundle.transcript@")
+                    or (self.cost.per == "minute") != (kind == "media.v1")):
                 raise ValueError(f"cost: per {self.cost.per} cannot be counted in {self.cost.input} ({kind}); "
-                                 "shots come from a bundle.shots layer, minutes from media.v1")
+                                 "shots come from a bundle.shots layer, utterances from a bundle.transcript layer, "
+                                 "minutes from media.v1")
         return self
 
     @model_validator(mode="after")

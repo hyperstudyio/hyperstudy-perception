@@ -1,0 +1,29 @@
+id: audio.prosody-captions
+version: 1.0.0
+stage: prosody+captions
+title: Delivery captions
+service: OpenAI API
+description: How each utterance is said, in a sentence or three and tags from a fixed list (pitch, pace, loudness, emphasis, voice quality, emotion, attitude, hesitation, laughter), by gpt-audio-1.5 hearing it with a second of context; added to the prosody layer
+# the prosody node's layer, which it refines (export takes this one); the diarized transcript it was measured on (the
+# lines the prompts quote); decode's audio (the snippets)
+inputs: {audio: audio.wav.v1, transcript: bundle.transcript@0.1, prosody: bundle.prosody@0.1}
+# captions: layers/prosody_captions.parquet, every prompt and raw reply (captions_raw.py), pointed at with raw.captions
+outputs: {prosody: bundle.prosody@0.1, captions: bundle.prosody_captions@0.1}
+runners:
+  # envs/prosody, not envs/api: a change to envs/api's lock would rerun the shot captions (envs/prosody/pyproject.toml)
+  - {kind: native, env: envs/prosody, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 1, memory_gb: 1, gpu: none}
+# Sent to OpenAI, per utterance: its audio with up to 1 s of context on each side (16 kHz mono WAV), its transcript and
+# the lines before and after it. Never the whole clip. The tagger gets only the caption's text.
+privacy: {external_upload: [audio, transcript]}
+secrets: [OPENAI_API_KEY]
+# Upper estimate per utterance, gpt-audio-1.5 and the tagger together (measured in the bake-off at its prices: $0.0041
+# a mean OOO utterance, $0.0056 the dearest of OOO's and NES's 102; about $0.35 for OOO's 86)
+cost: {usd: 0.008, per: utterance, input: transcript}
+models:
+  - {id: gpt-audio-1.5, licence: "OpenAI API terms (outputs owned by the user; audio sent to OpenAI)", licence_mode: api-terms}
+  - {id: gpt-5.4-mini, licence: "OpenAI API terms (text only)", licence_mode: api-terms}
+  # the layer it refines, recorded as the prosody node records it (no source: this node downloads nothing of them)
+  - {id: "Parselmouth 0.4.7 (Praat 6.1.38)", licence: "GPL-3.0 (Parselmouth and Praat)", licence_mode: needs-review}
+  - {id: 3loi/SER-Odyssey-Baseline-WavLM-Multi-Attributes, licence: "MIT (code and weights, MSP-UTD / 3loi); trained on MSP-Podcast (academic-only data licence)", licence_mode: needs-review}
+  - {id: microsoft/wavlm-large, licence: "MIT (Microsoft); only its config.json", licence_mode: commercial-ok}

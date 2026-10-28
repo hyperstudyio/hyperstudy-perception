@@ -1,0 +1,37 @@
+id: audio.prosody
+version: 1.0.0
+stage: prosody
+title: Prosody
+description: How each utterance is said, measured (pitch per speaker, rates, pauses, final movement, voice quality, word prominence; Parselmouth/Praat) and its speech emotion (arousal, dominance, valence; the Odyssey 2024 baseline), with a 20 Hz pitch contour
+# the diarized transcript (diarize's): its utterances are what the layer measures, by id; the speakers layer names
+# whose pitch range each is measured against
+inputs: {audio: audio.wav.v1, transcript: bundle.transcript@0.1, speakers: bundle.speakers@0.1}
+# Beside the layer (prosody_layer.py, prosody_tracks.py): tracks, layers/prosody_tracks.parquet, Praat's frames the
+# measures come from; speakers, layers/prosody_speakers.json, each speaker's pitch range and median and the contour in
+# Hz; emotion, layers/prosody_emotion.json, Odyssey's raw output per utterance. The layer points at all three with raw
+outputs: {prosody: bundle.prosody@0.1, tracks: bundle.prosody_tracks@0.1, speakers: bundle.prosody_speakers@0.1,
+          emotion: bundle.prosody_emotion@0.1}
+runners:
+  # Praat on the CPU, Odyssey (WavLM-large, float32) on the Apple GPU: 1.3 s, and 4.5 s to load and 5.7 s to run, for the
+  # 119 s OOO clip on an M5 Max; Odyssey's outputs are the bake-off's exactly (its CPU path is within 5e-6 of them)
+  - {kind: native, env: envs/prosody, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # PyPI's torch 2.14 wheels for Linux are built for CUDA 13 (an NVIDIA driver >= 580). Not yet run on a GPU
+  - {kind: native, env: envs/prosody, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 3}
+  - {kind: native, env: envs/prosody, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 2, memory_gb: 4, gpu: shared}
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
+models:
+  # a program, not weights: from the environment (praat-parselmouth 0.4.7 on PyPI). GPL-3, used as a separate tool;
+  # its outputs are not covered, linking it into distributed software would be (the bake-off's licence note)
+  - {id: "Parselmouth 0.4.7 (Praat 6.1.38)", licence: "GPL-3.0 (Parselmouth and Praat)", licence_mode: needs-review}
+  - {id: 3loi/SER-Odyssey-Baseline-WavLM-Multi-Attributes,
+     source: "hf://3loi/SER-Odyssey-Baseline-WavLM-Multi-Attributes@00d0e12ba9bf957f5aeea36e8663c8c61cb50ac9/model.safetensors",
+     revision: 00d0e12ba9bf957f5aeea36e8663c8c61cb50ac9, size_gb: 1.27,
+     licence: "MIT (code and weights, MSP-UTD / 3loi); WavLM-large backbone MIT (Microsoft). Trained on MSP-Podcast, whose data licence is academic-only; whether that carries over to the weights is unresolved",
+     licence_mode: needs-review}
+  # only its config.json, to build the backbone the Odyssey checkpoint fills
+  - {id: microsoft/wavlm-large,
+     source: "hf://microsoft/wavlm-large@c1423ed94bb01d80a3f5ce5bc39f6026a0f4828c/config.json",
+     revision: c1423ed94bb01d80a3f5ce5bc39f6026a0f4828c, size_gb: 0.00001,
+     licence: "MIT (Microsoft); only its config.json: the weights are Odyssey's", licence_mode: commercial-ok}

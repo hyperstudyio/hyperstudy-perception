@@ -1,0 +1,33 @@
+[project]
+name = "perception-env-prosody"
+version = "0.1.0"
+description = "Prosody nodes: Parselmouth (Praat) measures, the Odyssey speech emotion baseline (torch), gpt-audio style captions (OpenAI API)"
+requires-python = ">=3.12,<3.13"
+# The bake-off's versions (tools/perception-bakeoff/prosody/uv.lock): torch, transformers, huggingface-hub, safetensors
+# and numpy as there (and as envs/gaze locks them), Parselmouth 0.4.7 (Praat 6.1.38) and the OpenAI SDK 2.54.0.
+# Its own environment, as in the bake-off, rather than envs/gaze, whose torch and transformers it shares:
+# - Parselmouth is GPL-3. Kept apart, no other node's environment ships GPL code (PLAN.md §4: used as a separate tool).
+# - An environment's lock is part of the cache key of every node that runs in it: adding Parselmouth and the OpenAI SDK
+#   to envs/gaze would invalidate the cached results of gaze, active speakers and objects (an API spend) for nothing.
+# The captions node (nodes/audio/prosody-captions) runs here too, for the same reason rather than in envs/api: a change
+# to that lock would rerun the shot captions.
+# On Linux PyPI's torch 2.14 wheels are built for CUDA 13 (an NVIDIA driver >= 580).
+# pyarrow writes the pitch tracks side file (nodes/audio/prosody/prosody_tracks.py). Pinned exactly: its version names
+# itself in the file's footer, so the same tracks are the same bytes only on the same pyarrow.
+dependencies = [
+  "perception-node",
+  "torch==2.14.1",
+  "transformers==5.20.2",
+  "huggingface-hub==2.3.0",
+  "safetensors==0.8.0",
+  "numpy==2.5.4",
+  "praat-parselmouth==0.4.7",
+  "openai==2.54.0",
+  "pyarrow==26.0.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+perception-node = { path = "../../sdk", editable = true }
