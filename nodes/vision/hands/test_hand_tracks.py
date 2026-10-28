@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hand_tracks import (HAND_BOX_PAD, KEYPOINTS, MIN_HAND_PX, SKELETON, body_indices, bodies_by_time, frame_hands,
-                         layer_hands, match_detections, propose, square_box, track_hands)
+from hand_tracks import (DETECTOR_SCORE, HAND_BOX_PAD, KEYPOINTS, MIN_HAND_PX, SKELETON, body_indices, bodies_by_time,
+                         frame_hands, layer_hands, match_detections, propose, square_box, track_hands)
 
 NAMES = json.loads((Path(__file__).parents[1] / "body-pose" / "keypoints.json").read_text())["names"]
 IDX = body_indices(NAMES)
@@ -51,8 +51,8 @@ class Fake:
 
 
 def stats():
-    return dict.fromkeys(("wrist_below_gate", "detector_below_gate", "detector_too_large", "detector_duplicate",
-                          "detector_linked", "detector_unlinked"), 0)
+    return dict.fromkeys(("wrist_below_gate", "detector_below_score", "detector_below_gate", "detector_too_large",
+                          "detector_duplicate", "detector_linked", "detector_unlinked"), 0)
 
 
 FRAME = np.zeros((H, W, 3), np.uint8)
@@ -108,21 +108,40 @@ def test_wrist_hands_then_detector_hands_linked_dropped_or_unlinked():
         ([1500, 600, 20, 60], 0.6),                            # narrower than MIN_HAND_PX
         ([100, 100, 600, 600], 0.5),                           # larger than half the frame height
     ])
-    s = stats()
-    hands = frame_hands(FRAME, [body], model, s)
+    model.detections.append(([1700, 600, 60, 60], 0.2))         # under DETECTOR_SCORE
+    s, record = stats(), []
+    hands = frame_hands(FRAME, [body], model, s, record)
     assert [(h["box_source"], h["side"], h["person"]) for h in hands] == [
         ("wrist", "left", {"body": "body:0", "face": "face:0"}), ("detector", "right", {"body": "body:0", "face": "face:0"}),
         ("detector", None, None)]
-    assert s == {"wrist_below_gate": 0, "detector_below_gate": 1, "detector_too_large": 1, "detector_duplicate": 1,
-                 "detector_linked": 1, "detector_unlinked": 1}
+    assert s == {"wrist_below_gate": 0, "detector_below_score": 1, "detector_below_gate": 1, "detector_too_large": 1,
+                 "detector_duplicate": 1, "detector_linked": 1, "detector_unlinked": 1}
     assert model.posed == [left, [880, 580, 60, 60], [1500, 200, 60, 60]]   # keypoints only for the hands kept
+    # the record: every detection in the detector's order, why it is or is not a hand, its wrist and its hand
+    assert [(d["box"], d["score"]) for d in record] == model.detections
+    assert [(d["reason"], d["wrist"]) for d in record] == [
+        ("duplicate", None), ("linked", ("body:0", "right")), ("unlinked", None), ("below_gate", None), ("too_large", None),
+        ("below_score", None)]
+    assert [d["hand"] for d in record] == [None, hands[1], hands[2], None, None, None]
+
+
+def test_a_detection_under_the_score_threshold_is_recorded_and_takes_no_part():
+    """The detector returns every box down to its NMS's 0.05; one under DETECTOR_SCORE is no hand, and does not drop a
+    lower box as its duplicate."""
+    body = propose(a_body(wrists={"left": (500, 600)}), IDX, THRESHOLD, W, H)
+    s, record = stats(), []
+    low = DETECTOR_SCORE - 1e-6
+    hands = frame_hands(FRAME, [body], Fake([([470, 570, 60, 60], low), ([472, 572, 60, 60], DETECTOR_SCORE)]), s, record)
+    assert [(h["box"], h["side"]) for h in hands] == [([472, 572, 60, 60], "left")]
+    assert [d["reason"] for d in record] == ["below_score", "linked"] and s["detector_below_score"] == 1
 
 
 def test_a_detector_box_on_a_wrist_that_already_has_its_hand_is_that_hand_again():
     body = propose(a_body(hands={"left": hand_at(500, 500)}, wrists={"left": (500, 600)}), IDX, THRESHOLD, W, H)
-    s = stats()
-    hands = frame_hands(FRAME, [body], Fake([([470, 580, 60, 60], 0.9)]), s)   # on the wrist, barely overlapping the hand box
+    s, record = stats(), []
+    hands = frame_hands(FRAME, [body], Fake([([470, 580, 60, 60], 0.9)]), s, record)   # on the wrist, barely overlapping the hand box
     assert len(hands) == 1 and s["detector_duplicate"] == 1
+    assert [(d["reason"], d["wrist"], d["hand"]) for d in record] == [("wrist_taken", ("body:0", "left"), None)]
 
 
 @pytest.mark.parametrize("dropped", [[0, 0, 1000, 1000],      # frame-sized (black frames, bokeh)
@@ -192,6 +211,8 @@ def test_linked_hands_continue_by_body_side_and_source_until_a_gap_or_a_cut():
     tracks = track_hands(frames)
     assert [(tr["shot"], tr["box_source"], [s["t"] for s in tr["samples"]]) for tr in tracks] == [
         ("shot:0", "wrist", [0.0, 0.125]), ("shot:0", "detector", [0.0]), ("shot:0", "wrist", [0.75]), ("shot:1", "wrist", [0.875])]
+    # each sample is the frame's hand it came from (by which the side file names a detection's sample)
+    assert tracks[1]["samples"][0]["hand"] is frames[0][2][1] and tracks[0]["samples"][1]["hand"] is frames[1][2][0]
 
 
 def test_unlinked_hands_continue_by_iou_with_a_track_of_the_same_side():

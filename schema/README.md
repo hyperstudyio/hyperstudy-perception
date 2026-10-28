@@ -20,6 +20,7 @@ layers/sounds_tags.parquet
 layers/sounds_queries.parquet
 layers/bodies_scores.parquet
 layers/bodies_duplicates.parquet
+layers/hands_detections.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -71,10 +72,18 @@ which the layer keeps only the box; one row per sample) and `bodies_duplicates` 
 dropped as a second detection of a person, with the sample it duplicated, their head/shoulder distance, and its own
 box and 133 keypoints, so the de-duplication can be revisited). Both are the models' float32 values, unrounded; on a
 two-minute clip of five people (3136 samples, 28 duplicates) 18 KB and 34 KB, about 0.5 MB and 1.0 MB an hour.
+The hands layer's: `hands_detections` (its `raw.detections`: every box the hand detector, RTMDet-nano hand, returned on
+every sampled frame, down to its own NMS's score of 0.05, with its float32 score and box unrounded, why it is or is not
+a hand of the layer (`below_score`, `below_gate`, `too_large`, `duplicate`, `wrist_taken`, `linked`, `unlinked`), the
+wrist the matching gave it and the layer sample it became, so the score threshold, the gates and the hand assignment
+can be revisited; with the bodies layer and shots the rows give the layer's hands again through the node's own
+matching and tracking, which the node checks; one row per detection, about 36 a frame of which 1 or 2 score at least
+the layer's 0.25: 32,222 rows, 0.58 MB for a two-minute clip, about 18 MB an hour at 8 frames a second).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; faces_pyfeat, gaze_heatmaps and bodies_scores hold a row for each of
-their layer's samples; every bodies_duplicates row names a sample of the bodies layer; transcript_tokens' word column
+their layer's samples; every bodies_duplicates row names a sample of the bodies layer; each of the hands layer's
+detector samples is named by exactly one hands_detections row, and no other sample is; transcript_tokens' word column
 indexes the transcript layer's words in order, each word spanning its first token's start to its last token's end).
 
 The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's
@@ -84,6 +93,8 @@ weights, which are licensed for non-commercial research only (`academic-only`). 
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
 image, landmarks or box). The shots scores hold no kind: a few numbers a frame for how much the picture changed.
+The hands detections hold no kind either, as the hands layer: boxes and scores (some low-scoring boxes lie on faces,
+with no pixels, landmarks or identity).
 The voice embeddings are identity data too (a voiceprint): `embeddings`. The diarization's turns, like the
 transcript's voices, count as `transcript`. The sounds tags and queries hold no samples, but they are a dense measure
 of the whole soundtrack (as the waveform is), speech classes included: a step that reads them elsewhere needs
@@ -114,7 +125,10 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    validates every output against; a Parquet one as its columns at `#/$defs/parquet/<name>` (name, Arrow type as
    pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, or
    `of_samples: true` when each row names one of them, which validate.py then checks; `track: {column, field}` when
-   its track column is not `face` holding the tracks' `face`, as bodies_scores' `body` holds their `id`; `per_word: true`
+   its track column is not `face` holding the tracks' `face`, as bodies_scores' `body` holds their `id`, with
+   `tracks` when the layer's list of tracks is not `tracks`, `none` the column's value in a row that names no sample,
+   and `covers: {field: value}` when every sample of the tracks with that value must be named by exactly one row (as
+   hands_detections' rows name the hands layer's detector samples); `per_word: true`
    when its `word` column indexes a transcript layer's words, which validate.py then checks). A test fails while a registered side file is not described, or a described one is not
    registered.
 3. **Write it** from the node: declare an output of type `bundle.<name>@0.1` in its manifest, write the file
