@@ -120,6 +120,9 @@ class Manifest(Strict):
         if unknown := [name for name in self.optional_inputs if name not in self.inputs]:
             raise ValueError(f"optional_inputs: {', '.join(unknown)} is not one of this node's inputs "
                              f"({', '.join(self.inputs) or 'none'})")
+        # the budget counts a billable node's units in its cost.input (plan, the reservation): it must be connected
+        if self.cost and self.cost.per != "run" and self.cost.input in self.optional_inputs:
+            raise ValueError(f"optional_inputs: {self.cost.input} holds the units cost counts (cost.input), so it cannot be optional")
         return self
 
     @model_validator(mode="after")

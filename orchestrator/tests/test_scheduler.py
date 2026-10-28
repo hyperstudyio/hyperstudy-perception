@@ -115,6 +115,11 @@ def test_an_optional_input_must_be_one_of_the_nodes_inputs():
     assert Manifest.model_validate({**doc, "optional_inputs": ["a"]}).optional_inputs == ["a"]
     with pytest.raises(ValidationError, match="optional_inputs: b is not one of this node's inputs"):
         Manifest.model_validate({**doc, "optional_inputs": ["b"]})
+    # a billable node's units are counted in its cost.input: left out, plan and the reservation would have none
+    billable = {**doc, "inputs": {"shots": "bundle.shots@0.1"}, "cost": {"usd": 0.01, "per": "shot", "input": "shots"}}
+    with pytest.raises(ValidationError, match="shots holds the units cost counts"):
+        Manifest.model_validate({**billable, "optional_inputs": ["shots"]})
+    assert Manifest.model_validate({**billable, "cost": {"usd": 0.01, "per": "run"}, "optional_inputs": ["shots"]})
 
 
 # --- running ----------------------------------------------------------------------------------------------------

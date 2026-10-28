@@ -42,10 +42,10 @@ class Context:
                  width: int, height: int):
         self.width, self.height = width, height
         names = bodies["keypoint_names"]
-        try:
-            self.body_idx = {n: names.index(n) for n in ("nose", "left_shoulder", "right_shoulder")}
-        except ValueError as e:
-            raise InputError(f"the bodies layer has no {e}") from None
+        wanted = ("nose", "left_shoulder", "right_shoulder")
+        if missing := [n for n in wanted if n not in names]:
+            raise InputError(f"the bodies layer has no {', '.join(missing)} keypoint")
+        self.body_idx = {n: names.index(n) for n in wanted}
         self.body_threshold = bodies["score_threshold"]
         self.bodies = {tr["id"]: {round(s["t"], 3): np.asarray(s["kpts"], dtype=float) for s in tr["samples"]}
                        for tr in bodies["tracks"]}

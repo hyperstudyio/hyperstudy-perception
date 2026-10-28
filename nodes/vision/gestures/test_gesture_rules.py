@@ -301,7 +301,7 @@ def test_the_layers_must_belong_together():
         Context([{**hands[0], "body": "body:7"}], bodies, faces, detail, None, W, H)
     with pytest.raises(InputError, match="face:5 is not in the faces layer"):
         Context([{**hands[0], "face": "face:5"}], bodies, faces, detail, None, W, H)
-    with pytest.raises(InputError, match="no 'nose'"):
+    with pytest.raises(InputError, match="no nose keypoint"):
         Context(hands, {**bodies, "keypoint_names": NAMES[1:]}, faces, detail, None, W, H)
     lonely = Context(hands, bodies, faces, detail, None, W, H)    # body:0 has no samples
     with pytest.raises(InputError, match="no sample at 0.0"):
