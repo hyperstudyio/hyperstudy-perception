@@ -531,6 +531,17 @@ def test_a_keep_a_host_never_finished_is_swept_after_a_day_and_one_under_way_is_
     assert not old.exists() and new.exists()
 
 
+def test_an_output_the_host_could_not_keep_says_why(tmp_path, host, capsys):
+    driver, root, there = finished(tmp_path, host, lambda out: (out / "layer.json").write_bytes(b"{}"))
+    (root / "objects").chmod(0o500)                              # as a full disk would: nothing can be written there
+    try:
+        driver.keep_outputs()
+    finally:
+        (root / "objects").chmod(0o700)
+    assert "[remote] layer.json is not kept on lab (exit 1" in capsys.readouterr().out
+    assert list((root / "objects").iterdir()) == []
+
+
 def test_a_failed_node_or_a_cloud_machine_keeps_nothing(tmp_path, host):
     driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
     (driver.local / "response.json.part").write_text(json.dumps({"ok": False, "outputs": {"layer.json": {"path": "layer.json"}}}))

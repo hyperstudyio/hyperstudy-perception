@@ -497,6 +497,9 @@ echo $pid
                 there.append(name)
             elif done.returncode == 6:
                 say(f"{name} is not kept on {host}: what is there is not what came back here")
+            elif done.returncode != 7:   # a full disk, a folder it may not write: sent when a node there reads it
+                why = done.stderr.decode(errors="replace").strip()[-200:]
+                say(f"{name} is not kept on {host} (exit {done.returncode}{': ' + why if why else ''})")
         if kept:
             say(f"kept {', '.join(kept)} on {host}, for the nodes there that read them")
         if there:
