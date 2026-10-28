@@ -1,0 +1,9 @@
+id: test.gaze-no-side
+version: 1.0.0
+description: Writes a bundle gaze layer whose raw.heatmaps points at a side file it does not write (export tests)
+inputs: {video: video.v1}
+outputs: {gaze: bundle.gaze@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-gaze, licence_mode: needs-review}
