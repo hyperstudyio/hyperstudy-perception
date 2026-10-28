@@ -1,6 +1,8 @@
 """vision.objects: what things are on screen, tracked within shots and linked across them, as the bundle's objects layer.
 
-Ported from the bake-off's objects/objects.py (its interactive segment_server.py is not part of this):
+Ported from the bake-off's objects/objects.py (its interactive segment_server.py is not part of this). First, before
+anything is uploaded or paid for: the gated models must be ours to use, and the longest shot's SAM 3 session must fit
+in this machine's memory (budget.py). Then:
 
 1. Vocabulary (haiku.py): Claude Haiku 5.5 sees each shot's three keyframes (decode's) and names up to 8 concrete,
    trackable objects, told the names it used in earlier shots so one bike stays "bicycle".
@@ -13,9 +15,6 @@ Ported from the bake-off's objects/objects.py (its interactive segment_server.py
    (made right after the vocabulary, before the GPU work: it needs nothing else); each track's three outlined moments
    are checked for really being its label (object / graphic / absent). Tracks judged graphic or absent are kept apart
    (rejected_tracks) and never linked.
-
-Before any of that, nothing uploaded or paid for yet: the gated models must be ours to use, and the longest shot's SAM
-3 session must fit in this machine's memory (budget.py).
 5. Identities (linking.py): worn tracks get a wearer, the person (faces layer) whose posed body (bodies layer, linked to
    a face track) holds them; tracks of one family are merged by average-linkage clustering of adjusted cosines.
    Each identity's crop (assets/crops/objects/) is its embedded view closest to the identity's mean embedding.
