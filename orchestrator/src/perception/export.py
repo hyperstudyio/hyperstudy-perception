@@ -1,9 +1,8 @@
 """Publishing a run as a track bundle (schema/bundle-0.1): the view the annotator and HyperStudy read.
 
 A bundle is not a second copy of the truth. Its layers are the run's committed `bundle.<layer>@0.1` artifacts, copied
-byte for byte (with the side files their nodes wrote beside them, such as layers/faces_detail.json,
-layers/faces_mesh.json and layers/faces_embeddings.json), and its manifest
-records their checksums, the video (from the run's `media.v1` artifact) and each layer's licence mode: the strictest
+byte for byte (with the side files their nodes wrote beside them, JSON or Parquet, such as layers/faces_detail.json or
+layers/gaze_heatmaps.parquet), and its manifest records their checksums, the video (from the run's `media.v1` artifact) and each layer's licence mode: the strictest
 of its node's models and of every node upstream of it.
 """
 
@@ -98,10 +97,9 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
             shutil.copyfile(src, side)
             side.chmod(0o644)
             side_files.append({"file": file, "sha256": artifacts.sha256_file(side), "bytes": side.stat().st_size})
-        for pointer in artifacts.SIDE_POINTERS:   # detail.file, mesh.file, embeddings.file
-            referenced = (doc.get(pointer) or {}).get("file")
-            if referenced and referenced not in {s["file"] for s in side_files}:
-                raise SystemExit(f"the {name} layer from {node_id} points at {referenced} ({pointer}.file), "
+        for field, referenced in artifacts.side_pointers(doc):   # detail.file, ..., raw.<role>.file
+            if referenced not in {s["file"] for s in side_files}:
+                raise SystemExit(f"the {name} layer from {node_id} points at {referenced} ({field}), "
                                  f"which {node_id} did not write")
         if side_files:
             entries[name]["side_files"] = side_files
