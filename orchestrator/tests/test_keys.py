@@ -13,10 +13,11 @@ import pytest
 from keyring.backend import KeyringBackend
 from keyring.errors import PasswordDeleteError
 
-from perception import cli, keys as keys_mod
+from perception import cli, keycheck as _keycheck, keys as keys_mod
 from perception.keys import Keys
 
 SECRET = "sk-test-0123456789abcdef"
+REAL = (_keycheck.get, _keycheck.head)   # before the offline fixture stands in for them
 
 
 class MemoryKeyring(KeyringBackend):
@@ -473,7 +474,8 @@ def test_the_file_is_asked_for_with_head_and_a_redirect_is_answered_not_followed
     server = ThreadingHTTPServer(("127.0.0.1", 0), Hub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        monkeypatch.undo()   # the real get and head, not the offline stand-ins
+        monkeypatch.setattr(keycheck, "get", REAL[0])   # the real get and head, not the offline stand-ins
+        monkeypatch.setattr(keycheck, "head", REAL[1])
         monkeypatch.setattr(keycheck, "HF_FILE", f"http://127.0.0.1:{server.server_port}/{{repo}}/resolve/{{revision}}/.gitattributes")
         assert keycheck.access(SECRET, "a/granted", "r1") == ("granted", None)
         assert keycheck.access(SECRET, "a/gated", "r1") == ("not-granted", None)
