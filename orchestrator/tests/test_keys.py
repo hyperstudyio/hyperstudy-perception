@@ -13,10 +13,11 @@ import pytest
 from keyring.backend import KeyringBackend
 from keyring.errors import PasswordDeleteError
 
-from perception import cli, keys as keys_mod
+from perception import cli, keycheck as _keycheck, keys as keys_mod
 from perception.keys import Keys
 
 SECRET = "sk-test-0123456789abcdef"
+REAL = (_keycheck.get, _keycheck.head)   # before the offline fixture stands in for them
 
 
 class MemoryKeyring(KeyringBackend):
@@ -234,6 +235,17 @@ def test_a_locked_keychain_is_said_plainly_and_nothing_half_done(home, chain, ca
 
 # --- keys check: whether the provider accepts a key ------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def offline(monkeypatch):
+    """No test reaches a provider: each says what it answers."""
+    from perception import keycheck
+
+    def unreachable(url, headers):
+        raise OSError("Network is unreachable")
+    monkeypatch.setattr(keycheck, "get", unreachable)
+    monkeypatch.setattr(keycheck, "head", unreachable)
+
+
 def check_json(capsys, name: str) -> dict:
     assert cli.main(["--json", "keys", "check", name]) == 0
     [out] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
@@ -262,7 +274,9 @@ def test_a_key_is_checked_with_its_own_provider_once_and_its_answer_said(home, c
     monkeypatch.setenv("HF_TOKEN", SECRET)
     monkeypatch.setattr(keycheck, "get", provider(200, b'{"name": "ana"}'))
     assert check_json(capsys, "HF_TOKEN")["detail"] == "Hugging Face accepted the key (as ana)"
-    assert asked[-1] == (keycheck.HUGGING_FACE, {"Authorization": f"Bearer {SECRET}"})
+    hf = [a for a in asked if a[0].startswith("https://huggingface.co/")]
+    assert hf.count((keycheck.HUGGING_FACE, {"Authorization": f"Bearer {SECRET}"})) == 1
+    assert all(headers == {} for url, headers in hf if url != keycheck.HUGGING_FACE)   # a model's public page: no token
 
 
 def test_a_key_that_is_not_set_or_a_provider_out_of_reach_is_said_so_and_nothing_is_sent(home, chain, monkeypatch, capsys):
@@ -300,3 +314,210 @@ def test_a_provider_answer_that_is_cut_short_or_not_json_is_still_an_answer(home
     monkeypatch.setattr(keycheck, "get", cut_short)
     out = check_json(capsys, "HF_TOKEN")
     assert out["ok"] is False and "could not reach" in out["detail"]
+
+
+# --- keys check HF_TOKEN: each gated model's access ------------------------------------------------------------------
+
+def stand_in_registry():
+    """Two nodes sharing a gated model, a gated model granted on accepting its terms, and a model that is not gated."""
+    from types import SimpleNamespace
+    from perception.manifests import ModelRef
+
+    def model(repo, revision, gated=True):
+        return ModelRef(id=repo, source=f"hf://{repo}@{revision}", revision=revision, licence_mode="commercial-ok", gated=gated)
+    return [SimpleNamespace(ref="vision.objects@1.1.0", models=[model("meta/seg", "r1"), model("meta/dino", "r2")]),
+            SimpleNamespace(ref="vision.reuse@1.0.0", models=[model("meta/seg", "r1"), model("open/thing", "r3", gated=False)]),
+            SimpleNamespace(ref="audio.diarize@1.0.0", models=[model("pyan/diar", "r4")])]
+
+
+def hugging_face_answers(asked, whoami=(200, b'{"name": "ana"}'), files=None):
+    """A stand-in for Hugging Face: whoami, each model's public page, and each file's HEAD (by repo)."""
+    from perception import keycheck
+    files = files or {}
+    modes = {"meta/seg": "manual", "meta/dino": "manual", "pyan/diar": "auto"}
+
+    def get(url, headers):
+        asked.append(("GET", url, headers))
+        if url == keycheck.HUGGING_FACE:
+            return whoami
+        repo = url.removeprefix("https://huggingface.co/api/models/")
+        return 200, json.dumps({"id": repo, "gated": modes.get(repo, False)}).encode()
+
+    def head(url, headers):
+        asked.append(("HEAD", url, headers))
+        answer = files.get(url.removeprefix("https://huggingface.co/").split("/resolve/")[0], (200, {}))
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    return get, head
+
+
+def test_a_token_is_checked_against_each_gated_model_at_its_pinned_revision(monkeypatch):
+    from perception import keycheck
+    asked = []
+    get, head = hugging_face_answers(asked, files={"meta/dino": (403, {"x-error-code": "GatedRepo"})})
+    monkeypatch.setattr(keycheck, "get", get)
+    monkeypatch.setattr(keycheck, "head", head)
+    r = keycheck.hugging_face(SECRET, stand_in_registry())
+    assert r == {"ok": True, "detail": "Hugging Face accepted the key (as ana)", "account": "ana", "models": [
+        {"id": "meta/seg", "repo": "meta/seg", "revision": "r1", "nodes": ["vision.objects@1.1.0", "vision.reuse@1.0.0"],
+         "gating": "manual", "access": "granted", "reason": None},
+        {"id": "meta/dino", "repo": "meta/dino", "revision": "r2", "nodes": ["vision.objects@1.1.0"],
+         "gating": "manual", "access": "not-granted", "reason": None},
+        {"id": "pyan/diar", "repo": "pyan/diar", "revision": "r4", "nodes": ["audio.diarize@1.0.0"],
+         "gating": "auto", "access": "granted", "reason": None}]}
+    heads = sorted(url for method, url, _ in asked if method == "HEAD")
+    assert heads == [keycheck.HF_FILE.format(repo=repo, revision=rev) for repo, rev in [("meta/dino", "r2"), ("meta/seg", "r1"), ("pyan/diar", "r4")]]
+    # the token goes with the whoami and each file's HEAD, to Hugging Face only; a model's public page is asked without it
+    for method, url, headers in asked:
+        assert url.startswith("https://huggingface.co/")
+        assert headers == ({} if "/api/models/" in url else {"Authorization": f"Bearer {SECRET}"})
+
+
+@pytest.mark.parametrize("answer, reason", [
+    (OSError("Network is unreachable"), "could not reach Hugging Face to check: Network is unreachable"),
+    (TimeoutError("timed out"), "could not reach Hugging Face to check: timed out"),
+    ((401, {"x-error-code": "GatedRepo"}), "Hugging Face refused the key"),
+    ((404, {"x-error-code": "RevisionNotFound"}), "Hugging Face has no revision r2 of meta/dino"),
+    ((404, {"x-error-code": "RepoNotFound"}), "Hugging Face has no repo meta/dino"),
+    ((404, {"x-error-code": "EntryNotFound"}), "Hugging Face has no .gitattributes at revision r2 of meta/dino"),
+    ((404, {}), "Hugging Face could not be checked (HTTP 404)"),
+    ((403, {}), "Hugging Face could not be checked (HTTP 403)"),
+    ((302, {"location": "https://elsewhere.example/file"}), "Hugging Face could not be checked (HTTP 302)"),
+    ((503, {"x-error-message": "busy"}), "Hugging Face could not be checked (HTTP 503: busy)"),
+])
+def test_an_answer_that_is_not_the_file_or_a_gate_leaves_access_unknown_never_granted(monkeypatch, answer, reason):
+    from perception import keycheck
+    get, head = hugging_face_answers([], files={"meta/dino": answer})
+    monkeypatch.setattr(keycheck, "get", get)
+    monkeypatch.setattr(keycheck, "head", head)
+    dino = keycheck.hugging_face(SECRET, stand_in_registry())["models"][1]
+    assert (dino["repo"], dino["access"], dino["reason"]) == ("meta/dino", "unknown", reason)
+
+
+@pytest.mark.parametrize("value, whoami, detail", [
+    (None, None, "HF_TOKEN is not set"),
+    (SECRET, (401, b"{}"), "Hugging Face refused the key"),
+    (SECRET, OSError("Network is unreachable"), "could not reach the provider to check: Network is unreachable"),
+])
+def test_without_a_token_hugging_face_accepts_each_model_is_unknown_and_the_token_goes_nowhere_else(monkeypatch, value, whoami, detail):
+    from perception import keycheck
+    asked = []
+    get, _ = hugging_face_answers(asked, whoami=whoami)
+
+    def answer(url, headers):
+        if url == keycheck.HUGGING_FACE and isinstance(whoami, Exception):
+            asked.append(("GET", url, headers))
+            raise whoami
+        return get(url, headers)
+    monkeypatch.setattr(keycheck, "get", answer)
+    monkeypatch.setattr(keycheck, "head", lambda url, headers: pytest.fail("no file is asked for without a token accepted"))
+    r = keycheck.hugging_face(value, stand_in_registry())
+    assert (r["ok"], r["detail"], r["account"]) == (False, detail, None)
+    assert [(m["repo"], m["gating"], m["access"], m["reason"]) for m in r["models"]] == [
+        ("meta/seg", "manual", "unknown", detail), ("meta/dino", "manual", "unknown", detail), ("pyan/diar", "auto", "unknown", detail)]
+    assert [url for _, url, headers in asked if headers] == ([keycheck.HUGGING_FACE] if value else [])
+
+
+def test_a_public_page_that_does_not_say_how_access_is_granted_leaves_gating_null(monkeypatch):
+    from perception import keycheck
+    for answer in [(200, b"<html>"), (200, b'{"gated": true}'), (404, b"{}"), OSError("down")]:
+        def get(url, headers, answer=answer):
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        monkeypatch.setattr(keycheck, "get", get)
+        assert keycheck.gating("meta/seg") is None
+
+
+def test_keys_check_hf_token_lists_the_gated_models_the_nodes_use(home, chain, monkeypatch, capsys):
+    from perception import keycheck
+    monkeypatch.setenv("HF_TOKEN", SECRET)
+    get, head = hugging_face_answers([], files={"facebook/sam3": (403, {"x-error-code": "GatedRepo"})})
+    monkeypatch.setattr(keycheck, "get", get)
+    monkeypatch.setattr(keycheck, "head", head)
+    out = check_json(capsys, "HF_TOKEN")
+    assert (out["ok"], out["detail"], out["account"]) == (True, "Hugging Face accepted the key (as ana)", "ana")
+    by_repo = {m["repo"]: m for m in out["models"]}
+    assert set(by_repo) == {"facebook/sam3", "facebook/dinov3-vitl16-pretrain-lvd1689m", "pyannote/speaker-diarization-community-1"}
+    assert by_repo["facebook/sam3"]["revision"] == "3c879f39826c281e95690f02c7821c4de09afae7"
+    assert [n.split("@")[0] for n in by_repo["facebook/sam3"]["nodes"]] == ["vision.objects"]
+    assert [n.split("@")[0] for n in by_repo["pyannote/speaker-diarization-community-1"]["nodes"]] == ["audio.diarize"]
+    assert by_repo["facebook/sam3"]["access"] == "not-granted"
+    assert by_repo["facebook/dinov3-vitl16-pretrain-lvd1689m"]["access"] == "granted"
+    assert cli.main(["keys", "check", "HF_TOKEN"]) == 0
+    text = capsys.readouterr().out
+    assert "facebook/sam3" in text and "not-granted" in text and SECRET not in text
+
+
+def test_the_file_is_asked_for_with_head_and_a_redirect_is_answered_not_followed(monkeypatch):
+    """The real HTTP layer, against a local server standing in for Hugging Face: a HEAD with the token, the gate's
+    header read from an error answer, a redirect to the file in Hugging Face's own cache taken as access (it comes
+    only after the gate: a gate refuses first), and no redirect followed, so the token goes nowhere else."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from perception import keycheck
+    seen = []
+
+    class Hub(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            seen.append((self.command, self.path, self.headers.get("Authorization")))
+            repo = self.path.split("/resolve/")[0].strip("/")
+            here = f"http://127.0.0.1:{self.server.server_port}"
+            status, headers = {"a/granted": (200, {}), "a/gated": (403, {"X-Error-Code": "GatedRepo"}),
+                               # the file served from Hugging Face's cache, once access is checked: relative or absolute
+                               "a/cached": (307, {"Location": "/api/resolve-cache/models/a/cached/c0ffee/.gitattributes?etag=x"}),
+                               "a/cached2": (307, {"Location": f"{here}/api/resolve-cache/models/a/cached2/c0ffee/.gitattributes"}),
+                               # another host, another repo's cache, or anywhere else here: not an answer about this file
+                               "a/away": (307, {"Location": "https://elsewhere.example/api/resolve-cache/models/a/away/c0ffee/.gitattributes"}),
+                               "a/other": (307, {"Location": "/api/resolve-cache/models/b/other/c0ffee/.gitattributes"}),
+                               "a/moved": (307, {"Location": f"{here}/elsewhere"})}[repo]
+            self.send_response(status)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Hub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(keycheck, "get", REAL[0])   # the real get and head, not the offline stand-ins
+        monkeypatch.setattr(keycheck, "head", REAL[1])
+        monkeypatch.setattr(keycheck, "HF_FILE", f"http://127.0.0.1:{server.server_port}/{{repo}}/resolve/{{revision}}/.gitattributes")
+        assert keycheck.access(SECRET, "a/granted", "r1") == ("granted", None)
+        assert keycheck.access(SECRET, "a/gated", "r1") == ("not-granted", None)
+        assert keycheck.access(SECRET, "a/cached", "r1") == ("granted", None)
+        assert keycheck.access(SECRET, "a/cached2", "r1") == ("granted", None)
+        for repo in ("a/away", "a/other", "a/moved"):
+            assert keycheck.access(SECRET, repo, "r1") == ("unknown", "Hugging Face could not be checked (HTTP 307)")
+    finally:
+        server.shutdown()
+    # each asked once, and no redirect followed (with the token or without)
+    assert seen == [("HEAD", f"/a/{r}/resolve/r1/.gitattributes", f"Bearer {SECRET}")
+                    for r in ("granted", "gated", "cached", "cached2", "away", "other", "moved")]
+
+
+FINE_GRAINED = "the token cannot read gated repos: turn on its \"Read access to contents of all public gated repos you can access\""
+
+
+@pytest.mark.parametrize("whoami, headers, access, reason", [
+    # whoami says the fine-grained token may not read gated repos: a gate's 403 does not say whether access was granted
+    ({"name": "ana", "auth": {"accessToken": {"role": "fineGrained", "fineGrained": {"canReadGatedRepos": False}}}},
+     {"x-error-code": "GatedRepo"}, "unknown", FINE_GRAINED),
+    # or the gate's own message says so
+    ({"name": "ana"}, {"x-error-code": "GatedRepo", "x-error-message": "Please enable access to public gated repositories in your fine-grained token settings to view this repository."},
+     "unknown", FINE_GRAINED),
+    # a fine-grained token that may read them: the 403 is the account's
+    ({"name": "ana", "auth": {"accessToken": {"role": "fineGrained", "fineGrained": {"canReadGatedRepos": True}}}},
+     {"x-error-code": "GatedRepo"}, "not-granted", None),
+    ({"name": "ana", "auth": {"accessToken": {"role": "read"}}}, {"x-error-code": "GatedRepo"}, "not-granted", None),
+])
+def test_a_gate_refusing_a_fine_grained_token_without_gated_reads_is_not_said_as_access_not_granted(monkeypatch, whoami, headers, access, reason):
+    from perception import keycheck
+    get, head = hugging_face_answers([], whoami=(200, json.dumps(whoami).encode()), files={"meta/dino": (403, headers)})
+    monkeypatch.setattr(keycheck, "get", get)
+    monkeypatch.setattr(keycheck, "head", head)
+    seg, dino, _ = keycheck.hugging_face(SECRET, stand_in_registry())["models"]
+    assert (dino["access"], dino["reason"]) == (access, reason)
+    assert seg["access"] == "granted"   # a repo the token is scoped to, or that it may read, still answers

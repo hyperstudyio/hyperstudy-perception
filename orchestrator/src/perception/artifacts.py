@@ -301,6 +301,9 @@ SIDE_FILES: dict[str, Side] = {
     "prosody_speakers": Side("prosody", ("audio",)),
     "prosody_emotion": Side("prosody", ()),
     "prosody_captions": Side("prosody", ("transcript",), "parquet"),
+    # SAM 3's masks as outlines and boxes, with scores: no pixels, no face data (person masks are outlines of bodies,
+    # as the bodies layer's boxes are)
+    "objects_masks": Side("objects", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

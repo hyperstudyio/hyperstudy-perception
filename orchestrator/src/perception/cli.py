@@ -14,7 +14,7 @@
     perception export RUN_ID --format bundle --output DIR
     perception hosts add NAME USER@HOST [--root DIR] | list | check NAME | remove NAME | clean NAME
     perception cloud on | off | status [aws | runpod]
-    perception keys set NAME | list | remove NAME
+    perception keys set NAME | list | remove NAME | check NAME
     perception setup [GRAPH.yaml] [--only NODE[,NODE]] [--place NODE=PLACE]
 
 The store (artifacts, run state) lives in $PERCEPTION_HOME (default ~/.hyperstudy-perception). Keys come from the
@@ -420,7 +420,8 @@ def run_json(store: Store, run) -> dict:
     tasks = [{"node": t["node_id"], "state": t["state"], "attempt": t["attempt"], "runner": t["runner"],
               "started_at": iso(t["started_at"]), "finished_at": iso(t["finished_at"]),
               "seconds": round(t["finished_at"] - t["started_at"], 1) if t["finished_at"] and t["started_at"] else None,
-              "cost_usd": t["cost_usd"], "error_code": t["error_code"], "error": t["error"]}
+              "cost_usd": t["cost_usd"], "error_code": t["error_code"], "error": t["error"],
+              "ran_on": json.loads(t["usage"] or "{}").get("ran_on")}
              for t in store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run["id"],))]
     return {"run": run["id"], "pipeline": run["pipeline"], "status": run["status"], "created_at": iso(run["created_at"]),
             "spent_usd": run["spent_usd"], "max_cost_usd": run["max_cost_usd"], "tasks": tasks}
@@ -652,12 +653,20 @@ def cmd_keys(args):
         elif args.action == "check":   # whether its provider accepts it: a refused key is an answer, not a failure
             if not args.name:
                 raise ValueError("keys check NAME: which key?")
-            from .keycheck import check
-            ok, detail = check(args.name, keys.load().values.get(args.name))
+            from .keycheck import check, hugging_face
+            value = keys.load().values.get(args.name)
+            if args.name == "HF_TOKEN":   # and each gated model the nodes use: whether its account has access
+                r = hugging_face(value, registry(args))
+                (ok, detail), extra = (r["ok"], r["detail"]), {"account": r["account"], "models": r["models"]}
+            else:
+                (ok, detail), extra = check(args.name, value), {}
             if args.json:
-                emit("key_check", name=args.name, ok=ok, detail=detail)
+                emit("key_check", name=args.name, ok=ok, detail=detail, **extra)
             else:
                 print(detail)
+                for m in extra.get("models", []):
+                    how = f", {m['gating']} approval" if m["gating"] else ""
+                    print(f"  {m['repo']:45s} {m['access']}{how}{': ' + m['reason'] if m['reason'] else ''}")
             return 0
         else:
             found = keys.load()

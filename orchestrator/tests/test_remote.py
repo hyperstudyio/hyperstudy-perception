@@ -738,6 +738,54 @@ def test_a_remote_identity_is_the_code_that_is_sent(tmp_path, host, monkeypatch)
     assert backend.identity(m, runner) != before
 
 
+def test_a_result_made_on_a_host_is_reused_on_any_machine_of_its_kind_and_says_where_it_was_made(tmp_path, host, rec):
+    """The cache identity names no machine (Backend.identity): the same machine added under a second name is served the
+    result, and so is this one (same platform, the same `self` runner); a machine of another platform is not."""
+    from perception.cli import run_json
+    again = Host("lab-again", "lab", str(host / "home" / ".cache" / "hp"), lab(host).caps, time.time())
+    other = lab(host, platform="linux/arm64" if this_platform() != "linux/arm64" else "linux/amd64")
+    other.name = "arm"
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES),
+                        [SelfBackend(), *(SshBackend(h, runner_kind="self", python=sys.executable) for h in (lab(host), again, other))],
+                        tick_s=0.02, backoff_s=0.01)
+    run_id = start(coord, work_graph(tmp_path, rec, place="ssh-lab:cpu"))
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    made = {"place": "ssh-lab:cpu", "title": "lab (SSH)", "platform": this_platform()}
+    assert json.loads(coord._tasks(run_id)["a"]["usage"])["ran_on"] == made
+    for place, cached in [("ssh-lab-again:cpu", True), ("self:cpu", True), ("ssh-arm:cpu", False)]:
+        planned = make_plan(coord, compile_graph(work_graph(tmp_path, rec, place=place), coord.registry), allow_uploads=True)
+        assert (planned.nodes[0].place, planned.nodes[0].cached) == (place, cached)
+    again_id = start(coord, work_graph(tmp_path, rec, place="ssh-lab-again:cpu"))
+    assert asyncio.run(coord.run(again_id)) == "succeeded"
+    (task,) = run_json(coord.store, coord.store.db.execute("SELECT * FROM runs WHERE id=?", (again_id,)).fetchone())["tasks"]
+    assert task["state"] == "cached" and task["ran_on"] == made   # where the result it was served was made
+    assert len([p for p in Path(rec).glob("a-*") if p.suffix != ".end"]) == 1, "the node ran once"
+
+
+def test_a_result_cached_under_the_old_identity_is_made_again_not_misread(tmp_path, host, rec):
+    """Before 2026-10-28 a result's identity began with the backend's kind (`ssh-lab:...`); a store holding one keeps
+    it, but no key made now is that key, so the node runs once more under the new rule."""
+    import hashlib
+    from perception import artifacts
+    from perception.store import dumps
+    coord = coordinator(tmp_path, host)
+    doc = work_graph(tmp_path, rec)
+    graph = compile_graph(doc, coord.registry)
+    node = graph.nodes["a"]
+    seed = coord._graph_input(graph, "seed")
+    stale = coord.store.publish(Path(doc["inputs"]["seed"]["uri"]), "json.v1")   # some object the store has
+    old = hashlib.sha256(artifacts.canonical({
+        "node": node.manifest.ref, "runner": "ssh-lab:0123456789abcdef", "config": node.config,
+        "inputs": {"a": [seed.type, seed.hash]}, "outputs": node.manifest.outputs, "partition": None}).encode()).hexdigest()
+    with coord.store.tx() as db:
+        db.execute("INSERT INTO cache VALUES (?,?,?,?,?)", (old, node.manifest.ref, dumps({"out": stale.to_json()}), "{}", time.time()))
+    assert not make_plan(coord, graph, allow_uploads=True).nodes[0].cached
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded"
+    t = coord._tasks(run_id)["a"]
+    assert t["state"] == "succeeded" and t["cache_key"] != old
+
+
 def test_on_another_machine_every_weight_a_node_uses_counts_as_a_download(tmp_path, host, monkeypatch):
     import perception.plan as plan_mod
     from perception.manifests import ModelRef

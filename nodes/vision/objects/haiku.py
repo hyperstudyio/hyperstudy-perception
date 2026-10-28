@@ -1,8 +1,16 @@
-"""The node's three Claude Haiku 5.5 calls, with the bake-off's prompts and schemas (objects.py), unchanged:
+"""The node's three Claude Haiku 5.5 calls, with the bake-off's prompts and schemas (objects.py), the vocabulary's
+rules changed (below):
 
 1. vocabulary: per shot, in order, its three keyframes and the names used in earlier shots (never later ones) -> up to
    MAX_OBJECTS concrete, trackable object names (no people or background). The bake-off ran this separately from the
    captions; PLAN.md §4 says the two passes over the same keyframes are to fold into one (a follow-up).
+   Its rules differ from the bake-off's on what SAM 3 could not use. Clothing is no longer the vocabulary's: the
+   bake-off's "only if notable; not ordinary shirts or pants" made clothing depend on the sample (14 clothing prompts in
+   one OOO run, 57 in the next, on the same inputs) and never named a plain t-shirt; the body pass (garments.py) now asks
+   for clothing on every person, so the vocabulary is told not to name what that finds. Names are generic detector
+   nouns, as SAM 3 grounds them: "track jacket" found nothing in 10 shots of two runs, "full-face helmet" nothing in
+   16 and 15, "yellow overshirt" nothing in 9. Patterns, prints, hair and wigs are not objects ("daisy pattern" gave
+   10 one-track objects, each a daisy on a cardigan; a man's curly hair became a "curly wig").
 2. name classes: one call over the clip's whole name list -> each name's family, kind (individual / lookalike) and
    whether it is worn.
 3. crop check: per label, VERIFY_BATCH tracks a call, each track as three outlined moments side by side ->
@@ -37,12 +45,16 @@ physical objects that are clearly visible in the frames and could be outlined an
 segmentation mask.
 
 Rules:
-- Short noun phrases a detector would understand: 1-3 words, singular, lower case \
-(e.g. "bicycle", "wooden ramp", "coffee mug", "car").
-- Never people, faces, hands or other body parts.
+- Generic nouns a detector would understand: 1-2 words, singular, lower case, the plain name of \
+the kind of thing (e.g. "bicycle", "ramp", "mug", "car", "helmet", "chair"), not a description of \
+this one ("helmet", not "full-face helmet"; "cup", not "white paper cup").
+- Never people, faces, hands or other body parts, and never hair, wigs or beards.
+- Never patterns, prints, textures or decorations on something: name the thing they are on.
 - Never generic background or scenery: wall, floor, ground, sky, grass, trees, forest, fog, \
 road, water, light, shadow.
-- Clothing or worn items only if notable (e.g. "full-face helmet"); not ordinary shirts or pants.
+- Not clothing, shoes, hats, glasses or necklaces worn by people: those are found on every person \
+separately. Other things worn or held are objects (e.g. "helmet", "glove", "earring", "ring", \
+"watch", "bag", "microphone").
 - On-screen text and logos are not objects.
 - If an object of the same kind was named in an earlier shot, reuse exactly that phrase.
 - Most prominent first. Return an empty list if there is nothing that fits."""
