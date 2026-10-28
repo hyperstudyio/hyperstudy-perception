@@ -483,3 +483,28 @@ def test_the_file_is_asked_for_with_head_and_a_redirect_is_answered_not_followed
     finally:
         server.shutdown()
     assert seen == [("HEAD", f"/a/{r}/resolve/r1/.gitattributes", f"Bearer {SECRET}") for r in ("granted", "gated", "moved")]
+
+
+FINE_GRAINED = "the token cannot read gated repos: turn on its \"Read access to contents of all public gated repos you can access\""
+
+
+@pytest.mark.parametrize("whoami, headers, access, reason", [
+    # whoami says the fine-grained token may not read gated repos: a gate's 403 does not say whether access was granted
+    ({"name": "ana", "auth": {"accessToken": {"role": "fineGrained", "fineGrained": {"canReadGatedRepos": False}}}},
+     {"x-error-code": "GatedRepo"}, "unknown", FINE_GRAINED),
+    # or the gate's own message says so
+    ({"name": "ana"}, {"x-error-code": "GatedRepo", "x-error-message": "Please enable access to public gated repositories in your fine-grained token settings to view this repository."},
+     "unknown", FINE_GRAINED),
+    # a fine-grained token that may read them: the 403 is the account's
+    ({"name": "ana", "auth": {"accessToken": {"role": "fineGrained", "fineGrained": {"canReadGatedRepos": True}}}},
+     {"x-error-code": "GatedRepo"}, "not-granted", None),
+    ({"name": "ana", "auth": {"accessToken": {"role": "read"}}}, {"x-error-code": "GatedRepo"}, "not-granted", None),
+])
+def test_a_gate_refusing_a_fine_grained_token_without_gated_reads_is_not_said_as_access_not_granted(monkeypatch, whoami, headers, access, reason):
+    from perception import keycheck
+    get, head = hugging_face_answers([], whoami=(200, json.dumps(whoami).encode()), files={"meta/dino": (403, headers)})
+    monkeypatch.setattr(keycheck, "get", get)
+    monkeypatch.setattr(keycheck, "head", head)
+    seg, dino, _ = keycheck.hugging_face(SECRET, stand_in_registry())["models"]
+    assert (dino["access"], dino["reason"]) == (access, reason)
+    assert seg["access"] == "granted"   # a repo the token is scoped to, or that it may read, still answers

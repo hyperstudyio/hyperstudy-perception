@@ -23,6 +23,8 @@ HF_FILE = "https://huggingface.co/{repo}/resolve/{revision}/.gitattributes"   # 
 HF_MODEL = "https://huggingface.co/api/models/{repo}"
 CHECKED = ("ANTHROPIC_API_KEY", "HF_TOKEN", "RUNPOD_API_KEY")
 NOT_REACHED = (OSError, http.client.HTTPException)   # no whole answer (a reply cut short is not an OSError)
+# a fine-grained token reads gated repos only with this permission; without it a gate refuses an account it has granted
+FINE_GRAINED = 'the token cannot read gated repos: turn on its "Read access to contents of all public gated repos you can access"'
 
 
 def get(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
@@ -43,13 +45,24 @@ def head(url: str, headers: dict[str, str]) -> tuple[int, dict[str, str]]:
         return e.code, {k.lower(): v for k, v in (e.headers or {}).items()}
 
 
-def account(body: bytes) -> str | None:
-    """The account name in Hugging Face's answer, if it says one (the key was accepted either way)."""
+def whoami(body: bytes) -> dict:
+    """Hugging Face's answer about the token, or {} if it is not one (the key was accepted either way)."""
     try:
         d = json.loads(body or b"{}")
     except ValueError:
-        return None
-    return d.get("name") if isinstance(d, dict) else None
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def account(body: bytes) -> str | None:
+    """The account name in Hugging Face's answer, if it says one."""
+    return whoami(body).get("name")
+
+
+def reads_gated(body: bytes) -> bool:
+    """False when whoami says the token is fine-grained without permission to read gated repos."""
+    token = (whoami(body).get("auth") or {}).get("accessToken") or {}
+    return not (token.get("role") == "fineGrained" and (token.get("fineGrained") or {}).get("canReadGatedRepos") is False)
 
 
 def gated(registry) -> list[dict]:
@@ -89,6 +102,8 @@ def access(token: str, repo: str, revision: str) -> tuple[str, str | None]:
     if status == 200:
         return "granted", None
     if status == 403 and headers.get("x-error-code") == "GatedRepo":   # pending and never asked are answered alike
+        if "fine-grained" in (headers.get("x-error-message") or ""):
+            return "unknown", FINE_GRAINED
         return "not-granted", None
     if status == 401:
         return "unknown", "Hugging Face refused the key"
@@ -100,11 +115,15 @@ def access(token: str, repo: str, revision: str) -> tuple[str, str | None]:
     return "unknown", f"Hugging Face could not be checked (HTTP {status}{f': {message}' if message else ''})"
 
 
-def models(token: str | None, wanted: list[dict], why_not: str | None) -> list[dict]:
+def models(token: str | None, wanted: list[dict], why_not: str | None, gated_reads: bool = True) -> list[dict]:
     """Each of `wanted` with `gating`, `access` and `reason` (why it is unknown, else null), asked for every model at
-    once. With no token Hugging Face accepted (`why_not`), only the public gating mode is asked."""
+    once. With no token Hugging Face accepted (`why_not`), only the public gating mode is asked. A token that may not
+    read gated repos (`gated_reads`) is still asked for each (it may be scoped to one), but a gate's refusal of it says
+    nothing of the account's access."""
     def one(m: dict) -> dict:
         state, reason = access(token, m["repo"], m["revision"]) if token and not why_not else ("unknown", why_not)
+        if state == "not-granted" and not gated_reads:
+            state, reason = "unknown", FINE_GRAINED
         return {**m, "gating": gating(m["repo"]), "access": state, "reason": reason}
     if not wanted:
         return []
@@ -115,20 +134,20 @@ def models(token: str | None, wanted: list[dict], why_not: str | None) -> list[d
 def hugging_face(value: str | None, registry=()) -> dict:
     """`ok` and `detail` as for every key, `account` (its name, once accepted) and `models` (the registry's gated(),
     each with its access)."""
-    who = None
+    who, gated_reads = None, True
     if not value:
         ok, detail = False, "HF_TOKEN is not set"
     else:
         try:
             status, body = get(HUGGING_FACE, {"Authorization": f"Bearer {value}"})
             ok = status == 200
-            who = account(body) if ok else None
+            who, gated_reads = (account(body), reads_gated(body)) if ok else (None, True)
             detail = (f"Hugging Face accepted the key{f' (as {who})' if who else ''}" if ok
                       else "Hugging Face refused the key" if status in (401, 403)
                       else f"Hugging Face could not be checked (HTTP {status})")
         except NOT_REACHED as e:
             ok, detail = False, f"could not reach the provider to check: {e}"
-    return {"ok": ok, "detail": detail, "account": who, "models": models(value, gated(registry), None if ok else detail)}
+    return {"ok": ok, "detail": detail, "account": who, "models": models(value, gated(registry), None if ok else detail, gated_reads)}
 
 
 def check(name: str, value: str | None) -> tuple[bool, str]:
