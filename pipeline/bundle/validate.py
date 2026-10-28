@@ -6,8 +6,9 @@
    (the faces layer's detail.file, mesh.file and embeddings.file; any layer's raw.<role>.file) is among its side
    files. A JSON side file with a schema (#/$defs/side/<name>) validates against it. A Parquet side file must have
    Parquet's magic at both ends; with pyarrow (this project's dev group, which `uv run` installs) its columns must be
-   #/$defs/parquet/<name>'s, none null or not finite, and a per-sample one must hold a row for each of the layer's
-   samples. Without pyarrow that content check is skipped, and the output says so.
+   #/$defs/parquet/<name>'s, none null or not finite, a per-sample one must hold a row for each of the layer's
+   samples, and one of rows about samples (of_samples) name only samples the layer has. Without pyarrow that content
+   check is skipped, and the output says so.
 3. References: every id a layer points at (a shot, utterance, voice, face track, person, body, hand, object track
    or object identity) is defined by the layer that owns that kind of id. JSON Schema checks an id's shape, not
    whether it exists.
@@ -147,7 +148,9 @@ def parquet_problems(name, file, path, spec, doc, notes):
     """A Parquet side file: the PAR1 magic at both ends (what the orchestrator checks too). With pyarrow, its columns
     in order with #/$defs/parquet/<name>'s Arrow types, no nulls, no value that is not finite, and for a per-sample one
     (per_sample: true) a row for each sample of the layer's tracks (face, sample, t), in time order with the heads of
-    one time in the layer's track order. Without pyarrow, the content check is skipped and a note says so."""
+    one time in the layer's track order; for one with of_samples: true, every row (track, sample, t) one of the layer's
+    samples. The track column and the layer field it holds are the spec's track ({column, field}; by default face).
+    Without pyarrow, the content check is skipped and a note says so."""
     data = path.read_bytes()
     if len(data) < 12 or data[:4] != PARQUET_MAGIC or data[-4:] != PARQUET_MAGIC:
         return [f"{name}: {file}: not Parquet (no PAR1 magic at both ends)"]
@@ -170,10 +173,12 @@ def parquet_problems(name, file, path, spec, doc, notes):
     for c, arrow in want:
         if arrow in ("float", "double") and not pc.all(pc.is_finite(table[c])).as_py():
             problems.append(f"{name}: {file}: column {c} holds a value that is not finite")
-    if problems or not spec.get("per_sample"):
+    if problems or not (spec.get("per_sample") or spec.get("of_samples")):
         return problems
     if not isinstance(doc.get("tracks"), list):
-        return [f"{name}: {file} is per sample, but the layer has no tracks"]
+        return [f"{name}: {file} names the layer's samples, but the layer has no tracks"]
+    # the column that names a row's track and the layer's track field it holds: by default face (gaze_heatmaps)
+    column, field = spec.get("track", {}).get("column", "face"), spec.get("track", {}).get("field")
     order = []
     for k, track in enumerate(t for t in doc["tracks"] if isinstance(t, dict)):
         samples = track.get("samples")
@@ -181,10 +186,16 @@ def parquet_problems(name, file, path, spec, doc, notes):
                 isinstance(s, dict) and isinstance(s.get("t"), (int, float)) and not isinstance(s.get("t"), bool)
                 for s in samples):
             return problems   # the rows check reads the shape the layer's schema checks, and its errors report this
-        face = track.get("face", track.get("id"))
+        face = track.get(field) if field else track.get("face", track.get("id"))
         order += [(s["t"], k, face, j) for j, s in enumerate(samples)]
     expected = [(face, j, t) for t, _, face, j in sorted(order, key=lambda x: (x[0], x[1]))]
-    rows = list(zip(table["face"].to_pylist(), table["sample"].to_pylist(), table["t"].to_pylist()))
+    rows = list(zip(table[column].to_pylist(), table["sample"].to_pylist(), table["t"].to_pylist()))
+    if not spec.get("per_sample"):   # of_samples: every row names one of the layer's samples (track, sample, t)
+        known = set(expected)
+        unknown = [i for i, row in enumerate(rows) if row not in known]
+        if unknown:
+            problems.append(f"{name}: {file}: {len(unknown)} rows name no sample of the layer, first row {unknown[0]}")
+        return problems
     if rows != expected:
         first = next((i for i, (a, b) in enumerate(zip(rows, expected)) if a != b), min(len(rows), len(expected)))
         problems.append(f"{name}: {file} does not match the layer's samples: {len(rows)} rows for {len(expected)} "

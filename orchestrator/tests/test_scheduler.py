@@ -1110,6 +1110,53 @@ def test_validate_reports_a_bad_parquet_side_file_as_a_problem(tmp_path, file, d
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 
 
+def bodies_bundle(tmp_path, damage=lambda p: None, file="layers/bodies.json") -> Path:
+    """An exported bodies bundle (test.bodies: two body tracks, their scores and a duplicate) after `damage(path of
+    file)`, with the manifest's checksums updated."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                     {"id": "bodies", "uses": "test.bodies@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    damage(out / file)
+    manifest = json.loads((out / "manifest.json").read_text())
+    for entry in manifest["layers"].values():
+        for f in [entry, *entry.get("side_files", [])]:
+            f.update(sha256=artifacts.sha256_file(out / f["file"]), bytes=(out / f["file"]).stat().st_size)
+    (out / "manifest.json").write_text(json.dumps(manifest))
+    return out
+
+
+@pytest.mark.parametrize("damage, problems", [
+    (lambda p: None, []),
+    # body:1 loses its sample: the scores no longer match, and the duplicate names a sample the layer lacks
+    (_with(lambda d: d["tracks"][1]["samples"].clear()),
+     ["bodies_scores.parquet does not match the layer's samples: 3 rows for 2 samples",
+      "bodies_duplicates.parquet: 1 rows name no sample of the layer, first row 0"]),
+    (_with(lambda d: d["tracks"][0]["samples"][1].update(t=0.25)), ["bodies_scores.parquet does not match the layer's samples"]),
+    # the rows are in the layer's track order at each time; body:1's sample is still there for the duplicate
+    (_with(lambda d: d["tracks"].reverse()), ["bodies_scores.parquet does not match the layer's samples"]),
+])
+def test_validate_checks_the_bodies_side_files_rows_against_the_layers_samples(tmp_path, damage, problems):
+    """bodies_scores holds a row per sample of the bodies layer, its track column body holding the tracks' id (not face,
+    as gaze_heatmaps'); every bodies_duplicates row names one of the layer's samples (of_samples)."""
+    out = bodies_bundle(tmp_path, damage)
+    assert sorted(p.name for p in (out / "layers").iterdir()) == ["bodies.json", "bodies_duplicates.parquet",
+                                                                  "bodies_scores.parquet", "shots.json"]
+    for name in ("scores", "duplicates"):
+        assert (out / f"layers/bodies_{name}.parquet").read_bytes() == (NODES / "bodies" / f"bodies_{name}.parquet").read_bytes()
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert "Traceback" not in result.stderr and "note:" not in result.stdout, result.stdout + result.stderr
+    assert result.returncode == (1 if problems else 0), result.stdout + result.stderr
+    assert all(p in result.stdout for p in problems), result.stdout
+
+
 def test_validate_without_pyarrow_says_it_skipped_the_parquet_content_check(tmp_path):
     """pyarrow is validate.py's dev dependency: without it the bundle can still be valid, but the output says the
     Parquet columns were not checked rather than passing in silence. Parquet's magic is checked either way."""

@@ -192,6 +192,31 @@
           { "name": "max", "arrow": "float", "description": "The heatmap's largest value, the scale of heat: a sigmoid's, in [0, 1] in float32 (0 only for a map that is all zeros, whose cells are all 0)." },
           { "name": "heat", "arrow": "fixed_size_binary[4096]", "description": "The 64x64 heatmap over the whole frame as uint8, row-major: byte 64 * row + col is the cell whose centre is ((col + 0.5) / 64 * width, (row + 0.5) / 64 * height) in source pixels." }
         ]
+      },
+      "bodies_scores": {
+        "description": "layers/bodies_scores.parquet, a raw side file of the bodies layer (raw.scores): the person detector's (YOLOX-m's) score for every sample of the layer's tracks, which the layer does not keep (it keeps the box). One row per sample, in time order, the bodies of one time in the layer's track order. The file metadata names the detector and its detector_threshold: no detection scoring at or below it is in the layer. Columns are not nullable.",
+        "per_sample": true,
+        "track": { "column": "body", "field": "id" },
+        "columns": [
+          { "name": "body", "arrow": "string", "description": "The body track (body:N): the bodies layer's tracks[].id." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that track's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the layer's." },
+          { "name": "score", "arrow": "float", "description": "The detector's score in (detector_threshold, 1], unrounded (float32, as the model returned it)." }
+        ]
+      },
+      "bodies_duplicates": {
+        "description": "layers/bodies_duplicates.parquet, a raw side file of the bodies layer (raw.duplicates): every detection the producer dropped as a second detection of a person, so the de-duplication can be revisited. Of two detections in one frame whose head and shoulder joints visible in both (keypoint score >= score_threshold, at least 2) lie within a median distance of duplicate_head_dist x the smaller box's sqrt(area), the higher score is kept (the file metadata holds detector, detector_threshold, duplicate_head_dist and score_threshold). One row per dropped detection, in time order then by score (highest first), naming the layer sample it duplicated. Values are float32, unrounded. Columns are not nullable.",
+        "of_samples": true,
+        "track": { "column": "body", "field": "id" },
+        "columns": [
+          { "name": "t", "arrow": "double", "description": "The frame's time: the time of the sample it duplicated." },
+          { "name": "body", "arrow": "string", "description": "The body track (body:N) whose sample at t this detection duplicated: the first kept body, by score, within duplicate_head_dist." },
+          { "name": "sample", "arrow": "int32", "description": "That sample's index in the track's samples." },
+          { "name": "score", "arrow": "float", "description": "The detector's score (at most the duplicated body's)." },
+          { "name": "dist", "arrow": "float", "description": "The median distance between the two detections' head and shoulder joints visible in both, over the smaller box's sqrt(area): below duplicate_head_dist." },
+          { "name": "box", "arrow": "fixed_size_list<element: float not null>[4]", "description": "The detection's box [x, y, w, h] in source pixels." },
+          { "name": "kpts", "arrow": "fixed_size_list<element: float not null>[399]", "description": "RTMW's 133 keypoints for this box, in the layer's keypoint_names order, each x, y (source pixels), score (the layer's scale)." }
+        ]
       }
     },
     "sidePointer": {

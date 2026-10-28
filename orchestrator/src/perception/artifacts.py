@@ -217,11 +217,16 @@ class Side:
 # together a coarse picture of where the people and things in each frame are, beyond the gaze layer's one peak per
 # head, so they count as frames. Not faces: no face image, landmarks or box, only the face track ids and times the gaze
 # layer (which holds no kind) has too.
+# The bodies scores are YOLOX-m's score for every body sample, and the bodies duplicates the detections dropped as
+# second detections of a person (box, score, RTMW keypoints, the sample they duplicated): the same kind of data as the
+# bodies layer, which holds no kind (boxes and skeletons, no pixels, face images or identity), so they hold none either.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
     "faces_embeddings": Side("faces", ("faces", "embeddings")),
     "gaze_heatmaps": Side("gaze", ("frames",), "parquet"),
+    "bodies_scores": Side("bodies", (), "parquet"),
+    "bodies_duplicates": Side("bodies", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

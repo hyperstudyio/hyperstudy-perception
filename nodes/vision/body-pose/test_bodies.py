@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from bodies import (drop_duplicate_bodies, face_boxes_at, face_in_body, keypoints_in_face, layer_tracks, link_faces,
-                    one_body_per_face, track_bodies)
+from bodies import (DUPLICATE_HEAD_DIST, drop_duplicate_bodies, face_boxes_at, face_in_body, keypoints_in_face,
+                    layer_tracks, link_faces, one_body_per_face, side_rows, track_bodies)
 
 KEYPOINTS = json.loads((Path(__file__).parent / "keypoints.json").read_text())
 HEAD = [KEYPOINTS["names"].index(n) for n in ("nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder", "right_shoulder")]
@@ -99,3 +99,52 @@ def test_layer_tracks_are_body_ids_in_shot_order_rounded():
     assert [(t["id"], t["shot"], t["face"], t["link"]) for t in tracks] == [
         ("body:0", "shot:2", None, None), ("body:1", "shot:10", "face:3", "face-in-box+keypoints")]
     assert tracks[0]["samples"][0]["box"] == [0.0, 1.3, 10.0, 20.0] and len(tracks[0]["samples"][0]["kpts"]) == 133
+
+
+def test_a_dropped_detection_is_recorded_with_the_body_it_duplicated_and_their_distance():
+    one = body([0, 0, 100, 200], head_at=(50, 20), score=0.74)
+    twin = body([5, 10, 90, 150], head_at=(51, 21), score=0.50)
+    beside = body([60, 0, 100, 200], head_at=(110, 20), score=0.6)
+    dropped = []
+    assert drop_duplicate_bodies([one, twin, beside], HEAD, THRESHOLD, dropped) == [one, beside]   # as without it
+    assert len(dropped) == 1 and dropped[0]["body"] is twin and dropped[0]["of"] is one
+    # every head/shoulder joint is (1, 1) apart; the smaller box is twin's, 90 x 150
+    assert dropped[0]["dist"] == pytest.approx(np.sqrt(2) / np.sqrt(90 * 150)) and dropped[0]["dist"] < DUPLICATE_HEAD_DIST
+
+
+def numbered(*bodies):
+    """A frame's detections, each with its index in the frame (det), as node.py makes them."""
+    for n, b in enumerate(bodies):
+        b["det"] = n
+    return list(bodies)
+
+
+def side_example():
+    """Two frames of shot:4 (a, and b with a second detection of b) and one of shot:2: (tracks, layer, side_rows)."""
+    a0 = body([0, 0, 100, 200], head_at=(50, 20), score=0.91234567)
+    b0 = body([300, 0, 100, 200], head_at=(350, 20), score=0.8)
+    twin = body([302.04, 5, 95, 190], head_at=(351.123, 21), score=0.45)          # a second detection of b
+    twin["kpts"][HEAD[3], 2] = 2.996                    # an ear just below THRESHOLD: not visible to the dedup
+    a1 = body([2, 0, 100, 200], head_at=(52, 20), score=0.9)
+    dropped = []
+    kept0 = drop_duplicate_bodies(numbered(a0, twin, b0), HEAD, THRESHOLD, dropped)
+    duplicates = [{**d, "t": 0.0} for d in dropped]
+    frames = [(0.0, kept0), (0.125, numbered(a1)), (5.0, numbered(body([0, 0, 50, 50], score=0.5)))]
+    tracks = track_bodies(frames, ["shot:4", "shot:4", "shot:2"])
+    return tracks, layer_tracks(tracks), side_rows(tracks, duplicates)
+
+
+def test_the_side_rows_hold_a_score_per_layer_sample_and_name_the_sample_each_duplicate_duplicated():
+    _, layer, (scores, duplicates) = side_example()
+    # shot:2's track is body:0; shot:4's (a's and b's) follow. A row per layer sample in time order, then track order
+    order = sorted((s["t"], k, tr["id"], j) for k, tr in enumerate(layer) for j, s in enumerate(tr["samples"]))
+    assert [(body_id, j, t) for body_id, j, t, _ in scores] == [(body_id, j, t) for t, _, body_id, j in order]
+    a_id, b_id = (next(tr["id"] for tr in layer if tr["shot"] == "shot:4" and tr["samples"][0]["box"][0] == x)
+                  for x in (0.0, 300.0))
+    by_sample = {(body_id, j): score for body_id, j, _, score in scores}
+    assert by_sample == {(a_id, 0): 0.91234567, (a_id, 1): 0.9, (b_id, 0): 0.8, ("body:0", 0): 0.5}   # unrounded
+    [(t, of, sample, score, dist, box, kpts)] = duplicates
+    assert (t, of, sample, score) == (0.0, b_id, 0, 0.45)
+    assert 0 < dist < DUPLICATE_HEAD_DIST and box == [302.04, 5.0, 95.0, 190.0] and len(kpts) == 3 * 133
+    # unrounded, so a dedup re-run from the file sees what the node saw: at the layer's 2 places this ear reads 3.0, visible
+    assert kpts[3 * HEAD[0]: 3 * HEAD[0] + 3] == [351.123, 21.0, 5.0] and kpts[3 * HEAD[3] + 2] == 2.996 < THRESHOLD

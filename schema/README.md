@@ -10,6 +10,8 @@ layers/faces_detail.json      side files: the model output a layer does not draw
 layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
+layers/bodies_scores.parquet
+layers/bodies_duplicates.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -29,9 +31,15 @@ The gaze layer's: `gaze_heatmaps` (its `raw.heatmaps`: Gaze-LLE's 64x64 heatmap 
 keeps the peak, with the unrounded in-frame score; one row per sample; each map as uint8 relative to its own maximum,
 `floor(255 * heat / max)`, with that maximum as float32, so `(cell + 0.5) / 255 * max` is within `max / 510` of the
 model's value and the stored map's argmax is the layer's peak; about 0.9 KB a head, 2.4 MB for a two-minute clip).
+The bodies layer's: `bodies_scores` (its `raw.scores`: the person detector's, YOLOX-m's, score for every sample, of
+which the layer keeps only the box; one row per sample) and `bodies_duplicates` (its `raw.duplicates`: every detection
+dropped as a second detection of a person, with the sample it duplicated, their head/shoulder distance, and its own
+box and 133 keypoints, so the de-duplication can be revisited). Both are the models' float32 values, unrounded; on a
+two-minute clip of five people (3136 samples, 28 duplicates) 18 KB and 34 KB, about 0.5 MB and 1.0 MB an hour.
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
-of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
+of the faces layer's samples, at the same times; gaze_heatmaps and bodies_scores hold a row for each of their layer's
+samples; every bodies_duplicates row names a sample of the bodies layer).
 
 The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's
 `allow_upload` and the run's consent to name `embeddings`. Like the faces layer, they come from InsightFace's ArcFace
@@ -63,8 +71,9 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    for its content rather than its source: say why in the comment there.
 2. **Describe it** in `bundle-0.1.schema.json`: a JSON one as a schema at `#/$defs/side/<name>`, which the orchestrator
    validates every output against; a Parquet one as its columns at `#/$defs/parquet/<name>` (name, Arrow type as
-   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, which
-   validate.py then checks). A test fails while a registered side file is not described, or a described one is not
+   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, or
+   `of_samples: true` when each row names one of them, which validate.py then checks; `track: {column, field}` when
+   its track column is not `face` holding the tracks' `face`, as bodies_scores' `body` holds their `id`). A test fails while a registered side file is not described, or a described one is not
    registered.
 3. **Write it** from the node: declare an output of type `bundle.<name>@0.1` in its manifest, write the file
    (`node.write_json`, or `node.path` and your Parquet writer), and put the `raw` pointer in the layer. Bump the node's
