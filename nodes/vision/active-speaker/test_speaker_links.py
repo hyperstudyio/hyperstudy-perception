@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from speaker_links import (candidates, layer_content, link_voices, mean_score, require_diarized, speaking_intervals,
-                           utterance_row, votes_for)
+                           tally, top_face, utterance_row, voice_votes, votes_for)
 
 
 def best_assignment(cost):
@@ -47,14 +47,14 @@ def test_candidates_are_the_scored_tracks_of_the_utterances_shot_highest_first()
 
 def test_words_vote_with_their_voice_unless_too_long_or_voiceless():
     spans = speaking_intervals([word(0, 1, "voice:A"), word(1, 3.5, "voice:A"), word(2, 2.5, None), word(3, 3.2, "voice:B")])
-    assert spans == {"voice:A": [(0, 1)], "voice:B": [(3, 3.2)]}
+    assert spans == {"voice:A": [(0, 0, 1)], "voice:B": [(3, 3, 3.2)]}   # (index in the words, start, end)
 
 
 def test_each_word_votes_for_the_visible_person_scored_highest_above_zero():
     tracks = [scored(0, [1.0] * 25 + [-1.0] * 25, person="person:P"), scored(1, [0.5] * 50, person="person:Q"),
               scored(2, [5.0] * 50, person=None),                      # no person: neither votes nor counts as seen
               scored(3, [-2.0] * 25, start=2.0, person="person:R")]
-    spans = {"voice:A": [(0.1, 0.5), (1.2, 1.6)], "voice:B": [(2.1, 2.5), (5.0, 5.5)]}
+    spans = {"voice:A": [(0, 0.1, 0.5), (1, 1.2, 1.6)], "voice:B": [(2, 2.1, 2.5), (3, 5.0, 5.5)]}
     votes, visible = votes_for(spans, tracks)
     assert votes == {"voice:A": {"person:P": 1, "person:Q": 1}, "voice:B": {}}   # R scored below 0 at 2.1 s
     assert visible == {"voice:A": 2, "voice:B": 1}                               # no face at 5 s
@@ -64,13 +64,14 @@ def test_voices_and_people_are_matched_one_to_one_on_word_share():
     p, q = "person:P", "person:Q"
     tracks = [scored(0, [1.0] * 100, person=p), scored(1, [-1.0] * 50 + [2.0] * 50, person=q)]
     # A speaks 3 words while P leads and 1 while Q does; B 2 words, both while Q leads: A -> P (0.75), B -> Q (1.0)
-    spans = {"voice:A": [(0.1, 0.2), (0.5, 0.6), (1.0, 1.1), (3.0, 3.1)], "voice:B": [(2.5, 2.6), (3.5, 3.6)]}
-    links = link_voices(spans, tracks, [p, q], best_assignment)
+    spans = {"voice:A": [(0, 0.1, 0.2), (1, 0.5, 0.6), (2, 1.0, 1.1), (3, 3.0, 3.1)],
+             "voice:B": [(4, 2.5, 2.6), (5, 3.5, 3.6)]}
+    links = link_voices(voice_votes(spans, tracks), [p, q], best_assignment)
     assert links == {"voice:A": {"person": p, "word_share": 0.75}, "voice:B": {"person": q, "word_share": 1.0}}
     # a third voice only Q would explain loses Q to B, and is linked to no one (share 0)
-    spans["voice:C"] = [(2.1, 2.2)]
-    assert "voice:C" not in link_voices(spans, tracks, [p, q], best_assignment)
-    assert link_voices({}, tracks, [p, q], best_assignment) == {}
+    spans["voice:C"] = [(6, 2.1, 2.2)]
+    assert "voice:C" not in link_voices(voice_votes(spans, tracks), [p, q], best_assignment)
+    assert link_voices(voice_votes({}, tracks), [p, q], best_assignment) == {}
 
 
 def row(ranked_scores, voice="voice:A", links=None, min_share=0.3, person_of=None):
@@ -135,3 +136,51 @@ def test_a_link_is_trusted_at_the_gate_or_above(share, trusted):
     words = [word(i / 25 + 0.001, i / 25 + 0.002, "voice:A") for i in range(100)]   # one word per frame
     content = layer_content({"words": words, "utterances": []}, faces, tracks, 0.3, best_assignment)
     assert content["voice_links"] == [{"voice": "voice:A", "person": "person:P", "word_share": share, "trusted": trusted}]
+
+
+def votes_for_before(spans, scored):
+    """votes_for as vision.active-speaker 1.0.0 counted, before the votes were kept per word: each word's best person
+    starts at a score of 0 and is replaced by any higher one. The per-word records must count the same."""
+    votes, visible = {voice: {} for voice in spans}, {voice: 0 for voice in spans}
+    for voice, words in spans.items():
+        for _, start, end in words:
+            best, best_score, seen = None, 0.0, False
+            for track in scored:
+                score = None if track["person"] is None else mean_score(track, start, end)
+                if score is None:
+                    continue
+                seen = True
+                if score > best_score:
+                    best, best_score = track["person"], score
+            visible[voice] += seen
+            if best:
+                votes[voice][best] = votes[voice].get(best, 0) + 1
+    return votes, visible
+
+
+def test_the_word_records_count_the_votes_as_before():
+    rng = np.random.default_rng(7)
+    people = ["person:P", "person:Q", "person:R", None]
+    for _ in range(50):
+        tracks = [scored(i, [round(float(v), 2) for v in rng.normal(0, 1, 60)], start=float(rng.integers(0, 3)),
+                         person=people[rng.integers(0, 4)]) for i in range(5)]
+        tracks.append(scored(5, [0.5] * 60, person="person:P"))    # equal to track 6 throughout: the first one wins
+        tracks.append(scored(6, [0.5] * 60, person="person:Q"))
+        spans = {f"voice:{v}": [(k, float(s), float(s + rng.uniform(0, 0.5))) for k, s in enumerate(rng.uniform(0, 5, 8))]
+                 for v in "AB"}
+        assert votes_for(spans, tracks) == votes_for_before(spans, tracks)
+
+
+def test_each_word_records_its_top_visible_face_even_below_zero():
+    tracks = [scored(0, [-1.0] * 25, person="person:P"), scored(1, [-0.5] * 25, person="person:Q"),
+              scored(2, [3.0] * 25, person=None)]
+    assert top_face(tracks, 0.1, 0.5) == (tracks[1], -0.5)        # a face with no person does not count
+    assert top_face(tracks, 2.0, 3.0) == (None, None)
+    [voice] = voice_votes({"voice:A": [(4, 0.1, 0.5), (9, 2.0, 3.0)]}, tracks)
+    assert voice == {"voice": "voice:A", "visible": 1, "votes": {},
+                     "words": [{"word": 4, "face": "face:1", "person": "person:Q", "score": -0.5},
+                               {"word": 9, "face": None, "person": None, "score": None}]}
+    # a word votes only above 0, so the vote's threshold can be revisited from the records alone
+    words = [{"word": 0, "face": "face:0", "person": "person:P", "score": 0.01},
+             {"word": 1, "face": "face:0", "person": "person:P", "score": 0.0}]
+    assert tally(words) == ({"person:P": 1}, 2)
