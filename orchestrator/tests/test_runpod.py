@@ -530,11 +530,17 @@ def test_a_pods_start_command_removes_it_at_its_deadline_asking_until_it_is_done
     t = tmp_path
     (t / "bin").mkdir()
     # runpodctl fails the first time, saying so with exit 0 (its exit is not relied on), then "removes" it: the stand-in
-    # ends the loop as RunPod would, by stopping the container (its process group)
-    script(t / "bin" / "runpodctl", f'#!/bin/sh\necho "runpodctl $*" >> {t}/calls; [ -e {t}/once ] && kill -9 0; touch {t}/once; echo "Error: Unauthorized"; exit 0\n')
+    # ends the loop as RunPod would, by stopping the container (its process group). It stops it only once the image's
+    # start is running, as on a pod (sshd keeps running): otherwise, with no waiting in sleep, the stop could come before
+    # the start had printed anything
+    script(t / "bin" / "runpodctl", f'#!/bin/sh\necho "runpodctl $*" >> {t}/calls; '
+           f'[ -e {t}/once ] && {{ while [ ! -e {t}/started ]; do /bin/sleep 0.05; done; kill -9 0; }}; '
+           f'touch {t}/once; echo "Error: Unauthorized"; exit 0\n')
     script(t / "bin" / "sleep", f'#!/bin/sh\necho "sleep $*" >> {t}/calls\n')   # no waiting
     env = {"PATH": f"{t / 'bin'}:/usr/bin:/bin", "RUNPOD_POD_ID": "pod42"}
-    out = subprocess.run(["bash", "-c", removal_at_boot(int(time.time()) - 1, "echo the image starts")], env=env,
+    # the image's start: slower to begin than the removal (0.2 s), then running until the container stops, as sshd does
+    start = f"sh -c '/bin/sleep 0.2; echo the image starts; touch {t}/started; exec /bin/sleep 30'"
+    out = subprocess.run(["bash", "-c", removal_at_boot(int(time.time()) - 1, start)], env=env,
                          capture_output=True, text=True, timeout=30, start_new_session=True)
     assert out.stdout.strip() == "the image starts"   # its own start runs (exec), the removal beside it
     for _ in range(50):
