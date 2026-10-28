@@ -73,18 +73,18 @@ def coordinator(args) -> Coordinator:
 
 def only(doc: dict, chosen: list[str], reg: Registry) -> dict:
     """The graph with just the chosen nodes and the nodes they need (their inputs' $nodes.X, transitively); graph outputs
-    of nodes left out go too. The app's stage picker: run part of a graph. An optional input (the manifest's
-    optional_inputs) needs nothing: it stays connected when its producer is kept anyway, and is left unconnected when
-    not, so the node runs without it."""
+    of nodes left out go too. An optional input (the manifest's optional_inputs) does not make a node needed: it stays
+    connected when its node is chosen (or needed otherwise), and is dropped when it is not. The app's stage picker: run
+    part of a graph."""
     nodes = {n.get("id"): n for n in doc.get("nodes", [])}
 
     def optional(node: dict) -> list[str]:
         try:
             return reg.get(node.get("uses", "")).optional_inputs
-        except KeyError:   # an unknown node: compile_graph says so
+        except KeyError:   # an unknown node: compile_graph reports it
             return []
 
-    def producer(ref) -> str | None:
+    def node_of(ref) -> str | None:
         return ref.split(".")[1] if isinstance(ref, str) and ref.startswith("$nodes.") else None
 
     keep, todo = set(), [c for item in chosen for c in item.split(",") if c]
@@ -95,17 +95,15 @@ def only(doc: dict, chosen: list[str], reg: Registry) -> dict:
         if name in keep:
             continue
         keep.add(name)
-        skip = optional(nodes[name])
-        todo += [producer(ref) for key, ref in nodes[name].get("inputs", {}).items() if producer(ref) and key not in skip]
+        todo += [node_of(ref) for key, ref in nodes[name].get("inputs", {}).items()
+                 if node_of(ref) and key not in optional(nodes[name])]
     kept = []
     for n in doc["nodes"]:
-        if n.get("id") not in keep:
-            continue
-        skip = optional(n)
-        # a producer the graph lacks stays named, for compile_graph to report
-        dropped = {k for k, ref in n.get("inputs", {}).items() if k in skip and producer(ref) in nodes.keys() - keep}
-        kept.append({**n, "inputs": {k: v for k, v in n["inputs"].items() if k not in dropped}} if dropped else n)
-    outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (isinstance(v, str) and v.startswith("$nodes.") and v.split(".")[1] not in keep)}
+        if n.get("id") in keep:
+            # a producer the graph lacks stays named, for compile_graph to report
+            dropped = [k for k, ref in n.get("inputs", {}).items() if k in optional(n) and node_of(ref) in nodes.keys() - keep]
+            kept.append({**n, "inputs": {k: v for k, v in n["inputs"].items() if k not in dropped}} if dropped else n)
+    outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (node_of(v) and node_of(v) not in keep)}
     return {**doc, "nodes": kept, **({"outputs": outputs} if "outputs" in doc else {})}
 
 

@@ -211,6 +211,40 @@
               { "type": "null", "description": "A voice the pipeline has no centroid for (it pads that row with zeros)." }] }
           }
         }
+      },
+      "speakers_votes": {
+        "description": "layers/speakers_votes.json, a raw side file of the speakers layer (raw.votes): the word votes the layer's voice links come from. Each word of the transcript layer with a voice and at most max_word_seconds long is looked at: of the scored face tracks with a person that have frames during it (speakers_scores), the one whose mean score over the word is highest (of equals, the first in the faces layer's track order) is its top face; the word votes for that face's person if the score is above 0. A voice's share for a person is its votes for that person over its visible words; voices and people (in the order of people) are matched one to one on those shares (Hungarian, maximising the total share), and a voice matched with a share above 0 is linked (the layer's voice_links, its word_share the share to 2 decimals, trusted at the producer's voice_link_min_share or more).",
+        "type": "object",
+        "required": ["max_word_seconds", "people", "voices"],
+        "properties": {
+          "max_word_seconds": { "type": "number", "description": "Longer words (alignment errors) do not vote and are not listed." },
+          "people": { "type": "array", "items": { "$ref": "#/$defs/id/person" }, "uniqueItems": true, "description": "The people voices are matched to: the faces layer's people, in its order (the matching's columns)." },
+          "voices": {
+            "type": "array",
+            "description": "One entry per voice with a word that can vote, by voice id.",
+            "items": {
+              "type": "object", "required": ["voice", "visible", "votes", "words"],
+              "properties": {
+                "voice": { "$ref": "#/$defs/id/voice" },
+                "visible": { "type": "integer", "minimum": 0, "description": "The voice's words with a person's face visible (score not null): the denominator of its shares." },
+                "votes": { "type": "object", "propertyNames": { "$ref": "#/$defs/id/person" }, "additionalProperties": { "type": "integer", "minimum": 1 }, "description": "Votes per person: the voice's words whose top face is that person's and scores above 0." },
+                "words": {
+                  "type": "array",
+                  "description": "The voice's words that can vote, in transcript order.",
+                  "items": {
+                    "type": "object", "required": ["word", "face", "person", "score"],
+                    "properties": {
+                      "word": { "type": "integer", "minimum": 0, "description": "The word's index in the transcript layer's words." },
+                      "face": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }], "description": "Its top face track; null when no person's face has frames during the word." },
+                      "person": { "oneOf": [{ "$ref": "#/$defs/id/person" }, { "type": "null" }], "description": "That face track's person." },
+                      "score": { "type": ["number", "null"], "description": "That face's mean score over the word (of its scores to 2 decimals, unrounded): the word votes when it is above 0." }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "parquet": {
@@ -294,6 +328,39 @@
           { "name": "kpts", "arrow": "fixed_size_list<element: float not null>[399]", "description": "RTMW's 133 keypoints for this box, in the layer's keypoint_names order, each x, y (source pixels), score (the layer's scale)." }
         ]
       },
+      "gestures_evidence": {
+        "description": "layers/gestures_evidence.parquet, a raw side file of the gestures layer (raw.evidence): every hand sample's measurements and outcome for each gesture rule, from which the layer's events are made (positives of one hand and kind merged when at most max_event_gap_s apart, runs shorter than min_event_s dropped), so the thresholds can be revisited. One row per sample of the hands layer, in its order (hands in layer order, each hand's samples in order). The file metadata holds the hand model and every threshold. Columns are not nullable.",
+        "columns": [
+          { "name": "hand", "arrow": "string", "description": "The hand (hand:N): the hands layer's hands[].id." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that hand's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the hands layer's." },
+          { "name": "valid", "arrow": "int32", "description": "How many of the 21 keypoints count: score >= kpt_score_threshold (RTMPose-hand's, file metadata) and inside the upright frame. Below min_valid_kpts no rule is evaluated (the statuses are few_keypoints)." },
+          { "name": "valid_mask", "arrow": "int32", "description": "Which keypoints count: bit i is keypoint i, in the hands layer's keypoint_names order." },
+          { "name": "clasp_iou", "arrow": "float", "description": "IoU of the hand box with the same body's other hand box at t (0 when there is none); pointing is not evaluated at or above clasped_iou." },
+          { "name": "face_status", "arrow": "string", "description": "ok, few_keypoints, no_face (the hand has no face track) or no_landmarks (no faces_detail landmarks or face box within max_face_gap_s of t). The face columns are 0 or false unless ok." },
+          { "name": "face_size", "arrow": "float", "description": "The face box side (source pixels) the face rules scale by, interpolated at t." },
+          { "name": "mouth_dist", "arrow": "fixed_size_list<element: float not null>[21]", "description": "Each keypoint's distance to the mouth centre (the mean of py-feat landmarks 48-67), in face sizes, valid or not (valid_mask says which count)." },
+          { "name": "mouth_near", "arrow": "int32", "description": "Valid keypoints within mouth_radius face sizes of the mouth centre." },
+          { "name": "mouth_in_hull", "arrow": "bool", "description": "Whether the mouth centre lies inside the convex hull of the valid keypoints (at least 3)." },
+          { "name": "face_inside", "arrow": "int32", "description": "Valid keypoints inside the face region: the hull of the 68 landmarks and the brow points raised by forehead face sizes, grown by face_margin face sizes." },
+          { "name": "hand_over_mouth", "arrow": "bool", "description": "The rule's outcome: mouth_near >= min_region_kpts or mouth_in_hull. Its score is mouth_near / valid." },
+          { "name": "self_touch_face", "arrow": "bool", "description": "The rule's outcome: not over the mouth, and face_inside >= min_region_kpts. Its score is face_inside / valid." },
+          { "name": "point_status", "arrow": "string", "description": "ok, few_keypoints, clasped (clasp_iou >= clasped_iou) or missing_keypoints (a joint the rule needs, wrist, index MCP, PIP and tip, middle MCP, or another finger's PIP or tip, does not count). The pointing columns are 0, false or empty unless ok." },
+          { "name": "index_extension", "arrow": "float", "description": "Wrist-to-index-tip over wrist-to-index-PIP; extended needs at least extended_ratio." },
+          { "name": "index_reach", "arrow": "float", "description": "Index MCP-to-tip over wrist-to-middle-MCP; at least min_index_to_palm (shorter is foreshortened, pointing at the camera)." },
+          { "name": "index_straightness", "arrow": "float", "description": "Cosine of the angle between index MCP->PIP and PIP->tip; at least straight_cos." },
+          { "name": "curl", "arrow": "fixed_size_list<element: float not null>[3]", "description": "Wrist-to-tip over wrist-to-PIP for the middle, ring and pinky fingers; each curled below curled_ratio." },
+          { "name": "pointing", "arrow": "bool", "description": "The rule's outcome: all of the above." },
+          { "name": "direction", "arrow": "fixed_size_list<element: double not null>[2]", "description": "The unit vector index MCP -> tip (image x right, y down) when pointing, else [0, 0]. A pointing event's direction is their mean." },
+          { "name": "target", "arrow": "string", "description": "What the ray from the index tip points at when pointing: the shot's other face track (face:N) or object track (obj:N, only when the run had the objects layer) whose box centre is nearest the ray, within half the box's larger side; empty for none. A pointing event's target is the one most samples name." },
+          { "name": "raise_status", "arrow": "string", "description": "ok, few_keypoints, no_body (the hand has no body track), no_wrist (keypoint 0 does not count) or no_shoulders_or_nose (a shoulder or the nose below the bodies layer's score_threshold, or a shoulder below the frame). The raise columns are 0, false or empty unless ok." },
+          { "name": "rise", "arrow": "float", "description": "How far the wrist is above the body's same-side shoulder (source pixels): the lesser of along the image's up and along the body's up (shoulder midpoint -> nose)." },
+          { "name": "shoulder_width", "arrow": "float", "description": "The distance between the shoulders (source pixels)." },
+          { "name": "above_nose", "arrow": "bool", "description": "Whether the wrist is above the nose both in the image and along the body's up." },
+          { "name": "raised_hand", "arrow": "bool", "description": "The rule's outcome: rise > raise_margin x shoulder_width, and the hand not on the face (hand_over_mouth or self_touch_face) unless above_nose." },
+          { "name": "level", "arrow": "string", "description": "head (above_nose) or shoulder when raised, else empty. A raised_hand event is head when most of its samples are." }
+        ]
+      },
       "faces_pyfeat": {
         "description": "layers/faces_pyfeat.parquet, a raw side file of the faces layer (raw.pyfeat): what py-feat Detectorv2 returned for every track sample that neither the layer nor faces_detail, faces_mesh and faces_embeddings keep. One row per sample of the faces layer's tracks, in time order (the samples of one time in the layer's track order). Values are py-feat's float32, unrounded. Columns are not nullable; the file's metadata names the translation and blendshape entries.",
         "per_sample": true,
@@ -327,6 +394,59 @@
           { "name": "embedding", "arrow": "fixed_size_list<element: float not null>[512]", "description": "py-feat's 512-d ArcFace identity embedding, not L2-normalised (as faces_embeddings')." },
           { "name": "mesh", "arrow": "fixed_size_list<element: float not null>[1434]", "description": "The 478-point mesh: all 478 x, then all 478 y (source pixels), then all 478 z (relative depth, as faces_pyfeat's mesh_z)." },
           { "name": "blendshapes", "arrow": "fixed_size_list<element: float not null>[52]", "description": "The 52 blendshape coefficients, as faces_pyfeat's." }
+        ]
+      },
+      "speakers_scores": {
+        "description": "layers/speakers_scores.parquet, a raw side file of the speakers layer (raw.scores): the active speaker detector's (LR-ASD's) score for every 25 fps frame of every face track it scored (the faces layer's tracks of 0.4 s or more, each widened by 0.125 s at both ends within its shot), of which the layer keeps per utterance each candidate face's mean over the utterance. A score above 0 means the face is speaking at that frame. One row per scored frame, in the faces layer's track order, then frame order; a track's frames are consecutive. The layer is made from this file: each track's scores to 2 decimals (from score) are what the layer's candidates, margins and predictions average over the utterance's frames (from int((start - first t) * 25) to int((end - first t) * 25), inclusive), and what speakers_votes' word scores average over each word. The file metadata names the model, fps (25), the window lengths in seconds (windows, in the order of the windows column) and how score is taken from them. No median filter or other smoothing is applied to the scores. Columns are not nullable.",
+        "columns": [
+          { "name": "face", "arrow": "string", "description": "The face track (face:N): the faces layer's tracks[].id." },
+          { "name": "frame", "arrow": "int32", "description": "The 25 fps frame index, from the video stream's first frame: frame i starts at i / 25 s." },
+          { "name": "t", "arrow": "double", "description": "frame / 25, to 3 places." },
+          { "name": "score", "arrow": "float", "description": "The frame's score: the mean of windows (numpy's float32 mean), as LR-ASD's demo scores a frame; the layer reads it to 2 decimals." },
+          { "name": "windows", "arrow": "fixed_size_list<element: float not null>[11]", "description": "The frame's score in each window length the clip was scored in (1, 1, 1, 2, 2, 2, 3, 3, 4, 5, 6 s, as the metadata's windows): the clip is cut into consecutive windows of that length from its first frame and each window scored on its own, as float32 logits (LR-ASD's speaking class), unrounded." }
+        ]
+      },
+      "facing_poses": {
+        "description": "layers/facing_poses.parquet, a raw side file of the facing layer (raw.poses): every pose MediaPipe Pose Landmarker returned for the crop of each face-linked sample of the bodies layer (the body box grown by the metadata's margin, centred in a black square), up to the metadata's poses a crop, of which the layer uses one (kept: the pose whose landmarks centre nearest the box centre). One row per pose, in time order, the bodies of one time in the bodies layer's track order, the poses of one crop in the landmarker's order; a face-linked body sample with no row is one whose crop held no pose. The landmarks are the model's float32 values as it returned them; yaw, pitch and centre the producer's float64 values. The file metadata names the model, the landmarks (names) and the score_threshold a landmark's visibility must reach to count. Columns are not nullable.",
+        "columns": [
+          { "name": "body", "arrow": "string", "description": "The body track (body:N): the bodies layer's tracks[].id." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that track's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the bodies layer's." },
+          { "name": "face", "arrow": "string", "description": "The face track the body is linked to (face:N): the facing layer's from and to." },
+          { "name": "pose", "arrow": "int32", "description": "The pose's index in the landmarker's result for this crop." },
+          { "name": "kept", "arrow": "bool", "description": "Whether the layer uses this pose: the one whose 2D landmarks (all 33) centre nearest the body box's centre, the first of equals. One per sample with a row." },
+          { "name": "window", "arrow": "fixed_size_list<element: int32 not null>[3]", "description": "The crop square [x0, y0, side] in source pixels (it may extend past the frame): a landmark at crop coordinates (x, y) is at (x0 + x * side, y0 + y * side) in the frame." },
+          { "name": "landmarks", "arrow": "fixed_size_list<element: float not null>[165]", "description": "The 33 landmarks in the metadata's names order (BlazePose: nose ... right_foot_index), each x, y (in [0, 1] of the crop), z (depth relative to the hips, in x's scale), visibility and presence (in [0, 1])." },
+          { "name": "world", "arrow": "fixed_size_list<element: float not null>[99]", "description": "The 33 world landmarks in the same order, each x, y, z in metres in a camera-aligned frame (x right, y down, z away) with the origin at the mid-hip. Their visibility and presence are the landmarks' (MediaPipe copies them)." },
+          { "name": "source", "arrow": "string", "description": "What the torso direction comes from: torso (both shoulders and both hips visible: yaw and pitch), shoulders (both shoulders, not both hips: yaw only, pitch 0) or none (not both shoulders: no direction, yaw and pitch 0). A landmark is visible when its visibility reaches score_threshold." },
+          { "name": "yaw", "arrow": "double", "description": "The torso direction's yaw in degrees, unrounded: 0 facing the camera, positive turned to the subject's right (image left), +-180 back to the camera. The events use it to 0.1 degree." },
+          { "name": "pitch", "arrow": "double", "description": "The torso direction's pitch in degrees, unrounded, positive tilted back (torso only, else 0). The events use it to 0.1 degree." },
+          { "name": "centre", "arrow": "fixed_size_list<element: double not null>[2]", "description": "The torso centre [x, y] in source pixels the pose's facing is measured from: the mean of its visible shoulders and hips (as stored to 0.1 px), else the body box's centre." }
+        ]
+      },
+      "facing_angles": {
+        "description": "layers/facing_angles.parquet, a raw side file of the facing layer (raw.angles): what its events are thresholded from. At each sample time, for each face-linked body whose kept pose (facing_poses) has a direction (A) and each other face-linked body with a kept pose there (B), the angle between A's facing vector (-sin(yaw) cos(pitch), -sin(pitch), -cos(yaw) cos(pitch), yaw and pitch to 0.1 degree) and the image direction from A's torso centre to B's at zero depth, and the distance between the centres; a pair whose centres coincide has no row. One row per ordered pair, in time order, then A and B in the bodies layer's track order. The events: at each (t, A), of the Bs with angle <= cone_deg the nearest (lowest dist, then lowest face number) is the one A faces; one pair's times merge across gaps of at most max_gap_s into runs, kept when at least min_facing_s long; score = mean cos(angle), mutual when B faces A for at least min_facing_s of the run. At the metadata's cone_deg, min_facing_s and max_gap_s (the layer's) this gives the layer's events exactly. Columns are not nullable.",
+        "columns": [
+          { "name": "t", "arrow": "double", "description": "The sample time, as the bodies layer's." },
+          { "name": "from", "arrow": "string", "description": "A's face track (face:N)." },
+          { "name": "to", "arrow": "string", "description": "B's face track (face:N)." },
+          { "name": "angle", "arrow": "double", "description": "Degrees in [0, 180] between A's facing vector and the direction to B, unrounded." },
+          { "name": "dist", "arrow": "double", "description": "The distance between A's and B's torso centres in source pixels." }
+        ]
+      },
+      "hands_detections": {
+        "description": "layers/hands_detections.parquet, a raw side file of the hands layer (raw.detections): every detection the hand detector (RTMDet-nano hand) returned on every sampled frame, down to its own NMS's score of 0.05, kept or not, so the score threshold, the gates and the hand assignment can be revisited. One row per detection, in time order, then in the detector's order (highest score first), the order the producer considered them; a frame with no detection has no row. With the bodies layer and shots, the rows give the layer's hands again through the producer's gates, matching and tracking. The file metadata names the detector, the frame size the boxes are in (frame_width, frame_height) and the gates (detector_threshold, min_hand_px, max_detector_box, dedup_iou, wrist_gate). Values are float32, unrounded. Columns are not nullable. Each of the layer's samples with box_source detector is named by exactly one row, and no other (validate.py checks this).",
+        "of_samples": true,
+        "track": { "column": "hand", "field": "id", "tracks": "hands", "none": "", "covers": { "box_source": "detector" } },
+        "columns": [
+          { "name": "t", "arrow": "double", "description": "The frame's time, as the layer's samples' (frame / fps, to 3 places)." },
+          { "name": "score", "arrow": "float", "description": "The detector's score in [0.05, 1], unrounded (float32, as the model returned it)." },
+          { "name": "box", "arrow": "fixed_size_list<element: float not null>[4]", "description": "The detection's box [x, y, w, h] in source pixels, unrounded (a layer sample from it has it to 0.1)." },
+          { "name": "reason", "arrow": "string", "description": "Why it is or is not a hand of the layer, in the order the producer tests: below_score (under detector_threshold), below_gate (shorter side under min_hand_px), too_large (longer side over max_detector_box x the frame height), duplicate (IoU >= dedup_iou with a hand from the bodies' keypoints or a higher-scoring detection kept so far), wrist_taken (matched to a wrist that already has its hand), linked (kept, with the body and side of the wrist it matched), unlinked (kept, matched to no wrist)." },
+          { "name": "body", "arrow": "string", "description": "The body track (body:N) of the wrist the matching gave it (linked, wrist_taken), or empty." },
+          { "name": "side", "arrow": "string", "description": "That wrist's side (left, right), or empty." },
+          { "name": "hand", "arrow": "string", "description": "The hand (hand:N) of the layer sample it became (linked, unlinked), or empty." },
+          { "name": "sample", "arrow": "int32", "description": "That sample's index in the hand's samples, or -1." }
         ]
       }
     },

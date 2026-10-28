@@ -6,6 +6,9 @@ sample has its frame; frames with no body still go through the hand detector. Pe
 bodies' hand keypoints and from RTMDet-nano hand, RTMPose-m Hand5 estimates the keypoints in each (models.py), and
 hand_tracks.py links and tracks them.
 
+Beside the layer, a side file keeps every detection RTMDet-nano hand returned, kept or not, with its score and why
+(hand_detections.py), so hand assignment can be revisited. The layer points at it with raw.detections.
+
 Licence: rtmlib's code and the RTMPose-hand and RTMDet-hand weights are Apache-2.0, but Hand5 is trained on
 COCO-WholeBody-Hand (non-commercial) and FreiHAND (research only), RTMDet-nano hand on FreiHAND too, and the hand boxes
 come from RTMW (academic-only): so this layer is academic-only.
@@ -18,6 +21,7 @@ import cv2
 import numpy as np
 
 from perception_node import Node, NodeError
+import hand_detections
 from hand_tracks import KEYPOINTS, SKELETON, body_indices, bodies_by_time, frame_hands, layer_hands, propose, track_hands
 from models import WEIGHTS, Hands
 
@@ -81,28 +85,50 @@ with Node() as node:
     node.model(DET_ID, licence_mode="academic-only", source=WEIGHTS["rtmdet_hand"]["url"],
                revision=WEIGHTS["rtmdet_hand"]["sha256"], licence=DET_LICENCE)
 
-    stats = {"wrist_proposals": 0, "wrist_below_gate": 0, "detector_below_gate": 0, "detector_too_large": 0,
-             "detector_duplicate": 0, "detector_linked": 0, "detector_unlinked": 0}
-    frames, seen = [], set()
+    stats = {"wrist_proposals": 0, "wrist_below_gate": 0, "detector_below_score": 0, "detector_below_gate": 0,
+             "detector_too_large": 0, "detector_duplicate": 0, "detector_linked": 0, "detector_unlinked": 0}
+    frames, seen, sizes = [], set(), set()
+    detections = hand_detections.Detections()   # every detection and what became of it (the side file)
     t_all = time.time()
     for t, shot, image in sampled(video, fps, shots, step):
         seen.add(t)
         height, width = image.shape[:2]   # the frame as decoded (upright): the coordinates body-pose's keypoints are in
+        sizes.add((width, height))
         posed = [propose(b, idx, threshold, width, height) for b in bodies.get(t, [])]
         stats["wrist_proposals"] += sum(len(b["proposals"]) for b in posed)
-        frames.append((t, shot, frame_hands(image, posed, model, stats)))
+        record = []
+        frames.append((t, shot, frame_hands(image, posed, model, stats, record)))
+        try:
+            detections.add(t, record)
+        except ValueError as e:
+            raise NodeError("internal", f"the hand detector's output: {e}") from None
     total_s = round(time.time() - t_all, 1)
     missing = sorted(set(bodies) - seen)
     if missing:
         raise NodeError("input", f"{len(missing)} body samples are not on this video's sampling grid (e.g. {missing[:3]}): "
                                  "the bodies layer is not this video's")
-    hands = layer_hands(track_hands(frames))
+    if len(sizes) > 1:   # the side file names one frame size, which a re-run of the gates and matching needs
+        raise NodeError("input", f"the frames change size ({sorted(sizes)[:3]}): the side file names one frame size")
+    tracks = track_hands(frames)
+    hands = layer_hands(tracks)
 
     node.write_json("hands", "hands.json", {
         "layer": "hands", "schema_version": "0.1.0",
         "producer": node.producer(timings={"load_s": load_s, "detect_s": round(model.detect_s, 1), "pose_s": round(model.pose_s, 1),
                                            "total_s": total_s}, device=device),
-        "keypoint_names": KEYPOINTS, "skeleton": SKELETON, "score_threshold": None, "fps": bodies_layer["fps"], "hands": hands})
+        "keypoint_names": KEYPOINTS, "skeleton": SKELETON, "score_threshold": None, "fps": bodies_layer["fps"], "hands": hands,
+        "raw": {"detections": {"file": hand_detections.FILE, "format": "parquet", "description": hand_detections.DESCRIPTION}}})
+    width, height = sizes.pop() if sizes else (media["width"], media["height"])
+    side_path = node.path("detections", "hands_detections.parquet")
+    try:
+        hand_detections.write(side_path, detections.columns(tracks), DET_ID, width, height)
+    except ValueError as e:
+        raise NodeError("internal", f"the detections side file: {e}") from None
+    # the stored detections must give the layer's hands through hand_tracks' own gates, matching and tracking (as
+    # decode checks its stored scores give its cuts): about 0.3 s on OOO clip 1
+    problem = hand_detections.check(side_path, hands, bodies_layer, shots)
+    if problem:
+        raise NodeError("internal", f"the detections side file does not give the layer: {problem}")
     samples = lambda pred: sum(len(h["samples"]) for h in hands if pred(h))
     node.usage(frames=len(frames), hands=len(hands), samples=samples(lambda h: True),
                linked_samples=samples(lambda h: h["body"] is not None), face_linked_samples=samples(lambda h: h["face"] is not None),

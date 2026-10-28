@@ -60,7 +60,8 @@ with Node() as node:
     scale = c["head_box_scale"]
     video, media, faces = node.input("video"), node.input_json("media"), node.input_json("faces")
     face_tracks = tracks_of(faces)
-    objects = objects_by_shot(node.input_json("objects")) if node.has_input("objects") else {}
+    has_objects = "objects" in node.request["inputs"]   # an optional input: absent when the run leaves objects out
+    objects = objects_by_shot(node.input_json("objects")) if has_objects else {}
     try:
         heads = heads_by_frame(face_tracks, media["fps"])
     except ValueError as e:
@@ -105,5 +106,5 @@ with Node() as node:
                targets={"face": sum(isinstance(s["target"], int) for s in samples), "out": sum(s["target"] == "out" for s in samples),
                         "object": sum(isinstance(s["target"], str) and s["target"].startswith("obj:") for s in samples),
                         "none": sum(s["target"] is None for s in samples)},
-               objects=sum(len(v) for v in objects.values()) if node.has_input("objects") else None,
+               objects=sum(len(v) for v in objects.values()) if has_objects else None,
                realtime_factor=round(total_s / media["duration"], 3))

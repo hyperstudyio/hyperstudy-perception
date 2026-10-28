@@ -240,6 +240,31 @@ def test_only_keeps_the_chosen_nodes_and_what_they_need_and_drops_the_rest(home,
     assert err["type"] == "error" and "the graph has no node 'zz'" in err["problems"][0]
 
 
+def test_only_leaves_out_what_an_optional_input_reads_unless_it_is_chosen(home, capsys):
+    # c reads a, and b through its optional input (gestures and objects): choosing c alone runs c without b
+    c = {"id": "c", "uses": "test.optional@1.0.0", "inputs": {"a": "$nodes.a.out", "b": "$nodes.b.out"},
+         "config": {"record_dir": str(home / "rec")}}
+    g = graph(home, [work("a", home), work("b", home, add=10), c])
+    assert cli("plan", str(g), "--only", "c") == 0
+    [plan] = lines(capsys)
+    assert {n["id"]: n["needs"] for n in plan["nodes"]} == {"a": [], "c": ["a"]}
+    assert cli("plan", str(g), "--only", "c,b") == 0
+    [plan] = lines(capsys)
+    # b is connected, and c waits for it, but only as an optional need: a stage picker need not choose b with c
+    assert {n["id"]: (n["needs"], n["optional_needs"]) for n in plan["nodes"]} == {"a": ([], []), "b": ([], []), "c": (["a"], ["b"])}
+    assert cli("plan", str(g)) == 0
+    [plan] = lines(capsys)
+    assert {n["id"]: (n["needs"], n["optional_needs"]) for n in plan["nodes"]}["c"] == (["a"], ["b"])
+    assert cli("run", str(g), "--only", "c") == 0
+    out = lines(capsys)
+    assert {e["node"] for e in out if e["type"] == "event" and e["kind"] == "task.succeeded"} == {"a", "c"}
+    assert out[-1]["status"] == "succeeded"
+    assert cli("nodes") == 0
+    [doc] = lines(capsys)
+    optional = next(n for n in doc["nodes"] if n["ref"] == "test.optional@1.0.0")
+    assert optional["optional_inputs"] == ["b"] and optional["inputs"] == {"a": "json.v1", "b": "json.v1"}
+
+
 def test_a_run_with_only_runs_just_those_nodes_and_keeps_the_choice_for_resume(home, capsys):
     g = graph(home, [work("a", home), work("b", home, a="$nodes.a.out"), work("d", home)])
     assert cli("run", str(g), "--only", "b") == 0

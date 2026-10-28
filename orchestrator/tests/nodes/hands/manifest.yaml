@@ -1,0 +1,9 @@
+id: test.hands
+version: 1.0.0
+description: Writes a bundle hands layer and its Parquet detections side file, as vision.hands does (validate tests)
+inputs: {video: video.v1}
+outputs: {hands: bundle.hands@0.1, detections: bundle.hands_detections@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-hands, licence_mode: academic-only}

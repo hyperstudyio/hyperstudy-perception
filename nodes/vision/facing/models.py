@@ -35,8 +35,12 @@ def weights() -> str:
 
 
 class Landmarker:
-    """__call__(BGR square crop) -> [(landmarks (33, 3): x, y in [0, 1] of the crop and visibility, world (33, 3) in
-    metres)] for every pose found in it, at most `poses`."""
+    """__call__(BGR square crop) -> [(landmarks (33, 5): x, y in [0, 1] of the crop, z, visibility, presence; world
+    (33, 3): x, y, z in metres)] for every pose found in it, at most `poses`, in the landmarker's order. Its values are
+    float32 (MediaPipe's), held as float64 exactly.
+
+    The world landmarks' visibility and presence are not kept apart: MediaPipe copies them from the image landmarks
+    (its pose graph's VisibilityCopyCalculator), and a crop where they differ fails the node rather than losing one."""
 
     def __init__(self, accelerator: str, poses: int):
         if accelerator != "cpu":
@@ -54,8 +58,15 @@ class Landmarker:
         import numpy as np
         image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=np.ascontiguousarray(cv2.cvtColor(square, cv2.COLOR_BGR2RGB)))
         result = self.landmarker.detect(image)
-        return [(np.array([[p.x, p.y, p.visibility] for p in lms]), np.array([[p.x, p.y, p.z] for p in world]))
-                for lms, world in zip(result.pose_landmarks, result.pose_world_landmarks)]
+        poses = []
+        for lms, world in zip(result.pose_landmarks, result.pose_world_landmarks):
+            image_lms = np.array([[p.x, p.y, p.z, p.visibility, p.presence] for p in lms])
+            world_lms = np.array([[p.x, p.y, p.z, p.visibility, p.presence] for p in world])
+            if not np.array_equal(image_lms[:, 3:], world_lms[:, 3:]):
+                raise NodeError("internal", "MediaPipe returned world landmarks whose visibility or presence differ from "
+                                            "the image landmarks'; the facing side file keeps only one of them")
+            poses.append((image_lms, world_lms[:, :3]))
+        return poses
 
     def close(self):
         self.landmarker.close()

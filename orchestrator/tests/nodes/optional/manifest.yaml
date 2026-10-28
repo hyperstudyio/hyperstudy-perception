@@ -1,14 +1,18 @@
 id: test.optional
 version: 1.0.0
-description: a's value plus add, and b's when the graph connects b (an optional input)
+title: Optional input
+description: test.work with a second input the graph may leave out (optional_inputs); it sums the inputs it is given
 inputs: {a: json.v1, b: json.v1}
 optional_inputs: [b]
 outputs: {out: json.v1}
 config:
   add: {type: number, default: 1}
+  sleep: {type: number, default: 0}
+  fail: {enum: [none], default: none}
+  fail_until: {type: integer, default: 0}
   record_dir: {type: string}
 runners:
-  - {kind: self, entry: node.py}
+  - {kind: self, entry: ../work/node.py}
 resources: {cpu_cores: 1, memory_gb: 0.1}
 models:
   - {id: test-model, licence_mode: commercial-ok}

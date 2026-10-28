@@ -80,11 +80,6 @@ class Node:
     def input_json(self, name: str):
         return json.loads(self.input(name).read_text())
 
-    def has_input(self, name: str) -> bool:
-        """Whether the request carries this input: one of the manifest's optional_inputs is absent when the graph left it
-        unconnected (or `--only` left its producer out)."""
-        return name in self.request.get("inputs", {})
-
     def secret(self, name: str) -> str:
         """A secret the request names, from the environment the coordinator gave this process."""
         if name not in self.request.get("secrets", []):
