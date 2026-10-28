@@ -69,7 +69,8 @@ def manifest_cost(m: Manifest, config: dict, inputs: dict[str, Artifact]) -> flo
     if m.cost.per == "run":
         return m.cost.unit_usd(config)
     doc = json.loads(inputs[m.cost.input].path.read_text())
-    units = len(doc["shots"]) if m.cost.per == "shot" else doc["duration"] / 60
+    units = {"shot": lambda: len(doc["shots"]), "utterance": lambda: len(doc["utterances"]),
+             "minute": lambda: doc["duration"] / 60}[m.cost.per]()
     return round(m.cost.unit_usd(config) * units, 4)
 
 

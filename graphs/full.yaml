@@ -1,8 +1,9 @@
 # Everything the pipeline can do: the graph the annotator app runs. The app's feature list picks what runs (--only, with
 # what it needs), settings (--set) and places (--place). Nothing leaves the machine without --allow-uploads, and then
 # only the kinds allow_upload names: frames, faces and transcript for the captions API (frames and faces also for the
-# objects node's naming and crop check), and video and audio for a step placed on another machine (a lab server, a cloud
-# GPU), which receives its inputs. Embeddings too: the faces layer holds ArcFace identity distances (person_pairs), and
+# objects node's naming and crop check), audio and transcript for the delivery captions (per-utterance snippets to
+# OpenAI), and video and audio for a step placed on another machine (a lab server, a cloud GPU), which receives its
+# inputs. Embeddings too: the faces layer holds ArcFace identity distances (person_pairs), and
 # every step that reads it (bodies, gaze, hands...) receives it when placed elsewhere; the run's consent still names it
 # per step. max_cost_usd caps the spend.
 #   perception plan graphs/full.yaml --input video=PATH/TO/VIDEO.mp4
@@ -18,7 +19,9 @@ policy:
   placement: hybrid
   privacy: local-preferred
   allow_upload: [video, audio, frames, faces, transcript, embeddings]
-  max_cost_usd: 0.50
+  # OOO clip 1's estimates: shot captions $0.13, objects $0.13, delivery captions $0.69 (86 utterances; about $0.35 spent
+  # in the bake-off)
+  max_cost_usd: 1.50
   retries: 1
 nodes:
   - id: decode
@@ -81,3 +84,13 @@ nodes:
     uses: vlm.shot-captions@1.0.0
     inputs: {shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes, transcript: $nodes.diarize.transcript,
              faces: $nodes.faces.faces, media: $nodes.decode.media}
+  # how each utterance is said: Praat's measures against its speaker's pitch range (the speakers layer names the speaker)
+  # and the Odyssey baseline's arousal, dominance and valence, all on this machine
+  - id: prosody
+    uses: audio.prosody@1.0.0
+    inputs: {audio: $nodes.decode.audio, transcript: $nodes.diarize.transcript, speakers: $nodes.speakers.speakers}
+  # the delivery in words and tags, by gpt-audio-1.5 (each utterance's audio with 1 s of context, and its transcript
+  # lines, go to OpenAI: OPENAI_API_KEY), written into the prosody layer. Its own node, so prosody runs without uploads
+  - id: prosody_captions
+    uses: audio.prosody-captions@1.0.0
+    inputs: {audio: $nodes.decode.audio, transcript: $nodes.diarize.transcript, prosody: $nodes.prosody.prosody}

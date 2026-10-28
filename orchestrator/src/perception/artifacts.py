@@ -265,6 +265,17 @@ class Side:
 # shoulder, and the face or object track pointed at. Scalars about the hand's pose relative to the face and body, with
 # no landmark, face box position, pixel or embedding: the kinds of the hands and bodies layers (none), whose keypoints
 # place the hand and the head far more precisely than these distances do.
+# The prosody tracks are Praat's frames: pitch every 10 ms over the whole clip and over each utterance, intensity every
+# 10 ms, harmonicity per utterance and the glottal pulses: no samples, but a dense measure of the voice (pitch and loudness
+# every 10 ms are enough to resynthesise a buzz with its melody and rhythm), as sounds_tags is of the soundtrack. So
+# audio. Not transcript: rows name utterances by number and speakers by index, no words. The prosody speakers file holds
+# each speaker's pitch range and median, and the 20 Hz contour in Hz (the layer holds it in semitones, and the layer
+# counts as audio): audio. Speakers are named as the layer names them (person labels, voice labels), no words. The
+# prosody emotion file holds three numbers per utterance (Odyssey's arousal, dominance, valence) and the sample range
+# each was read from: estimates about the speech, from which no sound, word or identity can be recovered. No kind.
+# The prosody captions file holds what was sent to and returned by the OpenAI API per utterance: the prompt (the
+# utterance's transcript and its neighbours'), the model's description of how it is said and the tags: transcript (the
+# snippets' audio is not kept in it, only their times).
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -286,6 +297,10 @@ SIDE_FILES: dict[str, Side] = {
     "facing_angles": Side("facing", (), "parquet"),
     "hands_detections": Side("hands", (), "parquet"),
     "gestures_evidence": Side("gestures", (), "parquet"),
+    "prosody_tracks": Side("prosody", ("audio",), "parquet"),
+    "prosody_speakers": Side("prosody", ("audio",)),
+    "prosody_emotion": Side("prosody", ()),
+    "prosody_captions": Side("prosody", ("transcript",), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}
