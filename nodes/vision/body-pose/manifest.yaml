@@ -1,10 +1,13 @@
 id: vision.body-pose
-version: 1.0.0
+version: 1.1.0
 stage: bodies
 title: Body pose
 description: Each person's 2D skeleton (133 whole-body keypoints, RTMW-l; people found by YOLOX-m), tracked within shots and linked to their face track
 inputs: {video: video.v1, media: media.v1, shots: bundle.shots@0.1, faces: bundle.faces@0.1}
-outputs: {bodies: bundle.bodies@0.1}
+# scores and duplicates: layers/bodies_scores.parquet and layers/bodies_duplicates.parquet, what the layer drops of the
+# models' output (YOLOX-m's score for every body sample; the detections dropped as second detections of a person, with
+# their box, score and keypoints), which the layer points at with raw.scores and raw.duplicates (detections.py)
+outputs: {bodies: bundle.bodies@0.1, scores: bundle.bodies_scores@0.1, duplicates: bundle.bodies_duplicates@0.1}
 config:
   # the faces node's rate by default, so a body sample and a face sample share a timestamp (the face link needs both)
   fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 8, description: "frames sampled per second"}

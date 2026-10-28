@@ -44,7 +44,7 @@ nodes:
     inputs: {video: $inputs.video, audio: $nodes.decode.audio, shots: $nodes.decode.shots, faces: $nodes.faces.faces,
              transcript: $nodes.diarize.transcript}
   - id: bodies
-    uses: vision.body-pose@1.0.0
+    uses: vision.body-pose@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, faces: $nodes.faces.faces}
   # who faces whom: MediaPipe 3D torso direction for the bodies' own person boxes (no second detector pass)
   - id: facing

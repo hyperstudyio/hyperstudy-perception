@@ -233,6 +233,11 @@ class Side:
 # waveform is), including the speech classes the sounds layer leaves out (male, female and child speech, conversation,
 # whispering...), where the layer (which holds no kind) keeps only labelled events above a threshold. So audio. Not
 # transcript: no words.
+# The bodies scores are YOLOX-m's score for every body sample, and the bodies duplicates the detections dropped as
+# second detections of a person (box, score, RTMW keypoints, the sample they duplicated): the same kind of data as the
+# bodies layer, so they hold its kinds, none. Like the layer's, their 133 COCO-WholeBody keypoints include 68 face
+# landmarks, which faces_detail's py-feat landmarks count as faces: if the bodies layer is ever counted as faces for
+# them, these files go with it (no pixels, face images or identity embeddings either way).
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -244,6 +249,8 @@ SIDE_FILES: dict[str, Side] = {
     "transcript_voice_embeddings": Side("transcript", ("embeddings",)),
     "sounds_tags": Side("sounds", ("audio",), "parquet"),
     "sounds_queries": Side("sounds", ("audio",), "parquet"),
+    "bodies_scores": Side("bodies", (), "parquet"),
+    "bodies_duplicates": Side("bodies", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

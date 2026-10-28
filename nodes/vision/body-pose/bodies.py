@@ -8,6 +8,9 @@ per frame). Bodies are then tracked within shots (track_bodies): face-linked bod
 the rest by box IoU; a cut always ends a track, and a face track is never linked to two body tracks at once.
 
 Boxes are [x, y, w, h] in pixels; keypoints [x, y, score], the score RTMW's own (SimCC peaks, not probabilities).
+
+Beside the layer, side_rows gives the rows of its two side files (detections.py): YOLOX-m's score for every body
+sample, which the layer does not keep, and every detection drop_duplicate_bodies removed, with the body it duplicated.
 """
 
 from __future__ import annotations
@@ -67,29 +70,36 @@ def keypoints_in_face(kpts, face, score_threshold: float) -> int:
                and fx - mx <= kpts[i][0] <= fx + fw + mx and fy - my <= kpts[i][1] <= fy + fh + my)
 
 
-def drop_duplicate_bodies(bodies: list[dict], head_idx: list[int], score_threshold: float) -> list[dict]:
+def drop_duplicate_bodies(bodies: list[dict], head_idx: list[int], score_threshold: float,
+                          dropped: list[dict] | None = None) -> list[dict]:
     """Remove second detections of the same person: of two bodies whose head and shoulder joints (visible in both)
     lie within DUPLICATE_HEAD_DIST x the smaller box's sqrt(area), keep the higher detector score.
 
     YOLOX's ONNX ends in its own NMS, so it can return two boxes on one person (on OOO at 69.0 s, one fully inside the
     other, IoU 0.63). Box IoU cannot tell duplicates from real overlapping people, but the joints can: same-frame pairs
-    with IoU >= 0.2 had a median head/shoulder distance below 0.05 or above 0.16 of box size (bake-off, 1004 pairs)."""
+    with IoU >= 0.2 had a median head/shoulder distance below 0.05 or above 0.16 of box size (bake-off, 1004 pairs).
+
+    `dropped`, when given, receives {"body", "of", "dist"} for each body removed: the kept body it duplicated (the
+    first, by score, within the distance) and their median head/shoulder distance over the smaller box's sqrt(area)."""
     order = sorted(range(len(bodies)), key=lambda i: -bodies[i]["score"])
     kept = []
     for i in order:
         a = bodies[i]["kpts"][head_idx]
-        duplicate = False
+        duplicate = None
         for j in kept:
             b = bodies[j]["kpts"][head_idx]
             both = (a[:, 2] >= score_threshold) & (b[:, 2] >= score_threshold)
             if both.sum() < 2:
                 continue
             scale = min(np.sqrt(bodies[i]["box"][2] * bodies[i]["box"][3]), np.sqrt(bodies[j]["box"][2] * bodies[j]["box"][3]))
-            if np.median(np.linalg.norm(a[both, :2] - b[both, :2], axis=1)) < DUPLICATE_HEAD_DIST * scale:
-                duplicate = True
+            dist = np.median(np.linalg.norm(a[both, :2] - b[both, :2], axis=1))
+            if dist < DUPLICATE_HEAD_DIST * scale:
+                duplicate = (j, float(dist / scale))
                 break
-        if not duplicate:
+        if duplicate is None:
             kept.append(i)
+        elif dropped is not None:
+            dropped.append({"body": bodies[i], "of": bodies[duplicate[0]], "dist": duplicate[1]})
     return [bodies[i] for i in sorted(kept)]
 
 
@@ -160,9 +170,14 @@ def one_body_per_face(tracks: list[dict]) -> None:
             raise AssertionError(f"{face_a} linked to two bodies at once ({start_b} <= {end_a})")
 
 
+def ordered_tracks(tracks: list[dict]) -> list[dict]:
+    """Tracks in shot then time order: track i is the layer's body:i."""
+    return sorted(tracks, key=lambda tr: (int(tr["shot"].split(":")[1]), tr["samples"][0]["t"]))
+
+
 def layer_tracks(tracks: list[dict]) -> list[dict]:
     """The bodies layer's tracks: ids body:N in shot then time order, coordinates rounded as the bake-off's."""
-    ordered = sorted(tracks, key=lambda tr: (int(tr["shot"].split(":")[1]), tr["samples"][0]["t"]))
+    ordered = ordered_tracks(tracks)
     return [{
         "id": f"body:{i}", "shot": tr["shot"], "face": tr["face"],
         "link": "face-in-box+keypoints" if tr["face"] is not None else None,
@@ -171,3 +186,25 @@ def layer_tracks(tracks: list[dict]) -> list[dict]:
                      "kpts": [[round(float(x), 1), round(float(y), 1), round(float(c), 2)] for x, y, c in s["kpts"]]}
                     for s in tr["samples"]],
     } for i, tr in enumerate(ordered)]
+
+
+def side_rows(tracks: list[dict], duplicates: list[dict]) -> tuple[list[tuple], list[tuple]]:
+    """The rows of the two side files (detections.py writes them), unrounded:
+
+    scores      (body, sample, t, score): YOLOX-m's score for every sample of the layer's tracks, in time order, the
+                bodies of one time in the layer's track order.
+    duplicates  (t, body, sample, score, dist, box, kpts): every detection drop_duplicate_bodies removed, in time order
+                then by score (highest first), with the layer sample it duplicated (body, sample: at the same t), their
+                head/shoulder distance (dist), and its own box [x, y, w, h] and keypoints (133 x [x, y, score]).
+
+    `tracks` are track_bodies' (before layer_tracks); each sample's body carries "det", its index among its frame's
+    detections. `duplicates` are drop_duplicate_bodies' records with the frame's "t" added."""
+    scores, owner = [], {}
+    for i, tr in enumerate(ordered_tracks(tracks)):
+        for j, s in enumerate(tr["samples"]):
+            scores.append(((s["t"], i), (f"body:{i}", j, s["t"], float(s["score"]))))
+            owner[(s["t"], s["det"])] = (f"body:{i}", j)
+    dups = [(d["t"], *owner[(d["t"], d["of"]["det"])], float(d["body"]["score"]), d["dist"],
+             [float(v) for v in d["body"]["box"]], np.asarray(d["body"]["kpts"], dtype=float).reshape(-1).tolist())
+            for d in sorted(duplicates, key=lambda d: (d["t"], -d["body"]["score"]))]
+    return [row for _, row in sorted(scores, key=lambda keyed: keyed[0])], dups

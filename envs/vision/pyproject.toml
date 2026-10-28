@@ -16,6 +16,9 @@ dependencies = [
   # facing: Pose Landmarker on the CPU (XNNPACK); wheels for macOS arm64, Linux x86_64/aarch64 and Windows
   "mediapipe==1.1.1",
   "numpy",
+  # writes body pose's side files (nodes/vision/body-pose/detections.py). Pinned exactly: its version names itself in
+  # the file's footer, so the same rows are the same bytes only on the same pyarrow
+  "pyarrow==26.0.0",
 ]
 
 [tool.uv]
