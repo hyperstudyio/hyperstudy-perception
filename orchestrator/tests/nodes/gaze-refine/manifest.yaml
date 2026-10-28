@@ -1,0 +1,9 @@
+id: test.gaze-refine
+version: 1.0.0
+description: Refines a gaze layer and keeps its raw pointers, as audio.diarize refines asr's transcript (export tests)
+inputs: {gaze: bundle.gaze@0.1}
+outputs: {gaze: bundle.gaze@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-gaze, licence_mode: needs-review}

@@ -1,0 +1,9 @@
+id: test.gaze-merge
+version: 1.0.0
+description: Refines one of two gaze layers, downstream of both, and keeps its raw pointers (export tests)
+inputs: {gaze: bundle.gaze@0.1, other: bundle.gaze@0.1}
+outputs: {gaze: bundle.gaze@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-gaze, licence_mode: needs-review}

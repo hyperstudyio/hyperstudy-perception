@@ -3,27 +3,20 @@
 Parakeet TDT 0.6B v3 (MLX, Apple silicon). Utterances split at a pause over 0.25 s, a sentence end, or a shot cut,
 as the annotator prototype did (pipeline/bakeoff/label_page.py). Voices come from the diarization node, not here:
 every word's voice is null.
+
+Beside the layer, the side file layers/transcript_tokens.parquet keeps every token Parakeet returned: its vocabulary
+id, text, times and confidence, its sentence, and the layer word it is part of (raw_tokens.py, which also merges the
+tokens into the layer's words). The layer points at it with raw.tokens.
 """
 
 import time
 
+import raw_tokens
 from perception_node import Node, NodeError
 from wav import read_wav
 
 PAUSE_SPLIT = 0.25            # seconds of silence between words that starts a new utterance
 SENTENCE_END = (".", "?", "!")
-
-
-def to_words(sentence) -> list[dict]:
-    """Merge Parakeet's subword tokens into words; a leading space starts a new word."""
-    words = []
-    for token in sentence.tokens:
-        if not words or token.text.startswith(" "):
-            words.append({"w": token.text.strip(), "start": token.start, "end": token.end})
-        else:
-            words[-1]["w"] += token.text
-            words[-1]["end"] = token.end
-    return [{**w, "start": round(w["start"], 3), "end": round(w["end"], 3)} for w in words if w["w"]]
 
 
 def utterances(words: list[dict], shots: list[dict]) -> list[dict]:
@@ -65,10 +58,16 @@ with Node() as node:
     seconds = round(time.time() - t0, 1)
     node.model(model_id, licence_mode="commercial-ok", source=f"hf://{model_id}", licence="CC-BY-4.0")
 
-    words = [{**w, "voice": None} for sentence in result.sentences for w in to_words(sentence)]
+    try:
+        words, tokens = raw_tokens.to_words(result.sentences)
+    except ValueError as e:   # a confidence that is not finite
+        raise NodeError("internal", f"Parakeet's output: {e}") from None
+    words = [{**w, "voice": None} for w in words]
+    raw_tokens.write(node.path("tokens", "transcript_tokens.parquet"), tokens)
     shots = node.input_json("shots")["shots"]
     node.write_json("transcript", "transcript.json", {
         "layer": "transcript", "schema_version": "0.1.0",
         "producer": node.producer(timings={"seconds": seconds}, device="mlx"),
-        "voices": [], "words": words, "utterances": utterances(words, shots)})
+        "voices": [], "words": words, "utterances": utterances(words, shots),
+        "raw": {"tokens": {"file": raw_tokens.FILE, "format": "parquet", "description": raw_tokens.DESCRIPTION}}})
     node.usage(audio_seconds=round(words[-1]["end"], 1) if words else 0, words=len(words))
