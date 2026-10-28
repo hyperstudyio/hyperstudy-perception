@@ -151,6 +151,17 @@ def test_a_box_on_a_wrist_hand_takes_no_free_wrist_from_a_real_hand_box():
     assert s["detector_duplicate"] == 1 and s["detector_linked"] == 1
 
 
+def test_a_lower_scoring_duplicate_of_a_detector_box_takes_no_wrist_from_it():
+    """RTMDet's NMS leaves a second box on one hand. The real box (0.9) has the wrist 2 px outside it (cost 0.033), its
+    leftover (0.5, IoU 0.69) has it inside (cost 0): matched before the leftover was dropped, the leftover took the
+    wrist and the real box was kept with no body or side."""
+    body = propose(a_body(wrists={"left": (100, 100)}), IDX, THRESHOLD, W, H)
+    s = stats()
+    hands = frame_hands(FRAME, [body], Fake([([102, 60, 60, 60], 0.9), ([90, 60, 70, 70], 0.5)]), s)
+    assert [(h["box"], h["side"], h["person"]) for h in hands] == [([102, 60, 60, 60], "left", {"body": "body:0", "face": "face:0"})]
+    assert s["detector_duplicate"] == 1 and s["detector_linked"] == 1
+
+
 def test_a_small_wrist_hand_is_not_posed():
     body = propose(a_body(hands={"left": hand_at(500, 500, r=10)}), IDX, THRESHOLD, W, H)
     assert body["proposals"]["left"][2] < MIN_HAND_PX
