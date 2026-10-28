@@ -1,0 +1,27 @@
+id: vision.hands
+version: 1.0.0
+stage: hands
+title: Hands
+description: Each hand's 21 keypoints (RTMPose-m Hand5; boxes from the bodies' hand keypoints and RTMDet-nano hand), tracked within shots and linked to its body and face tracks
+# sampled on the bodies layer's grid, at its fps; the face links come with the bodies
+inputs: {video: video.v1, media: media.v1, shots: bundle.shots@0.1, bodies: bundle.bodies@0.1}
+outputs: {hands: bundle.hands@0.1}
+runners:
+  # RTMPose-hand on CoreML (NeuralNetwork format, as the bake-off), RTMDet-hand on the CPU: see models.py
+  - {kind: native, env: envs/vision, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # onnxruntime-gpu's CUDA provider: CUDA 13 and cuDNN 9 come with it (envs/vision); the machine needs an NVIDIA driver >= 580
+  - {kind: native, env: envs/vision, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 2}
+  - {kind: native, env: envs/vision, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 4, memory_gb: 2, gpu: shared}   # 0.7 GB peak RSS on mps (OOO)
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
+models:
+  - {id: "RTMPose-m Hand5 256x256 (rtmpose-m_simcc-hand5_pt-aic-coco_210e)",
+     source: "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-hand5_pt-aic-coco_210e-256x256-74fb594_20230320.zip",
+     sha256: 39e858936bca0f94c09847d4e70b68a51d6c0adac61f36b457fcadb54621cd29, size_gb: 0.055,
+     licence: "Apache-2.0 weights trained on Hand5: COCO-WholeBody-Hand (non-commercial), FreiHAND (research only), OneHand10K, RHD, Halpe; boxes from RTMW (academic-only)",
+     licence_mode: academic-only}
+  - {id: "RTMDet-nano hand 320x320 (rtmdet_nano_8xb32-300e_hand)",
+     source: "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmdet_nano_8xb32-300e_hand-267f9c8f.zip",
+     sha256: 568d3ea97a5b142488366b67e036b6a5cb0a1fef9087a710cb8e66b6979fbac2, size_gb: 0.004,
+     licence: "Apache-2.0 weights trained on OneHand10K, FreiHAND (research only), RHD and Halpe-Hand", licence_mode: academic-only}

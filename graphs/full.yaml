@@ -44,6 +44,10 @@ nodes:
   - id: facing
     uses: vision.facing@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, bodies: $nodes.bodies.bodies}
+  # hand boxes from the bodies' hand keypoints and a hand detector; each hand's body and face come with the bodies
+  - id: hands
+    uses: vision.hands@1.0.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, bodies: $nodes.bodies.bodies}
   - id: gaze
     uses: vision.gaze@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces}
