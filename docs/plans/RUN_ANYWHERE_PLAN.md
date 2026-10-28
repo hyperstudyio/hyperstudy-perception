@@ -100,7 +100,7 @@ compressed video is already the smallest thing to send a host. Little genuine mo
   |          ^ lab -> lab: kept on the host                                             |- every step, API ones too
   |          `-- lab-started rsync --> pod                                              |- environments + weights once
   |--ssh--> pod session: A -> B -> C, outputs stay on the pod                           |  (lab: kept for later runs)
-  `<== every output is fetched to the Mac and committed there (before its consumers start)`- bundle + cache -> Mac's store
+  `<== every output is fetched to the Mac and committed (before its consumers start)    `- bundle + cache -> Mac's store
 ```
 
 ## Phases
