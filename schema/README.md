@@ -7,14 +7,28 @@ manifest.json            what the bundle is: video identity, pipeline, layers wi
 layers/<name>.json       one file per layer (shots, transcript, speakers, faces, bodies, hands, gestures, facing,
                          gaze, objects, sounds, text, prosody); every layer is optional
 layers/faces_detail.json heavy per-sample arrays live in side files the layer points to
+layers/faces_mesh.json
+layers/faces_embeddings.json
 assets/                  optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
 `bundle-0.1.schema.json` validates the manifest (the root schema), each layer file
-(`#/$defs/layer/<name>`) and each side file it defines (`#/$defs/side/<name>` for `layers/<name>.json`: so far
-`faces_detail`, the faces layer's `detail.file`, listed in the manifest under the faces layer's `side_files`).
+(`#/$defs/layer/<name>`) and each side file it defines (`#/$defs/side/<name>` for `layers/<name>.json`). So far
+all are the faces layer's, listed in the manifest under its `side_files`: `faces_detail` (its `detail.file`: 68
+landmarks, action units, emotions, valence and arousal, head pose and gaze per sample), `faces_mesh` (its
+`mesh.file`: the 478-point 2D face mesh per sample, all x then all y in whole source pixels; about 11 MB for a
+two-minute clip, so readers fetch it only when they draw the mesh) and `faces_embeddings` (its `embeddings.file`:
+the 512-d ArcFace identity embedding per sample, the vectors the layer's people and `person_pairs` were computed
+from, kept for reuse such as finding the same person in another video or re-clustering; as py-feat returns them,
+not L2-normalised (`normalised: false`), to 4 decimal places, which keeps cosine distances within 2e-5 of full
+precision; about 10 MB for a two-minute clip).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
-express (every id a layer points at exists; faces_detail holds a sample for each of the faces layer's samples).
+express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
+of the faces layer's samples, at the same times).
+
+The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's
+`allow_upload` and the run's consent to name `embeddings`. Like the faces layer, they come from InsightFace's ArcFace
+weights, which are licensed for non-commercial research only (`academic-only`).
 
 ## Conventions
 
