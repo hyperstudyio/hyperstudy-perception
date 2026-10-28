@@ -1,17 +1,21 @@
 id: vision.active-speaker
-version: 1.0.0
+version: 1.1.0
 stage: speakers
 title: Active speakers
 description: Who on screen is speaking (LR-ASD scores per face track, against the audio) for each utterance, and which person each diarized voice is
 # the diarized transcript (diarize's): its utterances are what the layer labels, and its voices what it links to people
 inputs: {video: video.v1, audio: audio.wav.v1, shots: bundle.shots@0.1, faces: bundle.faces@0.1, transcript: bundle.transcript@0.1}
-outputs: {speakers: bundle.speakers@0.1}
+# scores and votes: layers/speakers_scores.parquet and layers/speakers_votes.json, what the layer drops (LR-ASD's score
+# for every frame of every scored face track, per window length and their mean; the word votes behind the voice links),
+# which the layer points at with raw.scores and raw.votes (asd_raw.py)
+outputs: {speakers: bundle.speakers@0.1, scores: bundle.speakers_scores@0.1, votes: bundle.speakers_votes@0.1}
 config:
   # a voice -> person link is trusted, and names the speaker of an utterance with no speaking face, at this share of
   # the voice's visible words or more (the bake-off's gate: OOO 72% right against 65% ungated)
   voice_link_min_share: {type: number, minimum: 0, maximum: 1, default: 0.3}
 runners:
   # envs/gaze holds the bake-off's ASD versions (torch 2.14.1, numpy, OpenCV), plus scipy, python_speech_features, PyAV
+  # and pyarrow (the scores side file)
   - {kind: native, env: envs/gaze, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
   # PyPI's torch 2.14 wheels for Linux are built for CUDA 13 (envs/gaze): an NVIDIA driver >= 580. Not yet run on a GPU
   - {kind: native, env: envs/gaze, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 2}

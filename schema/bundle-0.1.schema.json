@@ -211,6 +211,40 @@
               { "type": "null", "description": "A voice the pipeline has no centroid for (it pads that row with zeros)." }] }
           }
         }
+      },
+      "speakers_votes": {
+        "description": "layers/speakers_votes.json, a raw side file of the speakers layer (raw.votes): the word votes the layer's voice links come from. Each word of the transcript layer with a voice and at most max_word_seconds long is looked at: of the scored face tracks with a person that have frames during it (speakers_scores), the one whose mean score over the word is highest (of equals, the first in the faces layer's track order) is its top face; the word votes for that face's person if the score is above 0. A voice's share for a person is its votes for that person over its visible words; voices and people (in the order of people) are matched one to one on those shares (Hungarian, maximising the total share), and a voice matched with a share above 0 is linked (the layer's voice_links, its word_share the share to 2 decimals, trusted at the producer's voice_link_min_share or more).",
+        "type": "object",
+        "required": ["max_word_seconds", "people", "voices"],
+        "properties": {
+          "max_word_seconds": { "type": "number", "description": "Longer words (alignment errors) do not vote and are not listed." },
+          "people": { "type": "array", "items": { "$ref": "#/$defs/id/person" }, "uniqueItems": true, "description": "The people voices are matched to: the faces layer's people, in its order (the matching's columns)." },
+          "voices": {
+            "type": "array",
+            "description": "One entry per voice with a word that can vote, by voice id.",
+            "items": {
+              "type": "object", "required": ["voice", "visible", "votes", "words"],
+              "properties": {
+                "voice": { "$ref": "#/$defs/id/voice" },
+                "visible": { "type": "integer", "minimum": 0, "description": "The voice's words with a person's face visible (score not null): the denominator of its shares." },
+                "votes": { "type": "object", "propertyNames": { "$ref": "#/$defs/id/person" }, "additionalProperties": { "type": "integer", "minimum": 1 }, "description": "Votes per person: the voice's words whose top face is that person's and scores above 0." },
+                "words": {
+                  "type": "array",
+                  "description": "The voice's words that can vote, in transcript order.",
+                  "items": {
+                    "type": "object", "required": ["word", "face", "person", "score"],
+                    "properties": {
+                      "word": { "type": "integer", "minimum": 0, "description": "The word's index in the transcript layer's words." },
+                      "face": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }], "description": "Its top face track; null when no person's face has frames during the word." },
+                      "person": { "oneOf": [{ "$ref": "#/$defs/id/person" }, { "type": "null" }], "description": "That face track's person." },
+                      "score": { "type": ["number", "null"], "description": "That face's mean score over the word (of its scores to 2 decimals, unrounded): the word votes when it is above 0." }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "parquet": {
@@ -327,6 +361,16 @@
           { "name": "embedding", "arrow": "fixed_size_list<element: float not null>[512]", "description": "py-feat's 512-d ArcFace identity embedding, not L2-normalised (as faces_embeddings')." },
           { "name": "mesh", "arrow": "fixed_size_list<element: float not null>[1434]", "description": "The 478-point mesh: all 478 x, then all 478 y (source pixels), then all 478 z (relative depth, as faces_pyfeat's mesh_z)." },
           { "name": "blendshapes", "arrow": "fixed_size_list<element: float not null>[52]", "description": "The 52 blendshape coefficients, as faces_pyfeat's." }
+        ]
+      },
+      "speakers_scores": {
+        "description": "layers/speakers_scores.parquet, a raw side file of the speakers layer (raw.scores): the active speaker detector's (LR-ASD's) score for every 25 fps frame of every face track it scored (the faces layer's tracks of 0.4 s or more, each widened by 0.125 s at both ends within its shot), of which the layer keeps per utterance each candidate face's mean over the utterance. A score above 0 means the face is speaking at that frame. One row per scored frame, in the faces layer's track order, then frame order; a track's frames are consecutive. The layer is made from this file: each track's scores to 2 decimals (from score) are what the layer's candidates, margins and predictions average over the utterance's frames (from int((start - first t) * 25) to int((end - first t) * 25), inclusive), and what speakers_votes' word scores average over each word. The file metadata names the model, fps (25), the window lengths in seconds (windows, in the order of the windows column) and how score is taken from them. No median filter or other smoothing is applied to the scores. Columns are not nullable.",
+        "columns": [
+          { "name": "face", "arrow": "string", "description": "The face track (face:N): the faces layer's tracks[].id." },
+          { "name": "frame", "arrow": "int32", "description": "The 25 fps frame index, from the video stream's first frame: frame i starts at i / 25 s." },
+          { "name": "t", "arrow": "double", "description": "frame / 25, to 3 places." },
+          { "name": "score", "arrow": "float", "description": "The frame's score: the mean of windows (numpy's float32 mean), as LR-ASD's demo scores a frame; the layer reads it to 2 decimals." },
+          { "name": "windows", "arrow": "fixed_size_list<element: float not null>[11]", "description": "The frame's score in each window length the clip was scored in (1, 1, 1, 2, 2, 2, 3, 3, 4, 5, 6 s, as the metadata's windows): the clip is cut into consecutive windows of that length from its first frame and each window scored on its own, as float32 logits (LR-ASD's speaking class), unrounded." }
         ]
       }
     },
