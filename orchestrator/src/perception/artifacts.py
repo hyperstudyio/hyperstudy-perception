@@ -242,10 +242,10 @@ class Side:
 # translation, blendshapes, mesh depth): face geometry and expression, no identity vector, so faces. The faces untracked
 # file holds every face py-feat detected that tracking left out, with all of py-feat's values for it, its ArcFace
 # embedding among them (to revisit clustering as well as tracking): faces and embeddings, like faces_embeddings.
-# The speakers scores are LR-ASD's score for every 25 fps frame of a face track (per window length and their mean): a
-# few numbers a frame for how much that face's mouth moves with the soundtrack, keyed by face track id and frame. No
-# face image, landmark or box, no samples or spectra, no words: nothing of the faces, audio or speech can be rebuilt
-# from them, only when each face seems to speak, so no kind (the face tracks' ids and times are the faces layer's).
+# The speakers scores are LR-ASD's score for every 25 fps frame of a face track (per window length and their mean):
+# when each face track speaks, and with the faces layer's track -> person who speaks when, frame by frame, which the
+# diarization turns and the speakers layer (whose candidates are means of these scores) count as transcript; so
+# transcript too. No face image, landmark or box, no samples or spectra, no words: not faces or audio.
 # The speakers votes are, per voice, each of its words (an index into the transcript layer's words) with the face and
 # person LR-ASD scored highest over it: the voices and who speaks when, as the speakers layer (whose voice links they
 # give) holds them, so transcript, as that layer is. No word text and no audio.
@@ -264,7 +264,7 @@ SIDE_FILES: dict[str, Side] = {
     "sounds_queries": Side("sounds", ("audio",), "parquet"),
     "bodies_scores": Side("bodies", (), "parquet"),
     "bodies_duplicates": Side("bodies", (), "parquet"),
-    "speakers_scores": Side("speakers", (), "parquet"),
+    "speakers_scores": Side("speakers", ("transcript",), "parquet"),
     "speakers_votes": Side("speakers", ("transcript",)),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
