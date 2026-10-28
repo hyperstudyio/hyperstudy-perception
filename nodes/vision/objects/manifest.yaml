@@ -18,7 +18,7 @@ config:
   fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 6, description: "frames per second SAM 3 sees (its cost is per frame; 6 keeps fast bike motion trackable)"}
   # 3 at fps 6: every other frame, the slowest rate at which every moment is within 1/fps of a garment sample (the app
   # and the gaze node show an object sample within 1/fps of the time)
-  clothing_fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 3, description: "frames per second at which each posed body is searched for clothing (a body crop costs about a SAM 3 frame; it is a whole fraction of fps)"}
+  clothing_fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 3, description: "frames per second at which each posed body is searched for clothing (a body crop costs about a SAM 3 frame); fps / clothing_fps must be a whole number"}
   link_threshold: {type: number, minimum: -1, maximum: 1, default: 0.62, description: "average adjusted cosine for merging tracks into one object"}
   cross_name_margin: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "subtracted from the cosine of two tracks with different names in one family"}
   same_wearer_bonus: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "added to the cosine of two worn tracks on the same person"}

@@ -138,6 +138,25 @@ def test_a_neighbour_in_front_does_not_take_the_necklace():
     assert necklace["wearer"] == "person:Person B"
 
 
+def test_a_body_is_one_person_over_its_whole_track():
+    """A's body is linked (bodies layer) to B's face. Its nose is seen in A's own face at 1.0 and 1.333, not at 1.167
+    (a turned head). A ring on A's hand at 1.167 only: the body's person is decided over all its samples (A), not over
+    that one frame, where "head never seen" brought back the layer's link and gave the ring to B. Failed while the
+    person was decided per object sample."""
+    times = [1.0, 1.167, 1.333]
+    shots = {"shot:3": 3}
+    turned = np.array(figure(400, 100))
+    turned[:5, 2] = 0                                                   # no nose, eyes or ears at 1.167
+    bodies = by_shot({"tracks": [{"id": "body:0", "shot": "shot:3", "face": "face:1", "samples": [
+        {"t": t, "kpts": turned.tolist() if t == 1.167 else figure(400, 100), "box": box_of(400, 100)} for t in times]}]}, shots)
+    faces = by_shot({"tracks": [{"id": "face:0", "shot": "shot:3", "samples": [{"t": t, "box": [350, 110, 100, 100]} for t in times]},
+                                {"id": "face:1", "shot": "shot:3", "samples": [{"t": t, "box": [550, 110, 100, 100]} for t in times]}]},
+                    shots)
+    ring = track("obj:0", "necklace", 3, [1.167], box=(290, 470, 20, 20))   # at A's right hand
+    assign_wearers([ring], bodies, faces, PERSONS, CLASSES, 0.5, 3.0)
+    assert ring["wearer"] == "person:Person A"
+
+
 def test_a_worn_track_finds_bodies_sampled_at_their_own_rate():
     """Body-pose samples at ~7.49 a second: an object sample 67 ms from the nearest body sample was outside the bake-off's
     window (half of the layer's 1/8 s) and got no wearer. Failed before the window was the body's own step."""
@@ -172,7 +191,10 @@ def test_pairs_that_may_never_be_one_object():
     jeans_x = {**track("obj:10", "pants", 6, [1.0], embedding=e, wearer=None), "found": "body", "body": "body:3"}
     assert frozenset(("person:Person A", "person:Person C")) not in different
     assert pair_score(jeans_c, jeans_a, different, CFG) is None
-    assert pair_score(jeans_c, jeans_x, different, CFG) == pytest.approx(1.0)
+    # nor with a wearer unknown (a face missed, a body seen from behind): it could be anyone's, and jeans look alike
+    assert pair_score(jeans_c, jeans_x, different, CFG) is None
+    assert pair_score(jeans_x, {**jeans_x, "id": "obj:11", "shot": 7, "body": "body:4"}, different, CFG) is None
+    assert pair_score(jeans_c, {**jeans_c, "id": "obj:12", "shot": 7, "body": "body:5"}, different, CFG) == pytest.approx(1.05)
     assert pair_score({**jeans_a, "found": "vocabulary"}, jeans_c, different, CFG) == pytest.approx(1.0)
 
 

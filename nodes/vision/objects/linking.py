@@ -114,14 +114,27 @@ def holder(x: float, y: float, t: float, bodies: list[Series], threshold: float)
     return best[1] if best else None
 
 
+def person_of_body(body: Series, faces: list[Series], person_of_face: dict, threshold: float,
+                   known: dict | None = None) -> str | None:
+    """A body track's person, decided once over all its samples (garments.body_person over the track's times): over one
+    frame, a head turned away in that frame would count as never seen and bring back the bodies layer's link, the
+    neighbour's face on OOO. known: {body id: person} already decided, filled in."""
+    known = {} if known is None else known
+    key = body.track["id"]
+    if key not in known:
+        known[key] = body_person(body, body.times.tolist(), faces, person_of_face, threshold)
+    return known[key]
+
+
 def assign_wearers(tracks, bodies: dict[int, list[Series]], faces: dict[int, list[Series]], person_of_face: dict,
                    classes: dict, wearer_share: float, threshold: float) -> None:
     """Each worn vocabulary track's wearer: the person whose posed body holds the object's box centre in >= wearer_share
     of its samples. A body holds a point when one of its keypoint regions does (holder: around its torso, legs, feet,
-    head, eyes, neck or hands, not its whole box, which took in seated neighbours); the body's person at that moment is
-    the face holding its head keypoints (garments.body_person). Bodies are each one's sample nearest the object
-    sample, within half its own sampling step. Sets t["wearer"] (a person id or None) on every vocabulary track; a body
-    garment keeps its body's person."""
+    head, eyes, neck or hands, not its whole box, which took in seated neighbours); the body's person is
+    person_of_body's, decided once over the whole body track. Bodies are each one's sample nearest the object sample,
+    within half its own sampling step. Sets t["wearer"] (a person id or None) on every vocabulary track; a body garment
+    keeps its body's person."""
+    persons: dict[str, str | None] = {}
     for t in tracks:
         if t.get("found") == "body":
             continue
@@ -132,7 +145,7 @@ def assign_wearers(tracks, bodies: dict[int, list[Series]], faces: dict[int, lis
         for s in t["samples"]:
             x, y = s["box"][0] + s["box"][2] / 2, s["box"][1] + s["box"][3] / 2
             body = holder(x, y, s["t"], bodies.get(t["shot"], []), threshold)
-            person = body_person(body, [s["t"]], faces.get(t["shot"], []), person_of_face, threshold) if body else None
+            person = person_of_body(body, faces.get(t["shot"], []), person_of_face, threshold, persons) if body else None
             if person:
                 votes[person] = votes.get(person, 0) + 1
         if votes:
@@ -149,15 +162,16 @@ def pair_score(a, b, different: set[frozenset], c: dict, sizes: tuple[float, flo
     Two body garments of two different persons (face clusters) never link: their wearers are known by construction, and
     on OOO jeans, plain tops and shoes of different panelists are alike (lower-body garments of different panelists
     reached 0.62 in 15% of pairs, shoes in 78%), while the face distance cannot tell the panelists apart (0.54 between
-    two of them, 0.91 between two clusters of one). A person split over clusters has their clothes split with them:
-    a split is fixed in review, a merge misleads."""
+    two of them, 0.91 between two clusters of one). Nor does one whose wearer is unknown (a face missed, a body seen
+    from behind) link to another body's garment: it could be anyone's. A person split over clusters has their clothes
+    split with them: a split is fixed in review, a merge misleads."""
     if overlaps(a, b) or a["embedding"] is None or b["embedding"] is None:
         return None
     wa, wb = a.get("wearer"), b.get("wearer")
     if wa and wb and wa != wb and frozenset((wa, wb)) in different:
         return None   # worn by two different people
-    if wa and wb and wa != wb and a.get("found") == b.get("found") == "body":
-        return None   # worn by two persons
+    if a.get("found") == b.get("found") == "body" and not (wa and wa == wb):
+        return None   # worn by two persons, or by someone unknown
     same_wearer = bool(wa) and wa == wb
     if min(sizes or (track_size(a), track_size(b))) < c["min_link_px"] and not same_wearer:
         return None   # too small to identify by appearance alone

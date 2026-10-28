@@ -14,8 +14,8 @@ Then:
    a. Clothing from bodies (garments.py): at `clothing_fps`, every body of the bodies layer present at that frame is
       cropped around its box and SAM 3's detector is asked there for fixed garment nouns and "person". Each body keeps
       the detections in its own keypoint regions: its items, whose wearer is the person of the face holding the body's
-      head keypoints (garments.body_person; the bodies layer's face link only for a body whose head is never seen). A
-      body track's items of one kind are one object track.
+      head keypoints over the body track (linking.person_of_body; the bodies layer's face link only for a body whose
+      head is never seen). A body track's items of one kind are one object track.
    b. The shot runs through SAM 3 video with its names as text prompts. A session never spans a cut. Each mask of a thing
       not worn is checked against the people's masks of 2a (person_masks.py): one that is mostly people is dropped, one
       that holds some has them taken out, one whose outline draws around a person is dropped.
@@ -49,11 +49,10 @@ from budget import GB, physical_memory, too_long
 from geometry import context_samples, context_strip, filled_outline, frame_sample, mask_box, mask_polygon, object_views
 from haiku import MAX_OBJECTS, MODEL as HAIKU, VERIFY_BATCH, Haiku, spent
 from linking import (assign_wearers, by_shot, check_classes, check_views, clean_names, crop_files, different_people,
-                     layer_content, link_identities, representative_view)
+                     layer_content, link_identities, person_of_body, representative_view)
 from models import (EMBEDDER, EMBEDDER_LICENCE, EMBEDDER_REVISION, SEGMENTER, SEGMENTER_LICENCE, SEGMENTER_REVISION,
                     CropDetector, check_access, device_for, embed_crops, load_embedder, load_segmenter, segment_shot,
                     segmenter_dtype, synchronize)
-from garments import body_person
 from person_masks import PersonMasks, check as check_people
 from shot_frames import shot_frames
 
@@ -141,7 +140,10 @@ with Node() as node:
 
     c = node.config
     fps = c["fps"]
-    body_step = max(1, round(fps / c["clothing_fps"]))   # every body_step-th frame of a shot gets the body pass
+    body_step = round(fps / c["clothing_fps"])   # every body_step-th frame of a shot gets the body pass
+    if body_step < 1 or abs(fps / c["clothing_fps"] - body_step) > 1e-6:
+        raise NodeError("input", f"clothing_fps {c['clothing_fps']} is not a whole fraction of fps {fps} (fps / clothing_fps "
+                                 "must be a whole number): the body pass runs on every n-th of the frames SAM 3 sees")
     video = node.input("video")
     shots_doc, faces, bodies = node.input_json("shots"), node.input_json("faces"), node.input_json("bodies")
     media = node.input_json("media")
@@ -206,6 +208,7 @@ with Node() as node:
     detector = CropDetector(segmenter, garments.PROMPTS, device, hf_token)
     timings["segmenter_load_s"] = round(time.time() - t0, 1)
     tracks, rows, per_shot, segment_s, clothing_s = [], [], [], 0.0, 0.0
+    persons = {}   # each body track's person, decided once (linking.person_of_body)
     with open_video(video) as container:
         for shot in shots:
             nouns, shot_bodies, shot_id = vocabulary[shot["index"]], bodies_of_shot.get(shot["index"], []), f"shot:{shot['index']}"
@@ -272,8 +275,8 @@ with Node() as node:
                         rows[i]["sample"] = j
                 tracks.append({"id": f"obj:{len(tracks)}", "label": g["label"], "shot": shot["index"], "found": "body",
                                "body": g["body"], "family": g["family"], "start": samples[0]["t"], "end": samples[-1]["t"],
-                               "wearer": body_person(body, [s["t"] for s in samples], faces_of_shot.get(shot["index"], []),
-                                                     person_of_face, threshold),
+                               "wearer": person_of_body(body, faces_of_shot.get(shot["index"], []), person_of_face,
+                                                        threshold, persons),
                                "score": round(g["score"], 3), "samples": samples,
                                "rows": [i for it in g["items"] for i in it["rows"]]})
                 worn_kept += 1
