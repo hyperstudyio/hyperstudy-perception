@@ -1440,6 +1440,59 @@ def test_validate_reports_a_bad_faces_raw_side_file_as_a_problem(tmp_path, file,
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 
 
+# --- the facing layer's poses and angles (Parquet side files: MediaPipe's landmarks, the angles events come from) ----
+
+def facing_bundle(tmp_path, damage=lambda p: None, file="layers/facing.json") -> Path:
+    """An exported facing bundle (test.facing: no event, its poses and angles files) after `damage(path of file)`, with
+    the manifest's checksums updated."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = faces_graph(video)
+    doc["nodes"].append({"id": "facing", "uses": "test.facing@1.0.0", "inputs": {"video": "$inputs.video"}})
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    damage(out / file)
+    manifest = json.loads((out / "manifest.json").read_text())
+    for entry in manifest["layers"].values():
+        for f in [entry, *entry.get("side_files", [])]:
+            f.update(sha256=artifacts.sha256_file(out / f["file"]), bytes=(out / f["file"]).stat().st_size)
+    (out / "manifest.json").write_text(json.dumps(manifest))
+    return out
+
+
+def test_the_facing_side_files_hold_no_kind():
+    """Body landmarks per face-linked sample and angles between people: what the bodies and facing layers hold, no kind."""
+    for name in ("facing_poses", "facing_angles"):
+        side = artifacts.get(f"bundle.{name}@0.1")
+        assert side.kinds == () and side.side_of == "facing" and side.bundle_file == f"layers/{name}.parquet"
+
+
+def test_the_facing_side_files_go_into_the_bundle_and_validate(tmp_path):
+    out = facing_bundle(tmp_path)
+    for name in ("facing_poses", "facing_angles"):
+        assert (out / "layers" / f"{name}.parquet").read_bytes() == (NODES / "facing" / f"{name}.parquet").read_bytes()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert [f["file"] for f in manifest["layers"]["facing"]["side_files"]] == [
+        "layers/facing_angles.parquet", "layers/facing_poses.parquet"]
+    result = _validate(out)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("file, damage, problem", [
+    ("layers/facing_poses.parquet", _parquet_damage("t = t.drop_columns(['world'])"), "facing_poses.parquet: columns are"),
+    ("layers/facing_angles.parquet",
+     _parquet_damage("t = t.set_column(3, t.schema.field('angle'), pa.array([float('nan'), 1.0]))"),
+     "facing_angles.parquet: column angle holds a value that is not finite"),
+])
+def test_validate_reports_a_bad_facing_side_file_as_a_problem(tmp_path, file, damage, problem):
+    result = _validate(facing_bundle(tmp_path, damage, file))
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
+
+
 
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])
 def test_changing_the_node_sdk_changes_every_nodes_runner_identity(tmp_path, monkeypatch, backend):
