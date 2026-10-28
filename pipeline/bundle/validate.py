@@ -145,9 +145,9 @@ PARQUET_MAGIC = b"PAR1"
 
 def parquet_problems(name, file, path, spec, doc, notes):
     """A Parquet side file: the PAR1 magic at both ends (what the orchestrator checks too). With pyarrow, its columns
-    in order with #/$defs/parquet/<name>'s Arrow types, no nulls, no value that is not finite, and for a per-sample one
-    (per_sample: true) a row for each sample of the layer's tracks (face, sample, t), in time order with the heads of
-    one time in the layer's track order. Without pyarrow, the content check is skipped and a note says so."""
+    in order with #/$defs/parquet/<name>'s Arrow types, no nulls, no value that is not finite (in a float column or a
+    fixed-size list of floats), and for a per-sample one (per_sample: true) a row for each sample of the layer's tracks
+    (face, sample, t), in time order with the heads of one time in the layer's track order. Without pyarrow, the content check is skipped and a note says so."""
     data = path.read_bytes()
     if len(data) < 12 or data[:4] != PARQUET_MAGIC or data[-4:] != PARQUET_MAGIC:
         return [f"{name}: {file}: not Parquet (no PAR1 magic at both ends)"]
@@ -166,10 +166,16 @@ def parquet_problems(name, file, path, spec, doc, notes):
     if got != want:
         return [f"{name}: {file}: columns are {got}, not {want}"]
     problems = [f"{name}: {file}: column {c} has {table[c].null_count} nulls" for c, _ in want if table[c].null_count]
+    import pyarrow as pa
     import pyarrow.compute as pc
-    for c, arrow in want:
-        if arrow in ("float", "double") and not pc.all(pc.is_finite(table[c])).as_py():
-            problems.append(f"{name}: {file}: column {c} holds a value that is not finite")
+    for field in table.schema:   # a float column, or a fixed-size list of floats (each value of each list)
+        column = table[field.name]
+        if pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(field.type.value_type):
+            column = pc.list_flatten(column)
+        elif not pa.types.is_floating(field.type):
+            continue
+        if not pc.all(pc.is_finite(column)).as_py():
+            problems.append(f"{name}: {file}: column {field.name} holds a value that is not finite")
     if problems or not spec.get("per_sample"):
         return problems
     if not isinstance(doc.get("tracks"), list):

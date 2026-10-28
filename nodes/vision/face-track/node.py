@@ -6,7 +6,10 @@ frontality, chosen on exposure, colour cast and sharpness) and one per track (it
 layer as assets/crops/... Also writes the layer's side files (face_detail.py), for every track sample: in a bundle,
 layers/faces_detail.json (py-feat's 68 landmarks, action units, emotions, valence and arousal, head pose and gaze),
 layers/faces_mesh.json (py-feat's 478-point face mesh) and layers/faces_embeddings.json (the ArcFace identity
-embeddings the tracks were clustered on).
+embeddings the tracks were clustered on). The rest of py-feat's output goes in two raw side files (pyfeat_raw.py, which
+lists every column of py-feat's output and where it is kept): layers/faces_pyfeat.parquet per track sample (detection
+score, unrounded box, head translation, blendshapes, mesh depth) and layers/faces_untracked.parquet, every detected face
+tracking left out, with all its values. The layer points at them with raw.pyfeat and raw.untracked.
 
 Licence: py-feat's code is MIT, but the Detectorv2 multitask weights are non-commercial and InsightFace-derived
 ArcFace weights are research-only, so this layer and its side files (the embeddings above all) are academic-only.
@@ -22,10 +25,11 @@ import numpy as np
 
 from perception_node import Node, NodeError
 import face_detail
+import pyfeat_raw
 from frames import crop_pixels, longest_side, save_crop, width
 from loader import decode_workers
 from thumbnails import QUALITY_PX, choose, shortlist
-from tracking import FRONTAL_YAW, build_tracks, cluster_tracks, detection_rows, name_people, person_pairs
+from tracking import FRONTAL_YAW, build_tracks, cluster_tracks, detection_rows, name_people, person_pairs, untracked
 
 PERSON_CROP_PAD, PERSON_CROP_PX = 0.25, 256   # padding as a fraction of the box; longest side of the saved crop
 TRACK_CROP_PAD, TRACK_CROP_WIDTH = 0.4, 320
@@ -59,9 +63,15 @@ with Node() as node:
                licence="py-feat code MIT; v2 weights non-commercial")
     node.model("ArcFace (InsightFace, via py-feat)", licence_mode="academic-only", licence="research-only weights")
 
-    missing = face_detail.missing_columns(fex.columns)
+    aus = face_detail.au_names(fex.columns)
+    try:
+        raw_columns = ["frame"] + pyfeat_raw.flat(pyfeat_raw.untracked_columns(aus))   # every column the raw files keep
+    except ValueError as e:   # not the number of action units the raw files hold
+        raise NodeError("internal", str(e)) from None
+    have = set(fex.columns)
+    missing = face_detail.missing_columns(have) + [c for c in raw_columns if c not in have]
     if missing:
-        raise NodeError("internal", f"py-feat's output lacks columns the face detail needs: {', '.join(missing[:5])}")
+        raise NodeError("internal", f"py-feat's output lacks columns the side files need: {', '.join(missing[:5])}")
     if not fex.index.is_unique:   # a track sample finds its py-feat row by the row's label
         raise NodeError("internal", "py-feat's output has repeated row labels")
     rows = detection_rows(fex, fps)
@@ -116,7 +126,6 @@ with Node() as node:
     run_jobs(jobs)
     crops_s = round(time.time() - t0, 1)
 
-    aus = face_detail.au_names(fex.columns)
     detail_columns = face_detail.LANDMARKS + aus + face_detail.EMOTIONS + face_detail.OTHER
     try:
         detail = face_detail.side_file([[(r["t"], fex.loc[r["index"], detail_columns]) for r in t["rows"]] for t in tracks], aus)
@@ -129,12 +138,37 @@ with Node() as node:
     node.write_json("mesh", "faces_mesh.json", mesh)
     node.write_json("embeddings", "faces_embeddings.json", embeddings)
 
+    # the raw side files (pyfeat_raw.py): a row per track sample, in time order and then track order; a row per face in
+    # no track, in py-feat's order
+    order = sorted((r["t"], k, j) for k, track in enumerate(tracks) for j, r in enumerate(track["rows"]))
+    left_out = untracked(fex, fps)
+
+    def values_of(labels, columns):
+        """py-feat's values for these rows, a row group at a time (never a copy of a film's worth at once)."""
+        for at in range(0, len(labels), pyfeat_raw.ROW_GROUP_ROWS):
+            yield from fex.loc[labels[at:at + pyfeat_raw.ROW_GROUP_ROWS], columns].to_numpy(np.float64)
+
+    sample_values = values_of([tracks[k]["rows"][j]["index"] for _, k, j in order], pyfeat_raw.flat(pyfeat_raw.sample_columns()))
+    untracked_values = values_of([index for index, *_ in left_out], pyfeat_raw.flat(pyfeat_raw.untracked_columns(aus)))
+    try:
+        with pyfeat_raw.samples_writer(node.path("pyfeat", "faces_pyfeat.parquet")) as w:
+            for (t, k, j), v in zip(order, sample_values):
+                w.add(f"face:{k}", j, t, tracks[k]["rows"][j]["frame"], v)
+        with pyfeat_raw.untracked_writer(node.path("untracked", "faces_untracked.parquet"), aus) as w:
+            for (_, frame, t, why), v in zip(left_out, untracked_values):
+                w.add(frame, t, why, v)
+    except ValueError as e:   # a value that is not finite
+        raise NodeError("internal", str(e)) from None
+
     pairs = [{**p, "a": f"person:{p['a']}", "b": f"person:{p['b']}"} for p in person_pairs(tracks, labels, names)]
     node.write_json("faces", "faces.json", {
         "layer": "faces", "schema_version": "0.1.0",
         "producer": node.producer(timings={"detect_s": detect_s, "thumbnails_s": thumbnails_s, "crops_s": crops_s}, device=device),
         "sample_fps": c["fps"], "angles": face_detail.ANGLES,
         "people": people, "tracks": out_tracks, "person_pairs": pairs, "detail": face_detail.reference(),
-        "mesh": face_detail.mesh_reference(), "embeddings": face_detail.embeddings_reference()})
-    node.usage(detections=len(rows), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures,
+        "mesh": face_detail.mesh_reference(), "embeddings": face_detail.embeddings_reference(),
+        "raw": {"pyfeat": {"file": pyfeat_raw.PYFEAT_FILE, "format": "parquet", "description": pyfeat_raw.PYFEAT_DESCRIPTION},
+                "untracked": {"file": pyfeat_raw.UNTRACKED_FILE, "format": "parquet",
+                              "description": pyfeat_raw.UNTRACKED_DESCRIPTION}}})
+    node.usage(detections=len(rows), untracked=len(left_out), tracks=len(tracks), people=len(people), frontal_yaw=FRONTAL_YAW, thumbnails=thumbnail_measures,
                decode_workers=workers)

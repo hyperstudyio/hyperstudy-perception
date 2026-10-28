@@ -9,6 +9,8 @@ layers/<name>.json            one file per layer (shots, transcript, speakers, f
 layers/faces_detail.json      side files: the model output a layer does not draw, beside the layer that points to it
 layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
+layers/faces_pyfeat.parquet
+layers/faces_untracked.parquet
 layers/gaze_heatmaps.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
@@ -24,17 +26,25 @@ two-minute clip, so readers fetch it only when they draw the mesh) and `faces_em
 the 512-d ArcFace identity embedding per sample, the vectors the layer's people and `person_pairs` were computed
 from, kept for reuse such as finding the same person in another video or re-clustering; as py-feat returns them,
 not L2-normalised (`normalised: false`), to 4 decimal places, which keeps cosine distances within 2e-5 of full
-precision; about 10 MB for a two-minute clip).
+precision; about 10 MB for a two-minute clip), and two raw Parquet files: `faces_pyfeat` (its `raw.pyfeat`: the rest
+of py-feat's output per sample, the detection score, the unrounded box, head translation, 52 blendshapes and the mesh's
+depth per point, as float32; one row per sample; about 1.7 KB a sample, 4.6 MB for a two-minute clip) and
+`faces_untracked` (its `raw.untracked`: every face py-feat detected that tracking left out, too small or scored too
+low, with all of py-feat's values for it, so tracking and clustering can be revisited; one row per detection; 1.7 MB
+for the 269 such faces of a two-minute clip). `nodes/vision/face-track/pyfeat_raw.py` lists every column of py-feat's
+output and the file that keeps it.
 The gaze layer's: `gaze_heatmaps` (its `raw.heatmaps`: Gaze-LLE's 64x64 heatmap for every head, of which the layer
 keeps the peak, with the unrounded in-frame score; one row per sample; each map as uint8 relative to its own maximum,
 `floor(255 * heat / max)`, with that maximum as float32, so `(cell + 0.5) / 255 * max` is within `max / 510` of the
 model's value and the stored map's argmax is the layer's peak; about 0.9 KB a head, 2.4 MB for a two-minute clip).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
-of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
+of the faces layer's samples, at the same times; faces_pyfeat and gaze_heatmaps hold a row for each of their layer's
+samples).
 
 The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's
-`allow_upload` and the run's consent to name `embeddings`. Like the faces layer, they come from InsightFace's ArcFace
+`allow_upload` and the run's consent to name `embeddings`, and so does one that reads `faces_untracked`, which holds
+the embeddings of the faces no track holds. Like the faces layer, they come from InsightFace's ArcFace
 weights, which are licensed for non-commercial research only (`academic-only`). The gaze heatmaps hold no pixels, but
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
@@ -75,7 +85,8 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    writer options (compression and level, row group size, dictionary and statistics columns, format and data page
    versions), so the same rows are the same bytes (a stored artifact must be, or the cache breaks downstream); no
    times in the file. Test the columns against `#/$defs/parquet/<name>` and the bytes by writing twice
-   (`nodes/vision/gaze/heatmaps.py` and its tests are the pattern). Write rows in fixed-size groups as they come
+   (`nodes/vision/gaze/heatmaps.py` and its tests are the pattern; `nodes/vision/face-track/pyfeat_raw.py` keeps a
+   row's float arrays as fixed-size lists, whose every value validate.py checks is finite). Write rows in fixed-size groups as they come
    rather than holding a film's worth in memory.
 5. **Export and validate.** `perception export` copies every side file a layer's node wrote, byte for byte, lists it
    under the layer's `side_files`, and stops if a pointer names a file that node did not write. validate.py checks

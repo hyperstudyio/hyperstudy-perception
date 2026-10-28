@@ -217,10 +217,16 @@ class Side:
 # together a coarse picture of where the people and things in each frame are, beyond the gaze layer's one peak per
 # head, so they count as frames. Not faces: no face image, landmarks or box, only the face track ids and times the gaze
 # layer (which holds no kind) has too.
+# The faces pyfeat file is the rest of py-feat's output per track sample (detection score, unrounded box, head
+# translation, blendshapes, mesh depth): face geometry and expression, no identity vector, so faces. The faces untracked
+# file holds every face py-feat detected that tracking left out, with all of py-feat's values for it, its ArcFace
+# embedding among them (to revisit clustering as well as tracking): faces and embeddings, like faces_embeddings.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
     "faces_embeddings": Side("faces", ("faces", "embeddings")),
+    "faces_pyfeat": Side("faces", ("faces",), "parquet"),
+    "faces_untracked": Side("faces", ("faces", "embeddings"), "parquet"),
     "gaze_heatmaps": Side("gaze", ("frames",), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They

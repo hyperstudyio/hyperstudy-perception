@@ -1,6 +1,7 @@
 """Face tracks and identity clusters from per-sample detections. Pure functions (numpy, scikit-learn); the node feeds
 them py-feat's rows. Ported unchanged from pipeline/bakeoff/faces/faces.py, whose comments record why each threshold
-is what it is.
+is what it is; detection_rows' size and score filter is `dropped`, which `untracked` also reads to list the faces no
+track holds.
 """
 
 from itertools import combinations
@@ -129,13 +130,34 @@ def person_pairs(tracks, labels, names):
     return sorted(pairs, key=lambda p: p["distance"])
 
 
+def dropped(r):
+    """Why tracking leaves out a py-feat row: None (a face it tracks), "none" (no face: py-feat's NaN placeholder row for
+    a frame without one), or "size", "score" or "size+score" (a face smaller than MIN_FACE_PX, scored below
+    MIN_FACE_SCORE, or both)."""
+    if np.isnan(r["FaceRectX"]):
+        return "none"
+    why = [name for name, out in (("size", min(r["FaceRectWidth"], r["FaceRectHeight"]) < MIN_FACE_PX),
+                                  ("score", r["FaceScore"] < MIN_FACE_SCORE)) if out]
+    return "+".join(why) or None
+
+
+def untracked(fex, fps):
+    """The faces py-feat detected that tracking leaves out (see dropped): (row label, frame, t, why), in py-feat's
+    order. build_tracks puts every row detection_rows keeps in a track, so these are all the faces in no track."""
+    out = []
+    for index, r in fex.iterrows():
+        why = dropped(r)
+        if why not in (None, "none"):
+            out.append((index, int(r["frame"]), round(float(r["frame"]) / fps, 3), why))
+    return out
+
+
 def detection_rows(fex, fps):
-    """py-feat rows -> detections kept for tracking (size and score filtered), with ArcFace embeddings."""
+    """py-feat rows -> detections kept for tracking (size and score filtered: dropped), with ArcFace embeddings."""
     emotion_cols = list(fex.emotion_columns)
     rows = []
     for index, r in fex.iterrows():
-        if (np.isnan(r["FaceRectX"]) or min(r["FaceRectWidth"], r["FaceRectHeight"]) < MIN_FACE_PX
-                or r["FaceScore"] < MIN_FACE_SCORE):
+        if dropped(r) is not None:
             continue
         rows.append({
             "index": index, "t": round(float(r["frame"]) / fps, 3), "frame": int(r["frame"]),
