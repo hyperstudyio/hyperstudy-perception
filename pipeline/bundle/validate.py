@@ -176,8 +176,13 @@ def parquet_problems(name, file, path, spec, doc, notes):
         return [f"{name}: {file} is per sample, but the layer has no tracks"]
     order = []
     for k, track in enumerate(t for t in doc["tracks"] if isinstance(t, dict)):
+        samples = track.get("samples")
+        if not isinstance(samples, list) or not all(
+                isinstance(s, dict) and isinstance(s.get("t"), (int, float)) and not isinstance(s.get("t"), bool)
+                for s in samples):
+            return problems   # the rows check reads the shape the layer's schema checks, and its errors report this
         face = track.get("face", track.get("id"))
-        order += [(s.get("t"), k, face, j) for j, s in enumerate(track.get("samples", [])) if isinstance(s, dict)]
+        order += [(s["t"], k, face, j) for j, s in enumerate(samples)]
     expected = [(face, j, t) for t, _, face, j in sorted(order, key=lambda x: (x[0], x[1]))]
     rows = list(zip(table["face"].to_pylist(), table["sample"].to_pylist(), table["t"].to_pylist()))
     if rows != expected:

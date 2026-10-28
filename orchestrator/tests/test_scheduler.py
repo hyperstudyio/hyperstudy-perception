@@ -1099,6 +1099,8 @@ HEATMAPS, GAZE = "layers/gaze_heatmaps.parquet", "layers/gaze.json"
     (GAZE, _with(lambda d: d["raw"]["heatmaps"].update(format="json")),
      "raw.heatmaps.file layers/gaze_heatmaps.parquet is not a json file"),
     (GAZE, _with(lambda d: d["raw"]["heatmaps"].pop("description")), "gaze: $.raw.heatmaps"),
+    # a sample with no time is the schema's error to report, not a crash sorting the samples for the rows check
+    (GAZE, _with(lambda d: d["tracks"][0]["samples"][1].pop("t")), "gaze: $.tracks[0].samples[1]: 't' is a required"),
 ])
 def test_validate_reports_a_bad_parquet_side_file_as_a_problem(tmp_path, file, damage, problem):
     out = gaze_bundle(tmp_path, damage, file)
