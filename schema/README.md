@@ -10,6 +10,8 @@ layers/faces_detail.json      side files: the model output a layer does not draw
 layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
+layers/sounds_tags.parquet
+layers/sounds_queries.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -29,6 +31,12 @@ The gaze layer's: `gaze_heatmaps` (its `raw.heatmaps`: Gaze-LLE's 64x64 heatmap 
 keeps the peak, with the unrounded in-frame score; one row per sample; each map as uint8 relative to its own maximum,
 `floor(255 * heat / max)`, with that maximum as float32, so `(cell + 0.5) / 255 * max` is within `max / 510` of the
 model's value and the stored map's argmax is the layer's peak; about 0.9 KB a head, 2.4 MB for a two-minute clip).
+The sounds layer's: `sounds_tags` (its `raw.tags`: the AudioSet taggers' scores for all 527 classes, PANNs Cnn14's
+every 0.32 s segment, which its 100 frames/s output repeats, and EfficientAT mn40's every 1 s step; a row per model
+output with the scores as a fixed-size list in the order of the file metadata's `labels`) and `sounds_queries` (its
+`raw.queries`: PE-A-Frame's probability for each query every 40 ms frame, in the order of the metadata's `queries`).
+Both are the models' float32 scores, unrounded, so thresholding them again gives the layer's events exactly; about
+26 MB and 6 MB an hour of soundtrack (0.9 MB and 0.2 MB for a two-minute clip).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
@@ -38,7 +46,9 @@ The embeddings are identity data: a pipeline step that reads them on another mac
 weights, which are licensed for non-commercial research only (`academic-only`). The gaze heatmaps hold no pixels, but
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
-image, landmarks or box).
+image, landmarks or box). The sounds tags and queries hold no samples, but they are a dense measure of the whole
+soundtrack (as the waveform is), speech classes included: a step that reads them elsewhere needs `allow_upload` to
+name `audio`.
 
 ## Side files: keeping a model's full output
 

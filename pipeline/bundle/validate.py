@@ -6,8 +6,9 @@
    (the faces layer's detail.file, mesh.file and embeddings.file; any layer's raw.<role>.file) is among its side
    files. A JSON side file with a schema (#/$defs/side/<name>) validates against it. A Parquet side file must have
    Parquet's magic at both ends; with pyarrow (this project's dev group, which `uv run` installs) its columns must be
-   #/$defs/parquet/<name>'s, none null or not finite, and a per-sample one must hold a row for each of the layer's
-   samples. Without pyarrow that content check is skipped, and the output says so.
+   #/$defs/parquet/<name>'s, none null or not finite (nor any value of a fixed-size list of floats), and a per-sample
+   one must hold a row for each of the layer's samples. Without pyarrow that content check is skipped, and the output
+   says so.
 3. References: every id a layer points at (a shot, utterance, voice, face track, person, body, hand, object track
    or object identity) is defined by the layer that owns that kind of id. JSON Schema checks an id's shape, not
    whether it exists.
@@ -19,6 +20,7 @@ Usage (from pipeline/bundle/): uv run python validate.py BUNDLE_DIR
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -141,6 +143,7 @@ def side_file_problems(bundle, name, entry, doc, schema, registry, notes):
 
 
 PARQUET_MAGIC = b"PAR1"
+FLOAT_LIST = re.compile(r"^fixed_size_list<element: (float|double)( not null)?>\[\d+\]$")
 
 
 def parquet_problems(name, file, path, spec, doc, notes):
@@ -168,7 +171,9 @@ def parquet_problems(name, file, path, spec, doc, notes):
     problems = [f"{name}: {file}: column {c} has {table[c].null_count} nulls" for c, _ in want if table[c].null_count]
     import pyarrow.compute as pc
     for c, arrow in want:
-        if arrow in ("float", "double") and not pc.all(pc.is_finite(table[c])).as_py():
+        # a float column, or a fixed-size list of floats (a row of scores): every value finite
+        values = table[c] if arrow in ("float", "double") else pc.list_flatten(table[c]) if FLOAT_LIST.match(arrow) else None
+        if values is not None and not pc.all(pc.is_finite(values)).as_py():
             problems.append(f"{name}: {file}: column {c} holds a value that is not finite")
     if problems or not spec.get("per_sample"):
         return problems

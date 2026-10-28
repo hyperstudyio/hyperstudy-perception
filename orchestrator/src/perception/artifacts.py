@@ -217,11 +217,18 @@ class Side:
 # together a coarse picture of where the people and things in each frame are, beyond the gaze layer's one peak per
 # head, so they count as frames. Not faces: no face image, landmarks or box, only the face track ids and times the gaze
 # layer (which holds no kind) has too.
+# The sounds tags are PANNs' and mn40's scores for all 527 AudioSet classes every 0.32 s and 1 s, and the sounds queries
+# PE-A-Frame's probability for each query every 40 ms: no samples, but a dense measure of the whole soundtrack (as the
+# waveform is), including the speech classes the sounds layer leaves out (male, female and child speech, conversation,
+# whispering...), where the layer (which holds no kind) keeps only labelled events above a threshold. So audio. Not
+# transcript: no words.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
     "faces_embeddings": Side("faces", ("faces", "embeddings")),
     "gaze_heatmaps": Side("gaze", ("frames",), "parquet"),
+    "sounds_tags": Side("sounds", ("audio",), "parquet"),
+    "sounds_queries": Side("sounds", ("audio",), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}
