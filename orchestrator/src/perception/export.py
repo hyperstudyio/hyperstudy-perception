@@ -93,7 +93,8 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
                          "licence_mode": licence(node_id), "stage": graph.nodes[node_id].manifest.stage or graph.nodes[node_id].manifest.id}
         # its side files, byte for byte: those the node that wrote this layer wrote with it (a layer's ids are its own),
         # and those it points at that an upstream writer of the layer wrote: a node that refines a layer and keeps its
-        # pointers (diarize keeps asr's raw.tokens) keeps the ids they index. The nearest such writer's, if several
+        # pointers (diarize keeps asr's raw.tokens) keeps the ids they index. The nearest such writer's, if several; two
+        # unrelated nearest ones are ambiguous and stop the export
         copies = dict(sides.get((node_id, name), []))
         for field, referenced in artifacts.side_pointers(doc):   # detail.file, ..., raw.<role>.file
             if referenced in copies:
@@ -103,8 +104,11 @@ def bundle(coord: Coordinator, run_id: str, out: Path) -> Path:
                 by = (f"neither {node_id} nor the {name} writers upstream of it ({', '.join(refined[name])}) wrote"
                       if refined[name] else f"{node_id} did not write")
                 raise SystemExit(f"the {name} layer from {node_id} points at {referenced} ({field}), which {by}")
-            nearest = next(w for w in upstream if not any(o in graph.descendants(w) for o in upstream))
-            copies[referenced] = dict(sides[(nearest, name)])[referenced]
+            nearest = [w for w in upstream if not any(o in graph.descendants(w) for o in upstream)]
+            if len(nearest) > 1:
+                raise SystemExit(f"the {name} layer from {node_id} points at {referenced} ({field}), which unrelated "
+                                 f"upstream writers of it wrote: {', '.join(sorted(nearest))}")
+            copies[referenced] = dict(sides[(nearest[0], name)])[referenced]
         side_files = []
         for file, src in sorted(copies.items()):
             side = out / file

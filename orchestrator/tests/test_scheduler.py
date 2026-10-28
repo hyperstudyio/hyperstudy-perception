@@ -1109,6 +1109,24 @@ def test_a_refined_layers_pointer_at_a_side_file_no_writer_of_it_wrote_is_not_ex
         export.bundle(coord, run_id, tmp_path / "bundle")
 
 
+def test_a_refined_layers_side_file_from_two_unrelated_upstream_writers_is_not_exported(tmp_path):
+    """Two upstream writers of the layer, neither downstream of the other, both wrote the file the refined layer points
+    at: which one it means is ambiguous, so export stops rather than take the first."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = gaze_graph(video)
+    doc["nodes"] += [{"id": "gaze2", "uses": "test.gaze@1.0.0", "inputs": {"video": "$inputs.video"}},
+                     {"id": "merge", "uses": "test.gaze-merge@1.0.0",
+                      "inputs": {"gaze": "$nodes.gaze.gaze", "other": "$nodes.gaze2.gaze"}}]
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    with pytest.raises(SystemExit, match=r"the gaze layer from merge points at layers/gaze_heatmaps.parquet "
+                                         r"\(raw.heatmaps.file\), which unrelated upstream writers of it wrote: gaze, gaze2"):
+        export.bundle(coord, run_id, tmp_path / "bundle")
+
+
 def gaze_bundle(tmp_path, damage, file, graph=None) -> Path:
     """An exported gaze bundle (or `graph(video)`'s) after `damage(path of file)`, with the manifest's checksums
     updated."""
