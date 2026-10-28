@@ -85,7 +85,7 @@ def script(path: Path, text: str) -> Path:
 def machine(tmp_path, monkeypatch):
     fake = tmp_path / "host"
     (fake / "home" / ".local" / "bin").mkdir(parents=True)
-    script(fake / "home" / ".local" / "bin" / "nvidia-smi", "#!/bin/sh\necho 23034\n")
+    script(fake / "home" / ".local" / "bin" / "nvidia-smi", "#!/bin/sh\necho \"0, 23034, NVIDIA L4\"\n")
     monkeypatch.setenv("FAKE_HOST", str(fake))
     monkeypatch.setenv("PERCEPTION_SSH", str(script(tmp_path / "ssh", FAKE_SSH)))
     monkeypatch.setenv("PERCEPTION_SKY", str(script(tmp_path / "sky", FAKE_SKY)))

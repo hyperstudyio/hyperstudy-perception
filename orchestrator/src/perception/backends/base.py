@@ -8,8 +8,8 @@ a remote job or an API call.
                            the platform; never the machine): the cache key's runner, one rule for every backend
     estimate(...)          cost and time, before anything is reserved
     stage_inputs(...)      make the inputs readable where the node runs; returns the request's input entries
-    submit(...)            start it; returns a JSON-able handle (kept in the run state, so a restarted coordinator
-                           can find the job again)
+    submit(...)            start it, on the card the scheduler chose if any; returns a JSON-able handle (kept in
+                           the run state, so a restarted coordinator can find the job again)
     poll(handle)           running | exited
     cancel(handle)
     collect(attempt_dir)   the node's response.json, or None if it never wrote one (a crash)
@@ -25,11 +25,21 @@ import platform
 import re
 import stat
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
+
+
+@dataclass(frozen=True)
+class Gpu:
+    """One NVIDIA card, as nvidia-smi lists it. `index` is nvidia-smi's, which counts in PCI bus order: CUDA counts the
+    fastest card first unless CUDA_DEVICE_ORDER=PCI_BUS_ID, so a node confined to a card gets both (gpu_env). None: the
+    machine's GPU taken as one, its cards not known one by one (an Apple GPU, a host probed before cards were recorded)."""
+    index: int | None
+    name: str
+    memory_gb: float
 
 
 @dataclass
@@ -38,8 +48,60 @@ class Capabilities:
     cpu_cores: int
     memory_gb: float
     accelerators: set[str]             # cpu, mps, cuda
-    vram_gb: float = 0                 # CUDA: total; Apple GPU: unified memory (memory_gb)
+    vram_gb: float = 0                 # CUDA: the largest card's; Apple GPU: unified memory (memory_gb)
     tools: dict[str, str | None] = field(default_factory=dict)   # uv, ffmpeg, ffprobe -> path or None
+    gpus: list[Gpu] = field(default_factory=list)   # every NVIDIA card; empty on a Mac, and for a host probed before
+
+    def devices(self) -> list[Gpu]:
+        """What GPU nodes are placed on, one at a time for an exclusive node (scheduler.card_for): each card when the
+        cards are known, else the machine's GPU as one (index None), which is how every machine was counted before the
+        cards were: one exclusive node at a time on it, its memory not divided."""
+        return list(self.gpus) or [Gpu(None, "", self.vram_gb)]
+
+    @classmethod
+    def from_json(cls, d: dict) -> "Capabilities":
+        """As to_json (or a host saved before cards were recorded: no `gpus`) wrote it."""
+        return cls(**{**d, "accelerators": set(d["accelerators"]), "gpus": [Gpu(**g) for g in d.get("gpus", [])]})
+
+    def to_json(self) -> dict:
+        return {**asdict(self), "accelerators": sorted(self.accelerators)}
+
+
+# A card is leased on its machine for as long as a node runs on it, through a lock file every coordinator there honours
+# (one on this Mac and one on the lab server, or two runs started side by side): the scheduler's own count covers only
+# its run. Under the home of the user the nodes run as, outside any store or host root, so every store and root of that
+# user shares them. Not shared with other users of the machine (their homes are their own).
+GPU_LEASES = ".cache/hyperstudy-perception-gpus"
+
+# perl (on every Linux server and Mac, which flock(1) is not): flock the lease, shared for a `gpu: shared` node and
+# exclusive for a `gpu: exclusive` one, then exec the node with the lock's descriptor left open ($^F: not closed on
+# exec), so the node's process holds the lease until it ends, however it ends. A lease another run holds is waited for,
+# and the node's log says so.
+LEASE = r"""$^F = 1023;
+my ($path, $use) = splice(@ARGV, 0, 2);
+open(my $lease, ">>", $path) or die "perception: cannot open the GPU lease $path: $!\n";
+my $how = $use eq "exclusive" ? LOCK_EX : LOCK_SH;
+if (!flock($lease, $how | LOCK_NB)) {
+  print STDERR "perception: waiting for $path ($use): another run on this machine has that GPU\n";
+  flock($lease, $how) or die "perception: GPU lease $path: $!\n";
+  print STDERR "perception: $path is free: starting\n";
+}
+exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
+"""
+
+
+LEASE_PERL = ["perl", "-MFcntl=:flock", "-e", LEASE]
+
+
+def lease_command(path: str, use: str) -> list[str]:
+    """What goes before a node's command to run it holding the lease at `path` (LEASE), as `use` (shared, exclusive)."""
+    return [*LEASE_PERL, path, use]
+
+
+def gpu_env(index: int | None) -> dict[str, str]:
+    """The environment that confines a node to one card: nvidia-smi's index, in its order (Gpu). Nothing for the
+    machine's GPU as one: the node sees every card, as before."""
+    return {} if index is None else {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": str(int(index))}
 
 
 @dataclass
@@ -167,7 +229,9 @@ class Backend(ABC):
     def stage_inputs(self, attempt_dir: Path, inputs: dict[str, Artifact]) -> dict[str, dict]: ...
 
     @abstractmethod
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str]) -> dict: ...
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+        """`gpu`: the card the scheduler gave the node on its machine (Gpu.index), which it is to see alone (gpu_env);
+        None: no card of its own (no GPU, or the machine's GPU as one)."""
 
     @abstractmethod
     def poll(self, handle: dict) -> str: ...

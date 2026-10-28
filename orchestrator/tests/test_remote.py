@@ -1217,3 +1217,95 @@ def test_every_environment_has_the_sdk_that_a_host_leaves_out_and_imports_from_t
         doc = tomllib.loads(p.read_text())
         assert SDK_PACKAGE in doc["project"]["dependencies"], p
         assert doc["tool"]["uv"]["sources"][SDK_PACKAGE] == {"path": "../../sdk", "editable": True}, p
+
+
+# --- a host's GPUs ---------------------------------------------------------------------------------------------------
+
+FAKE_SMI = r"""#!/bin/sh
+# nvidia-smi --query-gpu=index,memory.total,name --format=csv,noheader,nounits, as liquidswords2 answers it
+echo "0, 24576, NVIDIA GeForce RTX 3090"
+echo "1, 97887, NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+"""
+
+
+def test_nvidia_smis_cards_are_read_and_a_card_it_could_not_fill_is_left_out():
+    from perception.backends.base import Gpu
+    from perception.backends.probe import parse_gpus
+    text = "1, 97887, NVIDIA RTX PRO 6000, a name with a comma\n0, 24576, NVIDIA GeForce RTX 3090\n2, [N/A], NVIDIA A100\n\n"
+    assert parse_gpus(text) == [Gpu(0, "NVIDIA GeForce RTX 3090", 24.0), Gpu(1, "NVIDIA RTX PRO 6000, a name with a comma", 95.6)]
+
+
+def test_a_host_is_probed_for_every_gpu_and_one_saved_before_cards_were_recorded_counts_as_one(tmp_path, host):
+    from perception.backends.base import Gpu
+    smi = host / "home" / ".local" / "bin" / "nvidia-smi"   # on the PATH the probe adds
+    smi.parent.mkdir(parents=True)
+    smi.write_text(FAKE_SMI)
+    smi.chmod(0o755)
+    hosts = Hosts(tmp_path / "home")
+    added = hosts.add("lab", "lab")
+    assert added.caps.gpus == [Gpu(0, "NVIDIA GeForce RTX 3090", 24.0), Gpu(1, "NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 95.6)]
+    assert "cuda" in added.caps.accelerators and added.caps.vram_gb == 95.6   # the largest card: what runners are checked against
+    assert hosts.load()["lab"].caps == added.caps
+    # as hosts.json held it before the cards were recorded: no `gpus`, the largest card's memory alone
+    old = json.loads(hosts.path.read_text())
+    old["lab"]["caps"].pop("gpus")
+    hosts.path.write_text(json.dumps(old))
+    caps = hosts.load()["lab"].caps
+    assert caps.gpus == [] and caps.vram_gb == 95.6 and caps.devices() == [Gpu(None, "", 95.6)]
+    assert hosts.check("lab").caps.gpus == added.caps.gpus   # recorded again by a check, not a new `add`
+
+
+def test_two_exclusive_gpu_nodes_on_a_host_with_two_cards_run_together_each_on_its_own_card(tmp_path, host, rec):
+    from perception.backends.base import Gpu
+    remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6,
+                            gpus=[Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)]), runner_kind="self", python=sys.executable)
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), remote], tick_s=0.02, backoff_s=0.01)
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    gpu = lambda id: {"id": id, "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cpu",
+                      "config": {"record_dir": rec, "sleep": 2, "add": int(id[1])}}
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+           "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
+           "nodes": [gpu("g1"), gpu("g2"), gpu("g3")]}
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    t = coord._tasks(run_id)
+    first, second, third = sorted(t.values(), key=lambda x: x["started_at"])
+    assert {first["gpu"], second["gpu"]} == {0, 1}                       # one on each card, at once
+    assert second["started_at"] < first["finished_at"]
+    assert third["started_at"] >= min(first["finished_at"], second["finished_at"])   # a third waits for a card
+    seen = {e["node"]: (e["cuda"], e["order"]) for e in executions(rec)}
+    assert seen == {x["node_id"]: (str(x["gpu"]), "PCI_BUS_ID") for x in t.values()}   # the node sees its card alone
+    assert "GPU 1 (RTX PRO 6000)" in " ".join(e["message"] or "" for e in coord.store.db.execute(
+        "SELECT message FROM events WHERE run_id=? AND kind='task.started'", (run_id,)))
+
+
+
+def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_path, host, rec):
+    """Two runs on a host's cards from two coordinators (two stores here; or this Mac and the lab server itself): each
+    one's scheduler counts only its own nodes, and both choose the larger card. The card's lease on the host (GPU_LEASES)
+    makes the second wait until the first node ends, and its log says why."""
+    from perception.backends.base import Gpu
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    coords, runs = [], []
+    for i in (1, 2):
+        remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6,
+                                gpus=[Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)]), runner_kind="self", python=sys.executable)
+        coord = Coordinator(Store(tmp_path / f"store{i}"), Registry.load(NODES), [SelfBackend(), remote], tick_s=0.02, backoff_s=0.01)
+        doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+               "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
+               "nodes": [{"id": f"g{i}", "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cpu",
+                          "config": {"record_dir": rec, "sleep": 2, "add": i}}]}
+        coords.append(coord)
+        runs.append(start(coord, doc))
+
+    async def both():
+        return await asyncio.gather(*(c.run(r) for c, r in zip(coords, runs)))
+    assert asyncio.run(both()) == ["succeeded", "succeeded"]
+    assert [c._tasks(r)[f"g{i}"]["gpu"] for i, (c, r) in enumerate(zip(coords, runs), 1)] == [1, 1]   # both chose card 1
+    first, second = sorted(executions(rec), key=lambda e: e["start"])
+    end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
+    assert second["start"] >= end                                         # never on the card at once
+    logs = [log_of(c, r, f"g{i}") for i, (c, r) in enumerate(zip(coords, runs), 1)]
+    assert sum("another run on this machine has that GPU" in log for log in logs) == 1, logs

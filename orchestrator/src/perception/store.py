@@ -66,6 +66,12 @@ MIGRATIONS = [
     """
     ALTER TABLE runs ADD COLUMN allow_uploads INTEGER NOT NULL DEFAULT 0;
     """,
+    # 4: the GPU a running node holds on its machine (nvidia-smi's index; NULL: none, or the machine's GPU as one) and the
+    # memory counted for it there (its runner's minimum), so that nodes run side by side on a machine's cards
+    """
+    ALTER TABLE tasks ADD COLUMN gpu INTEGER;
+    ALTER TABLE tasks ADD COLUMN gpu_vram_gb REAL NOT NULL DEFAULT 0;
+    """,
 ]
 
 

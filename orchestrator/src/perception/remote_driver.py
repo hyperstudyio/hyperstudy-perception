@@ -288,14 +288,18 @@ class Driver:
     def node_python(self) -> str:
         """sh for the node's Python on the host: its environment's (uv run --no-sync: prepare synced it, and the SDK, left
         out of it, would otherwise be installed into the shared environment from wherever this code is), with the SDK
-        from this code's own folder."""
+        from this code's own folder, and only the card the scheduler gave it (CUDA_VISIBLE_DEVICES)."""
+        from .backends.base import gpu_env
         from .backends.remote import SDK_SOURCE
         q, s = shlex.quote, self.spec
+        env = gpu_env(s.get("gpu"))
         if s["runner_kind"] == "self":
-            return q(s["python"])
+            python = q(s["python"])
+        else:
+            env["PYTHONPATH"] = f"{self.code}/{SDK_SOURCE}"
+            python = f"{q(s['uv'])} run --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-sync python"
         # through env(1): the node's command follows nohup and setsid in start, where an assignment would be a command
-        return (f"env PYTHONPATH={q(self.code + '/' + SDK_SOURCE)} "
-                f"{q(s['uv'])} run --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-sync python")
+        return ("env " + "".join(f"{k}={q(v)} " for k, v in env.items()) if env else "") + python
 
     def send_inputs(self) -> dict[str, dict]:
         """Each input as objects/<sha256>/data on the host, published in one step (PUBLISH): nodes on the host at the
@@ -335,6 +339,14 @@ class Driver:
         request = {**self.request, "inputs": {k: {x: y for x, y in v.items() if x != "object"} for k, v in inputs.items()},
                    "out_dir": f"{self.attempt}/out"}
         node = f"{self.node_python()} {q(s['entry'])}"
+        leases = ""
+        if s.get("gpu") is not None and s.get("gpu_use", "none") != "none":
+            # the card held against every other run there for as long as the node runs (GPU_LEASES): a card another
+            # coordinator's node has is waited for, in the node's log
+            from .backends.base import GPU_LEASES, LEASE_PERL
+            # as lease_command, with the lease's path under the host's $HOME (expanded there)
+            node = " ".join(q(x) for x in LEASE_PERL) + f' "$HOME"/{q(GPU_LEASES)}/{int(s["gpu"])} {q(s["gpu_use"])} ' + node
+            leases = f'(umask 077 && mkdir -p "$HOME"/{q(GPU_LEASES)})'
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
         links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -sfn {q(v['object'])} {q(v['path'])}"
@@ -355,6 +367,7 @@ for f in {q(self.node_runs)}/*/pid; do
   fi
 done
 mkdir -p {q(self.attempt)}/out
+{leases}
 {links}
 cat > {q(req)}
 {heartbeat_sh(self.attempt)}
@@ -373,7 +386,7 @@ echo $pid
 """
         out = self.sh(script, data=json.dumps(request, indent=1).encode())
         self.pid = int(out.stdout.decode().split()[-1])
-        say(f"started on {s['host']} (pid {self.pid})")
+        say(f"started on {s['host']} (pid {self.pid}" + (f", GPU {s['gpu']})" if s.get("gpu") is not None else ")"))
 
     def unreachable(self, e: Exception):
         """Wait out a host that cannot be reached, for up to lost_after_s in all since it was last reached; past that,

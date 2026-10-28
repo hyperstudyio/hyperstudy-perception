@@ -146,14 +146,15 @@ class SshBackend(NativeBackend):
         # the request path on the command line: how a restarted coordinator recognises the driver (native._alive)
         return [sys.executable, "-m", "perception.remote_driver", "--request", str(request)]
 
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str]) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
         files = code_files(manifest, runner)
         caps = self.host.caps
         spec = {
             "dest": self.host.dest, "root": self.host.root, "host": self.host.name, "ssh": self.host.ssh(),
             "code": code_hash(files), "files": files,
-            # its environment, by its lock: shared with every node that has the same one
-            "env_key": env_key(files, runner.env), "env_files": env_files(files, runner.env),
+            # its environment, by its lock (shared with every node that has the same one), and the card it runs on there
+            "env_key": env_key(files, runner.env), "env_files": env_files(files, runner.env), "gpu": gpu,
+            "gpu_use": manifest.resources.gpu,   # how it holds that card there (GPU_LEASES): shared or exclusive
             "node_dir": manifest.directory.resolve().relative_to(REPO).as_posix(), "entry": runner.entry, "env": runner.env,
             "runner_kind": self.runner_kind, "python": self.python, "uv": caps.tools.get("uv"), "prepare": manifest.prepare,
             # the folders of the tools it found: ssh commands get a minimal PATH (ffmpeg in /opt/homebrew/bin on a Mac)
@@ -162,4 +163,4 @@ class SshBackend(NativeBackend):
             **self.driver_spec(attempt_dir),
         }
         (attempt_dir / "remote.json").write_text(json.dumps(spec, indent=1))
-        return super().submit(manifest, runner, attempt_dir, env)
+        return super().submit(manifest, runner, attempt_dir, env)   # the driver, here: on no card

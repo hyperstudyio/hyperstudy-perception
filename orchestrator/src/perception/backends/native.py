@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
-from .base import Backend, Capabilities
+from .base import GPU_LEASES, Backend, Capabilities, gpu_env, lease_command
 from .probe import probe
 
 from ..release import REPO, env_vars
@@ -78,11 +78,17 @@ class NativeBackend(Backend):
         return [shutil.which("uv") or "uv", "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev",
                 "python", entry, "--request", str(request)]
 
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str]) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
         request = attempt_dir / "request.json"
         log = open(attempt_dir / "log.txt", "ab")
         env = {**env, **(env_vars(runner.env) if self.kind == "native" and runner.env else {})}   # the package's: in the store
-        proc = subprocess.Popen(self.command(manifest, runner, request), cwd=manifest.directory, env=env,
+        env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
+        command = self.command(manifest, runner, request)
+        if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
+            leases = Path.home() / GPU_LEASES
+            leases.mkdir(mode=0o700, parents=True, exist_ok=True)
+            command = [*lease_command(str(leases / str(int(gpu))), manifest.resources.gpu), *command]
+        proc = subprocess.Popen(command, cwd=manifest.directory, env=env,
                                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 start_new_session=True)   # its own process group: cancel stops the whole tree
         log.close()

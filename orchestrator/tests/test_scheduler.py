@@ -149,6 +149,67 @@ def test_gpu_exclusive_nodes_never_overlap(tmp_path, rec):
     assert all(a_end <= b_start for (_, a_end), (b_start, _) in zip(spans, spans[1:]))
 
 
+def test_on_a_mac_gpu_nodes_are_counted_as_before_one_exclusive_at_a_time_and_see_the_whole_gpu(tmp_path, rec):
+    """An Apple GPU is one device: three exclusive nodes still never overlap, and nothing narrows what a node sees."""
+    coord = coordinator(tmp_path, AppleSilicon())
+    doc = graph_doc(tmp_path, [work(f"g{i}", uses="test.gpu@1.0.0", record_dir=rec, sleep=0.3, add=i) for i in range(3)])
+    _, status = run(coord, doc)
+    assert status == "succeeded"
+    spans = sorted((e["start"], e["end"]) for e in executions(Path(rec)))
+    assert all(a_end <= b_start for (_, a_end), (b_start, _) in zip(spans, spans[1:]))
+    assert {(e["cuda"], e["order"]) for e in executions(Path(rec))} == {(os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))}
+
+
+class TwoCards(SelfBackend):
+    """A Linux machine with two NVIDIA cards, as far as placement can tell (the test node runs on the CPU)."""
+    def probe_capabilities(self):
+        import dataclasses
+        from perception.backends.base import Gpu
+        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=95.6,
+                                   gpus=[Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)])
+
+
+def test_on_a_machine_with_two_cards_two_exclusive_nodes_run_together_each_seeing_its_own_card(tmp_path, rec, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))           # where the cards' leases are (GPU_LEASES)
+    coord = coordinator(tmp_path, TwoCards())
+    doc = graph_doc(tmp_path, [work(f"g{i}", uses="test.gpu@1.0.0", record_dir=rec, sleep=1.0, add=i) for i in range(3)])
+    run_id, status = run(coord, doc)
+    assert status == "succeeded"
+    runs = sorted(executions(Path(rec)), key=lambda e: e["start"])
+    assert runs[1]["start"] < runs[0]["end"]                                  # two at once
+    assert runs[2]["start"] >= min(runs[0]["end"], runs[1]["end"])            # a third waits for a card
+    assert {e["cuda"] for e in runs[:2]} == {"0", "1"} and {e["order"] for e in runs} == {"PCI_BUS_ID"}
+    assert {t["node_id"]: str(t["gpu"]) for t in coord._tasks(run_id).values()} == {e["node"]: e["cuda"] for e in runs}
+    assert sorted(p.name for p in (tmp_path / "home" / ".cache" / "hyperstudy-perception-gpus").iterdir()) == ["0", "1"]
+
+
+def test_gpu_nodes_are_given_cards_one_exclusive_node_per_card_shared_ones_within_its_memory():
+    from perception.backends.base import Gpu
+    from perception.scheduler import card_for
+    small, large = Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)
+    cards = [small, large]
+    assert card_for("exclusive", 8, cards, []) == (True, large)                      # the largest free card
+    assert card_for("exclusive", 8, cards, [("exclusive", 1, 8)]) == (True, small)   # the other card
+    assert card_for("exclusive", 8, cards, [("exclusive", 1, 8), ("exclusive", 0, 8)]) == (False, None)   # a third waits
+    assert card_for("exclusive", 30, cards, [("exclusive", 1, 8)]) == (False, None)  # the free card is too small for it
+    assert card_for("exclusive", 8, cards, [("shared", 0, 4)]) == (True, large)      # not beside a shared node
+    assert card_for("shared", 4, cards, []) == (True, small)                         # the smallest, leaving the large one free
+    assert card_for("shared", 4, cards, [("shared", 1, 4)]) == (True, large)         # beside other shared nodes first
+    assert card_for("shared", 4, cards, [("exclusive", 1, 8)]) == (True, small)      # never beside an exclusive node
+    assert card_for("shared", 4, cards, [("shared", 0, 22)]) == (True, large)        # within the card's memory
+    assert card_for("shared", 4, cards, [("exclusive", 1, 8), ("shared", 0, 22)]) == (False, None)
+    assert card_for("none", 0, cards, [("exclusive", 0, 8), ("exclusive", 1, 8)]) == (True, None)   # no GPU: no card
+    # a node holding no known card (started before the cards were known) counts as on every card
+    assert card_for("exclusive", 8, cards, [("shared", None, 0)]) == (False, None)
+    assert card_for("shared", 4, cards, [("shared", None, 0)]) == (True, small)
+    # the machine's GPU as one (a Mac, a host probed before cards were recorded): as before, memory not divided
+    one = [Gpu(None, "", 0)]
+    assert card_for("exclusive", 8, one, []) == (True, one[0])
+    assert card_for("exclusive", 8, one, [("shared", None, 0)]) == (False, None)
+    assert card_for("shared", 4, one, [("shared", None, 4)] * 20) == (True, one[0])
+    assert card_for("shared", 4, one, [("exclusive", None, 8)]) == (False, None)
+
+
 def test_unchanged_inputs_come_from_the_cache_and_a_change_reruns_only_descendants(tmp_path, rec):
     coord = coordinator(tmp_path)
     nodes = lambda c_add: [work("a", record_dir=rec), work("b", "$nodes.a.out", record_dir=rec),
@@ -318,8 +379,8 @@ def test_a_coordinator_that_dies_just_after_starting_a_node_leaves_it_to_be_adop
     backend = coord.backends["self"]
     real_submit = backend.submit
 
-    def submit_then_die(*a):
-        real_submit(*a)
+    def submit_then_die(*a, **kw):
+        real_submit(*a, **kw)
         raise Crash()                                    # the coordinator is gone before it records "running"
     backend.submit = submit_then_die
     with pytest.raises(Crash):
@@ -367,8 +428,8 @@ def _crash_after_submit(tmp_path, doc):
     backend = coord.backends["self"]
     real_submit = backend.submit
 
-    def submit_then_die(m, *a):
-        handle = real_submit(m, *a)
+    def submit_then_die(m, *a, **kw):
+        handle = real_submit(m, *a, **kw)
         if m.id == "test.refine":
             raise Crash()
         return handle
@@ -755,8 +816,8 @@ def test_a_cancel_during_submission_stops_the_node_and_keeps_it_canceled(tmp_pat
     backend = coord.backends["self"]
     real_submit = backend.submit
 
-    def submit_then_cancel(m, runner, attempt_dir, env):
-        handle = real_submit(m, runner, attempt_dir, env)
+    def submit_then_cancel(m, runner, attempt_dir, env, **kw):
+        handle = real_submit(m, runner, attempt_dir, env, **kw)
         if m.id == "test.refine":
             coordinator(tmp_path).cancel(run_id)                 # lands after the submit, before "running" is recorded
         return handle
