@@ -146,6 +146,22 @@ def test_a_node_outside_the_repository_has_an_identity_here_from_its_files(repo,
     assert here().identity(m, cuda) != before
 
 
+def test_a_shared_script_outside_the_repository_counts_with_its_folder(repo, tmp_path):
+    """As code_files takes the whole folder of a script a node shares (../shared/node.py): a module beside it, which it
+    imports, is part of the code too."""
+    root = tmp_path / "mine"
+    (root / "x").mkdir(parents=True)
+    (root / "shared").mkdir()
+    (root / "x" / "manifest.yaml").write_text(MANIFEST.replace("entry: node.py", "entry: ../shared/node.py"))
+    (root / "shared" / "node.py").write_text("from util import f\n")
+    (root / "shared" / "util.py").write_text("def f(): return 1\n")
+    m = Registry.load(root / "x").get("test.id@1.0.0")
+    cuda = next(r for r in m.runners if r.accelerator == "cuda")
+    before = here().identity(m, cuda)
+    (root / "shared" / "util.py").write_text("def f(): return 2\n")
+    assert here().identity(m, cuda) != before
+
+
 def test_no_identity_is_one_the_rule_before_gave(repo):
     """Those began with the backend's kind (native:, self:, ssh-NAME:, cloud:, runpod:); every one now begins with the
     platform, so no cache key made under the old rule is read as one made under this one."""

@@ -35,11 +35,15 @@ def sdk_hash() -> str:
 
 def unlisted_code_hash(manifest: Manifest, runner: Runner) -> str:
     """The code of a node git cannot list (outside the repository, or a checkout without git), for its identity
-    (Backend.identity): every file in its directory, its entry script, its uv project's lock and the node SDK's
-    sources. Only this machine runs such a node, so this never has to agree with what another machine is sent."""
+    (Backend.identity): every file in its directory and, as code_files takes, in the folder of a script it shares with
+    another node (what that script imports beside it), its uv project's lock and the node SDK's sources. Only this
+    machine runs such a node, so this never has to agree with what another machine is sent."""
     h = hashlib.sha256(manifest.code_hash().encode())
-    entry = manifest.directory / runner.entry if runner.entry else None
-    h.update(entry.read_bytes() if entry and entry.is_file() else b"no entry")   # a script shared with another node
+    shared = (manifest.directory / runner.entry).resolve().parent if runner.entry else None
+    if shared and shared != manifest.directory.resolve() and shared.is_dir():
+        for p in sorted(shared.rglob("*")):
+            if p.is_file() and "__pycache__" not in p.parts:
+                h.update(str(p.relative_to(shared)).encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest())
     h.update(sdk_hash().encode())
     lock = REPO / runner.env / "uv.lock" if runner.env else None
     h.update(lock.read_bytes() if lock and lock.exists() else b"no lock")
