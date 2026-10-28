@@ -3,8 +3,9 @@
 import numpy as np
 import pytest
 
-from gaze_targets import (HEATMAP_SIZE, MASS_MIN, Box, candidates_at, events_from, face_index, head_box, heads_by_frame,
-                          interpolate_box, layer_content, layer_target, peak_of, sample_of, target_for, tracks_of)
+from gaze_targets import (HEATMAP_SIZE, MASS_MIN, Box, Polygon, candidates_at, events_from, face_index, head_box,
+                          heads_by_frame, interpolate_box, layer_content, layer_target, object_at, objects_by_shot, peak_of,
+                          sample_of, target_for, tracks_of)
 
 W, H = 1920, 1080
 
@@ -93,10 +94,48 @@ def faces_layer():
 
 def test_candidates_are_the_other_faces_of_the_shot_present_at_that_time_as_head_boxes():
     tracks = tracks_of(faces_layer())
-    found = candidates_at(0, "shot:0", 0.133, tracks, W, H, 1.2)
+    found = candidates_at(0, "shot:0", 0.133, tracks, {}, W, H, 1.2)
     assert [c for c, _ in found] == [1] and found[0][1].geom == pytest.approx((990, 90, 1110, 210))
-    assert candidates_at(0, "shot:0", 0.0, tracks, W, H, 1.2) == []   # face:1 starts later
-    assert candidates_at(2, "shot:1", 0.133, tracks, W, H, 1.2) == []  # another shot
+    assert candidates_at(0, "shot:0", 0.0, tracks, {}, W, H, 1.2) == []   # face:1 starts later
+    assert candidates_at(2, "shot:1", 0.133, tracks, {}, W, H, 1.2) == []  # another shot
+
+
+def objects_layer():
+    square = [[600, 600], [700, 600], [700, 700], [600, 700]]
+    return {"tracks": [
+        {"id": "obj:3", "shot": "shot:0", "samples": [{"t": 0.0, "box": [600, 600, 100, 100], "poly": square},
+                                                       {"t": 0.333, "box": [0, 0, 10, 10], "poly": [[0, 0], [10, 0]]}]},
+        {"id": "obj:1", "shot": "shot:1", "samples": [{"t": 0.1, "box": [10, 20, 30, 40], "poly": []}]},
+        {"id": "obj:4", "shot": "shot:0", "samples": []}],
+        "rejected_tracks": [{"id": "obj:9", "shot": "shot:0", "samples": [{"t": 0.0, "box": [0, 0, 5, 5]}]}]}
+
+
+def test_object_candidates_are_the_shots_object_tracks_sampled_within_a_sixth_of_a_second():
+    objects = objects_by_shot(objects_layer())
+    assert {shot: [o["id"] for o in tracks] for shot, tracks in objects.items()} == {"shot:0": ["obj:3"], "shot:1": ["obj:1"]}
+    tracks = tracks_of(faces_layer())
+    found = candidates_at(0, "shot:0", 0.133, tracks, objects, W, H, 1.2)
+    assert [c for c, _ in found] == [1, "obj:3"]          # faces first, then objects, each in their layer's order
+    assert isinstance(found[1][1], Polygon) and found[1][1].geom.tolist() == objects_layer()["tracks"][0]["samples"][0]["poly"]
+    # the nearer sample at 0.2 is the one at 0.333, with a two-point outline: its box stands for it
+    [(_, region)] = [c for c in candidates_at(1, "shot:0", 0.2, tracks, objects, W, H, 1.2) if c[0] == "obj:3"]
+    assert isinstance(region, Box) and region.geom == (0, 0, 10, 10)
+    assert [c for c, _ in candidates_at(2, "shot:1", 0.133, tracks, objects, W, H, 1.2)] == ["obj:1"]   # box only
+    assert [c for c, _ in candidates_at(2, "shot:1", 0.3, tracks, objects, W, H, 1.2)] == []           # 0.2 s away
+    samples = [{"t": 0.0}, {"t": 0.2}, {"t": 0.4}]
+    assert object_at(samples, 0.1) == 0 and object_at(samples, 0.3) == 1   # equally near: the first
+    assert object_at(samples, 0.4 + 1 / 6) == 2 and object_at(samples, 0.6) is None
+
+
+def test_an_object_outline_holding_the_peak_is_the_target():
+    heat = cell_heat(21, 38, value=3.0)       # peak in frame pixels (645, 649.7): inside the square
+    heat[0, 0] = 1.0
+    square = Polygon([[600, 600], [700, 600], [700, 700], [600, 700]])
+    cov = square.coverage(W, H)
+    assert cov[38, 21] == 1 and square.contains(645, 649.7) and not square.contains(599.9, 650)
+    assert square.coverage(W, H) is cov           # kept: every head of the frame asks for it
+    target, score, _ = target_for(heat, 0.9, [(1, cell_box(40, 40)), ("obj:3", square)], W, H)
+    assert (target, score) == ("obj:3", pytest.approx(0.75))
 
 
 def test_heads_are_grouped_by_the_frame_their_sample_time_names():
@@ -132,6 +171,12 @@ def test_events_sort_by_track_number_not_by_the_ids_text():
     events = events_from([run(10, [3, 3, 3]), run(2, [3, 3, 3])])
     assert [(e["kind"], e["from_face_track"]) for e in events] == [("joint_attention", 2), ("looks_at", 2), ("looks_at", 10)]
     assert events[0]["also_face_track"] == 10
+
+
+def test_object_targets_make_looks_and_joint_attention_on_the_object():
+    events = events_from([run(0, ["obj:3"] * 3), run(1, ["obj:3"] * 4)])
+    assert [(e["kind"], e["from_face_track"], e["to_face_track"], e["object"], e["also_face_track"]) for e in events] == [
+        ("joint_attention", 0, None, "obj:3", 1), ("looks_at", 0, None, "obj:3", None), ("looks_at", 1, None, "obj:3", None)]
 
 
 def test_the_layer_writes_ids_as_convert_bakeoff_does():

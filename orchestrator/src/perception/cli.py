@@ -100,7 +100,8 @@ def only(doc: dict, chosen: list[str], reg: Registry) -> dict:
     kept = []
     for n in doc["nodes"]:
         if n.get("id") in keep:
-            dropped = [k for k, ref in n.get("inputs", {}).items() if k in optional(n) and node_of(ref) and node_of(ref) not in keep]
+            # a producer the graph lacks stays named, for compile_graph to report
+            dropped = [k for k, ref in n.get("inputs", {}).items() if k in optional(n) and node_of(ref) in nodes.keys() - keep]
             kept.append({**n, "inputs": {k: v for k, v in n["inputs"].items() if k not in dropped}} if dropped else n)
     outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (node_of(v) and node_of(v) not in keep)}
     return {**doc, "nodes": kept, **({"outputs": outputs} if "outputs" in doc else {})}
@@ -197,7 +198,7 @@ def plan_json(p) -> dict:
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
               "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
               "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
-              "needs": n.needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
+              "needs": n.needs, "optional_needs": n.optional_needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
               "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
              for n in p.nodes]
     return {"ok": p.ok, "nodes": nodes, "places": p.places, "max_cost_usd": p.max_cost_usd, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}

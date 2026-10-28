@@ -250,10 +250,11 @@ def test_only_leaves_out_what_an_optional_input_reads_unless_it_is_chosen(home, 
     assert {n["id"]: n["needs"] for n in plan["nodes"]} == {"a": [], "c": ["a"]}
     assert cli("plan", str(g), "--only", "c,b") == 0
     [plan] = lines(capsys)
-    assert {n["id"]: n["needs"] for n in plan["nodes"]} == {"a": [], "b": [], "c": ["a", "b"]}
+    # b is connected, and c waits for it, but only as an optional need: a stage picker need not choose b with c
+    assert {n["id"]: (n["needs"], n["optional_needs"]) for n in plan["nodes"]} == {"a": ([], []), "b": ([], []), "c": (["a"], ["b"])}
     assert cli("plan", str(g)) == 0
     [plan] = lines(capsys)
-    assert {n["id"]: n["needs"] for n in plan["nodes"]}["c"] == ["a", "b"]
+    assert {n["id"]: (n["needs"], n["optional_needs"]) for n in plan["nodes"]}["c"] == (["a"], ["b"])
     assert cli("run", str(g), "--only", "c") == 0
     out = lines(capsys)
     assert {e["node"] for e in out if e["type"] == "event" and e["kind"] == "task.succeeded"} == {"a", "c"}
@@ -273,6 +274,29 @@ def test_a_run_with_only_runs_just_those_nodes_and_keeps_the_choice_for_resume(h
     assert cli("status", run) == 0
     [status] = lines(capsys)
     assert sorted(t["node"] for t in status["tasks"]) == ["a", "b"]   # d is not part of this run at all
+
+
+def test_only_leaves_an_optional_input_unconnected_unless_its_producer_is_chosen(home, capsys):
+    # c reads a, and b when b runs (test.optional's optional input b): turning b off must not turn c off
+    c = {"id": "c", "uses": "test.optional@1.0.0", "inputs": {"a": "$nodes.a.out", "b": "$nodes.b.out"},
+         "config": {"record_dir": str(home / "rec")}}
+    g = graph(home, [work("a", home), work("b", home), c])
+    assert cli("plan", str(g)) == 0
+    [plan] = lines(capsys)
+    assert {n["id"]: (n["needs"], n["optional_needs"]) for n in plan["nodes"]} == {"a": ([], []), "b": ([], []), "c": (["a"], ["b"])}
+    assert cli("plan", str(g), "--only", "c") == 0
+    [plan] = lines(capsys)
+    assert [(n["id"], n["optional_needs"]) for n in plan["nodes"]] == [("a", []), ("c", [])]   # b neither runs nor is waited for
+    assert cli("plan", str(g), "--only", "c,b") == 0
+    [plan] = lines(capsys)
+    assert {n["id"]: n["optional_needs"] for n in plan["nodes"]} == {"a": [], "b": [], "c": ["b"]}   # chosen: still connected
+    assert cli("run", str(g), "--only", "c") == 0
+    out = lines(capsys)
+    assert {e["node"] for e in out if e["type"] == "event" and e["kind"] == "task.succeeded"} == {"a", "c"}
+    g = graph(home, [work("a", home), {**c, "inputs": {"a": "$nodes.a.out", "b": "$nodes.zz.out"}}])
+    assert cli("plan", str(g), "--only", "c") == 1   # a producer the graph lacks is still an error, not left out
+    [err] = lines(capsys)
+    assert err["type"] == "error" and "no node 'zz'" in err["problems"][0]
 
 
 # --- perception setup ----------------------------------------------------------------------------------------------

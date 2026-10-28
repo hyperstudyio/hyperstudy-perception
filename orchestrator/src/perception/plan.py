@@ -37,6 +37,7 @@ class NodePlan:
     estimate_s: float | None = None                    # seconds, from its measured runs here (estimates.py)
     estimate_basis: str = ""
     needs: list[str] = field(default_factory=list)     # the nodes whose outputs it takes (a stage picker's edges)
+    optional_needs: list[str] = field(default_factory=list)   # those it takes only when they run too (optional inputs)
     estimates: dict[str, dict] = field(default_factory=dict)   # every option -> {estimate_s, estimate_basis, cost_usd, uploads, upload_to}: to compare places
     title: str = ""
     service: str | None = None                                  # the hosted API that does its work, if it runs elsewhere
@@ -152,7 +153,8 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         np.options = [p.label for p in options]
         for p in options:
             places[p.label] = {"title": p.backend.title, "remote": p.backend.remote, "accelerator": p.runner.accelerator}
-        np.needs = sorted(node.upstream)
+        np.needs = sorted(node.upstream - node.optional_upstream)
+        np.optional_needs = sorted(node.optional_upstream)
         np.place = placement.label if placement else None
         # weights not in this machine's cache; on another machine its cache is not known, so every weight is a download
         # there (a run never downloads silently: --allow-downloads)

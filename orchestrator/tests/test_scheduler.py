@@ -102,7 +102,10 @@ def test_an_optional_input_may_be_left_unconnected_and_the_node_runs_without_it(
     nodes = [work("a", record_dir=rec), work("b", record_dir=rec, add=10)]
     run_id, status = run(coord, graph_doc(tmp_path, nodes + [optional(a="$nodes.a.out")]))
     assert status == "succeeded" and output(coord, run_id, "c") == {"value": 2}        # a's 1, plus its own 1
-    run_id, status = run(coord, graph_doc(tmp_path, nodes + [optional(a="$nodes.a.out", b="$nodes.b.out")]))
+    wired = graph_doc(tmp_path, nodes + [optional(a="$nodes.a.out", b="$nodes.b.out")])
+    graph = compile_graph(wired, coord.registry)   # it waits for b, which a stage picker need not choose with it
+    assert graph.nodes["c"].upstream == {"a", "b"} and graph.nodes["c"].optional_upstream == {"b"}
+    run_id, status = run(coord, wired)
     assert status == "succeeded" and output(coord, run_id, "c") == {"value": 12}       # connected, it is read
     with pytest.raises(GraphError, match="input 'a' \\(json.v1\\) is not connected"):  # a required one still must be
         compile_graph(graph_doc(tmp_path, nodes + [optional(b="$nodes.b.out")]), coord.registry)

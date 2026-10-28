@@ -96,8 +96,9 @@ class Manifest(Strict):
     stage: str | None = None                 # the bundle producer's stage name (default: the node id)
     inputs: dict[str, str] = Field(default_factory=dict)      # name -> artifact type
     # inputs a graph may leave unconnected: the node runs without them (its request has no such input). `--only` does
-    # not pull in the node that feeds one, and drops the connection when it leaves that node out: gestures takes the
-    # objects layer for pointing targets when the run makes it, and runs without it when the user leaves objects out
+    # not pull in the node that feeds one, and drops the connection when it leaves that node out: gestures and gaze take
+    # the objects layer (pointing and gaze targets) when the run makes it, and run without it when the user leaves
+    # objects out. A graph that connects one makes the node wait for it (CompiledNode.optional_upstream)
     optional_inputs: list[str] = Field(default_factory=list)
     outputs: dict[str, str]                                    # name -> artifact type
     config: dict[str, dict] = Field(default_factory=dict)     # name -> JSON Schema (with default)
