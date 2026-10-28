@@ -140,7 +140,7 @@ with Node() as node:
 
     # the raw side files (pyfeat_raw.py): a row per track sample, in time order and then track order; a row per face in
     # no track, in py-feat's order
-    order = sorted((r["t"], k, j) for k, track in enumerate(tracks) for j, r in enumerate(track["rows"]))
+    sample_order = sorted((r["t"], k, j) for k, track in enumerate(tracks) for j, r in enumerate(track["rows"]))
     left_out = untracked(fex, fps)
 
     def values_of(labels, columns):
@@ -148,11 +148,11 @@ with Node() as node:
         for at in range(0, len(labels), pyfeat_raw.ROW_GROUP_ROWS):
             yield from fex.loc[labels[at:at + pyfeat_raw.ROW_GROUP_ROWS], columns].to_numpy(np.float64)
 
-    sample_values = values_of([tracks[k]["rows"][j]["index"] for _, k, j in order], pyfeat_raw.flat(pyfeat_raw.sample_columns()))
+    sample_values = values_of([tracks[k]["rows"][j]["index"] for _, k, j in sample_order], pyfeat_raw.flat(pyfeat_raw.sample_columns()))
     untracked_values = values_of([index for index, *_ in left_out], pyfeat_raw.flat(pyfeat_raw.untracked_columns(aus)))
     try:
         with pyfeat_raw.samples_writer(node.path("pyfeat", "faces_pyfeat.parquet")) as w:
-            for (t, k, j), v in zip(order, sample_values):
+            for (t, k, j), v in zip(sample_order, sample_values):
                 w.add(f"face:{k}", j, t, tracks[k]["rows"][j]["frame"], v)
         with pyfeat_raw.untracked_writer(node.path("untracked", "faces_untracked.parquet"), aus) as w:
             for (_, frame, t, why), v in zip(left_out, untracked_values):
