@@ -26,7 +26,7 @@ nodes:
     inputs: {audio: $nodes.decode.audio, shots: $nodes.decode.shots}
   # refines asr's transcript: the same words and utterances, with their voices (pyannote; gated, HF_TOKEN)
   - id: diarize
-    uses: audio.diarize@1.0.0
+    uses: audio.diarize@1.1.0
     inputs: {audio: $nodes.decode.audio, transcript: $nodes.asr.transcript}
   - id: sounds
     uses: audio.sounds@1.0.0

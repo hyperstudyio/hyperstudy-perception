@@ -891,7 +891,60 @@ def test_the_faces_embeddings_are_identity_data_and_need_consent_for_embeddings_
     assert Backend.sends(remote, reader) == ["embeddings", "faces"]
 
 
-FULL_SAMPLE = {"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
+TURN = {"start": 0.03096875, "end": 1.0265937500000002, "voice": "voice:SPEAKER_00"}
+DIAR = {"model": "pyannote/speaker-diarization-community-1", "voices": ["voice:SPEAKER_00", "voice:SPEAKER_01"]}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    (DIAR | {"turns": [TURN, TURN | {"voice": "voice:SPEAKER_01"}], "exclusive_turns": [TURN]}, True),
+    ({"model": "p", "voices": [], "turns": [], "exclusive_turns": []}, True),                # no speech
+    (DIAR | {"turns": [TURN | {"voice": "SPEAKER_00"}], "exclusive_turns": []}, False),     # not a voice id
+    (DIAR | {"turns": [TURN | {"start": -0.1}], "exclusive_turns": []}, False),            # before the video
+    (DIAR | {"turns": [{"start": 0.0, "end": 1.0}], "exclusive_turns": []}, False),        # no voice
+    (DIAR | {"voices": ["voice:SPEAKER_00"] * 2, "turns": [], "exclusive_turns": []}, False),   # a voice twice
+    (DIAR | {"turns": [TURN]}, False),                                                     # no exclusive turns
+])
+def test_the_transcript_diarization_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.transcript_diarization@0.1")
+    path = tmp_path / "transcript_diarization.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "transcript" and kind.layer is None and kind.bundle_file == "layers/transcript_diarization.json"
+    assert kind.kinds == ("transcript",)
+
+
+VOICE_EMB = {"model": "WeSpeaker ResNet34", "dims": 256, "normalised": False}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    (VOICE_EMB | {"voices": {"voice:SPEAKER_00": [0.1] * 256, "voice:SPEAKER_01": None}}, True),   # null: no centroid
+    (VOICE_EMB | {"voices": {}}, True),
+    (VOICE_EMB | {"voices": {"SPEAKER_00": [0.1] * 256}}, False),                         # not a voice id
+    (VOICE_EMB | {"voices": {"voice:SPEAKER_00": [0.1] * 255}}, False),                   # a value short
+    (VOICE_EMB | {"dims": 192, "voices": {"voice:SPEAKER_00": [0.1] * 192}}, False),      # another model
+    ({"model": "m", "dims": 256, "voices": {}}, False),                                   # normalisation unstated
+])
+def test_the_transcript_voice_embeddings_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.transcript_voice_embeddings@0.1")
+    path = tmp_path / "transcript_voice_embeddings.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "transcript" and kind.layer is None
+    assert kind.bundle_file == "layers/transcript_voice_embeddings.json"
+
+
+def test_voice_embeddings_are_identity_data_but_the_turns_are_not():
+    """A step reading the voice embeddings on another machine needs consent to embeddings; one reading only the turns
+    does not."""
+    from perception.backends.base import Backend
+    remote = type("Remote", (), {"remote": True})()
+    embeddings = type("Manifest", (), {"inputs": {"e": "bundle.transcript_voice_embeddings@0.1"}})()
+    turns = type("Manifest", (), {"inputs": {"d": "bundle.transcript_diarization@0.1"}})()
+    assert Backend.sends(remote, embeddings) == ["embeddings"]
+    assert Backend.sends(remote, turns) == ["transcript"]
+
+
+FULL_SAMPLE ={"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
 
 
 @pytest.mark.parametrize("sample", [{"t": 1.0},                                                 # no fields but t

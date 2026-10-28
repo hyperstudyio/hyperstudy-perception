@@ -10,6 +10,8 @@ layers/faces_detail.json      side files: the model output a layer does not draw
 layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
+layers/transcript_diarization.json
+layers/transcript_voice_embeddings.json
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -29,6 +31,11 @@ The gaze layer's: `gaze_heatmaps` (its `raw.heatmaps`: Gaze-LLE's 64x64 heatmap 
 keeps the peak, with the unrounded in-frame score; one row per sample; each map as uint8 relative to its own maximum,
 `floor(255 * heat / max)`, with that maximum as float32, so `(cell + 0.5) / 255 * max` is within `max / 510` of the
 model's value and the stored map's argmax is the layer's peak; about 0.9 KB a head, 2.4 MB for a two-minute clip).
+The transcript layer's: `transcript_diarization` (its `raw.diarization`: pyannote's speaker turns, overlapping where two
+voices speak at once, from which each word takes the voice whose turns overlap it longest, and its exclusive turns, one
+voice at a time; times unrounded, so the turns give exactly the layer's voices; about 9 KB for a two-minute clip, 0.3 MB
+an hour) and `transcript_voice_embeddings` (its `raw.voice_embeddings`: pyannote's 256-d speaker embedding per voice,
+the centroid of that voice's WeSpeaker ResNet34 embeddings, not L2-normalised, to 4 decimal places; about 2 KB a voice).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
@@ -38,7 +45,8 @@ The embeddings are identity data: a pipeline step that reads them on another mac
 weights, which are licensed for non-commercial research only (`academic-only`). The gaze heatmaps hold no pixels, but
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
-image, landmarks or box).
+image, landmarks or box). The voice embeddings are identity data too (a voiceprint): `embeddings`. The diarization's
+turns, like the transcript's voices, count as `transcript`.
 
 ## Side files: keeping a model's full output
 
