@@ -85,7 +85,8 @@ def _side(name: str) -> Callable[[Path], list[str]]:
             return [f"not JSON: {e}"]
         validator = Draft202012Validator({"$ref": f"{schema['$id']}#/$defs/side/{name}"}, registry=registry)
         problems = [f"{e.json_path}: {e.message[:200]}" for e in list(validator.iter_errors(doc))[:20]]
-        return problems or _named_lengths(doc, SIDE_NAMED.get(name, {}))
+        # only a side file with named arrays has them to count (and tracks: not every side file is keyed by track)
+        return problems or (_named_lengths(doc, SIDE_NAMED[name]) if name in SIDE_NAMED else [])
     return check
 
 
@@ -223,6 +224,10 @@ class Side:
 # The transcript tokens are Parakeet's subword tokens with their times and confidences: the words the transcript layer
 # holds, split finer, so they count as transcript, as the layer does. Not audio: the confidences say how sure the model
 # was of each token, a number per token, no sound.
+# The transcript diarization is pyannote's speaker turns, who speaks when (the voices the transcript layer and the
+# speakers layer carry, counted as transcript): no words, no audio. The transcript voice embeddings are its speaker
+# embedding per voice, a voiceprint: identity data (embeddings), kept apart from the turns so a step reading the turns
+# elsewhere needs no consent to embeddings. Not audio: one vector per voice, from which no sound can be rebuilt.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -230,6 +235,8 @@ SIDE_FILES: dict[str, Side] = {
     "gaze_heatmaps": Side("gaze", ("frames",), "parquet"),
     "shots_scores": Side("shots", (), "parquet"),
     "transcript_tokens": Side("transcript", ("transcript",), "parquet"),
+    "transcript_diarization": Side("transcript", ("transcript",)),
+    "transcript_voice_embeddings": Side("transcript", ("embeddings",)),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

@@ -178,6 +178,39 @@
               } } }
           }
         }
+      },
+      "transcript_diarization": {
+        "description": "layers/transcript_diarization.json, the transcript layer's raw side file (raw.diarization): what the speaker diarization pipeline (pyannote speaker-diarization-community-1) returned, of which the layer keeps each word's and utterance's voice. Its turns are what the voices were assigned from: a word takes the voice whose turns overlap it longest (summed over that voice's turns; a tie goes to the earlier turn), an utterance its words' most common voice. Times are unrounded (pyannote's frame grid: a turn covers the frames whose middle is in [start, end)), so the turns give exactly the layer's voices.",
+        "type": "object",
+        "required": ["model", "voices", "turns", "exclusive_turns"],
+        "properties": {
+          "model": { "type": "string", "description": "The diarization pipeline." },
+          "voices": { "type": "array", "items": { "$ref": "#/$defs/id/voice" }, "uniqueItems": true, "description": "Every speaker the pipeline found, as voice ids (voice:<its label>), in its order (the order of its speaker embeddings); a voice no word was assigned to is here but not in the layer's voices." },
+          "turns": { "type": "array", "items": { "$ref": "#/$defs/side/transcript_diarization/$defs/turn" }, "description": "Speaker turns in the pipeline's order (by start); turns of two voices overlap where both speak." },
+          "exclusive_turns": { "type": "array", "items": { "$ref": "#/$defs/side/transcript_diarization/$defs/turn" }, "description": "The pipeline's exclusive diarization: turns of at most one voice at a time (where turns overlap, one voice's), its version for aligning a transcript. The layer does not use them." }
+        },
+        "$defs": {
+          "turn": { "type": "object", "required": ["start", "end", "voice"], "properties": {
+            "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
+            "voice": { "$ref": "#/$defs/id/voice", "description": "One of voices." } } }
+        }
+      },
+      "transcript_voice_embeddings": {
+        "description": "layers/transcript_voice_embeddings.json, the transcript layer's raw side file (raw.voice_embeddings): the diarization pipeline's speaker embedding per voice, the centroid (VBx responsibilities as weights) of the 256-d WeSpeaker ResNet34 embeddings of that voice's clustered speech, keyed by the voice ids of transcript_diarization's voices, in their order. Identity data (a voiceprint).",
+        "type": "object",
+        "required": ["model", "dims", "normalised", "voices"],
+        "properties": {
+          "model": { "type": "string", "description": "The embedding model." },
+          "dims": { "const": 256, "description": "Values per embedding." },
+          "normalised": { "type": "boolean", "description": "Whether each embedding is L2-normalised. pyannote's centroids are not (false): normalise before taking cosine distances." },
+          "voices": {
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/id/voice" },
+            "additionalProperties": { "oneOf": [
+              { "type": "array", "items": { "type": "number" }, "minItems": 256, "maxItems": 256, "description": "The embedding, rounded to 4 decimal places." },
+              { "type": "null", "description": "A voice the pipeline has no centroid for (it pads that row with zeros)." }] }
+          }
+        }
       }
     },
     "parquet": {

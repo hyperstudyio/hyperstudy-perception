@@ -12,6 +12,8 @@ layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
 layers/shots_scores.parquet
 layers/transcript_tokens.parquet
+layers/transcript_diarization.json
+layers/transcript_voice_embeddings.json
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -41,6 +43,11 @@ The transcript layer's: `transcript_tokens` (its `raw.tokens`: every subword tok
 layer keeps the words they merge into, with its vocabulary id, text, start and end, parakeet-mlx's entropy confidence
 as float32, its sentence, and the index of the layer word it is part of; one row per token; about 15 bytes a token,
 10 KB for a two-minute clip). Its kind is `transcript`, as the layer's.
+The transcript layer's: `transcript_diarization` (its `raw.diarization`: pyannote's speaker turns, overlapping where two
+voices speak at once, from which each word takes the voice whose turns overlap it longest, and its exclusive turns, one
+voice at a time; times unrounded, so the turns give exactly the layer's voices; about 9 KB for a two-minute clip, 0.3 MB
+an hour) and `transcript_voice_embeddings` (its `raw.voice_embeddings`: pyannote's 256-d speaker embedding per voice,
+the centroid of that voice's WeSpeaker ResNet34 embeddings, not L2-normalised, to 4 decimal places; about 2 KB a voice).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples;
@@ -53,6 +60,8 @@ weights, which are licensed for non-commercial research only (`academic-only`). 
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
 image, landmarks or box). The shots scores hold no kind: a few numbers a frame for how much the picture changed.
+The voice embeddings are identity data too (a voiceprint): `embeddings`. The diarization's turns, like the
+transcript's voices, count as `transcript`.
 
 ## Side files: keeping a model's full output
 
