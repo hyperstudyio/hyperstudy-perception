@@ -49,7 +49,7 @@ in_app "$work/bin/perception" --json doctor | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 assert d["pipeline"]["version"] and d["pipeline"]["commit"], d["pipeline"]
-assert any(n["ref"] == "core.decode@1.0.0" and n["where"] for n in d["nodes"]), d["nodes"]
+assert any(n["ref"] == "core.decode@1.1.0" and n["where"] for n in d["nodes"]), d["nodes"]
 print("doctor:", d["pipeline"]["version"], d["pipeline"]["commit"][:7])'
 in_app "$work/bin/perception" run decode.yaml --input "video=$work/clip.mp4" | tail -2
 ls "$work/home/envs" | grep -q '^core-' || { echo "decode's environment is not in the store" >&2; exit 1; }

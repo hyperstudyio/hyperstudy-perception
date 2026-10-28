@@ -10,6 +10,7 @@ layers/faces_detail.json      side files: the model output a layer does not draw
 layers/faces_mesh.json        (JSON when small, Parquet for large arrays)
 layers/faces_embeddings.json
 layers/gaze_heatmaps.parquet
+layers/shots_scores.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -29,6 +30,12 @@ The gaze layer's: `gaze_heatmaps` (its `raw.heatmaps`: Gaze-LLE's 64x64 heatmap 
 keeps the peak, with the unrounded in-frame score; one row per sample; each map as uint8 relative to its own maximum,
 `floor(255 * heat / max)`, with that maximum as float32, so `(cell + 0.5) / 255 * max` is within `max / 510` of the
 model's value and the stored map's argmax is the layer's peak; about 0.9 KB a head, 2.4 MB for a two-minute clip).
+The shots layer's: `shots_scores` (its `raw.scores`: PySceneDetect AdaptiveDetector's numbers for every frame, of which
+the layer keeps the cuts: content_val, the hue, saturation, luma and edge deltas it is a weighted mean of, and
+adaptive_ratio, with the detector's parameters in the file's metadata; a cut is a frame whose adaptive_ratio and
+content_val reach adaptive_threshold and min_content_val, min_scene_len frames after the last, so the cuts can be
+re-thresholded from the file, and the node checks the stored scores give the layer's cuts exactly; one row per frame,
+about 32 B a frame, 113 KB for a two-minute clip, 3.4 MB an hour at 29.97 fps).
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
@@ -38,7 +45,7 @@ The embeddings are identity data: a pipeline step that reads them on another mac
 weights, which are licensed for non-commercial research only (`academic-only`). The gaze heatmaps hold no pixels, but
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
-image, landmarks or box).
+image, landmarks or box). The shots scores hold no kind: a few numbers a frame for how much the picture changed.
 
 ## Side files: keeping a model's full output
 
