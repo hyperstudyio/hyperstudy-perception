@@ -472,7 +472,10 @@ class Coordinator:
         if problems:
             self._attempt_failed(run_id, graph, node.id, t["attempt"], problems[0][0], "; ".join(p for _, p in problems), usd=spent)
             return
-        usage = {**response.get("usage", {}), "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}
+        # where it was made, with the result: its identity names no machine (Backend.identity), so a cache hit
+        # elsewhere (the same lab server under another name, a pod) still says where it came from
+        ran_on = {"place": t["runner"], "title": backend.title, "platform": backend.probe_capabilities().platform}
+        usage = {**response.get("usage", {}), "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "ran_on": ran_on}
         cost = float(usage.get("usd", 0.0))
         out_json = dumps({k: a.to_json() for k, a in outs.items()})
         with self.store.tx() as db:

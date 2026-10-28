@@ -92,8 +92,9 @@ Duplicated today and to be removed: per-stage video decoding, three person-detec
 the same keyframes, a second model call to tag prosody captions.
 
 **Stage contract.** `stage run --bundle DIR --video PATH` reads its inputs from the bundle and writes its files plus
-a manifest entry. Re-runs are keyed by hash(video, stage version, config, upstream output hashes), so only stale
-stages run.
+a manifest entry. Re-runs are keyed by hash(video, stage version, config, upstream output hashes, and the code that
+runs with its lock, the accelerator and the platform, never the machine), so only stale stages run, and a result made on
+one machine is reused on any other of its platform.
 
 **Environments.** Nine today (torch 2.5–2.14, transformers 4.52–5.20); most of the spread is rejected models (GRW,
 HaGRID emblems, TalkNet, Sapiens2, RTMW3D, audEERING, emotion2vec+). Keep one uv project per environment (uv makes

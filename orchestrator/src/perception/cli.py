@@ -420,7 +420,8 @@ def run_json(store: Store, run) -> dict:
     tasks = [{"node": t["node_id"], "state": t["state"], "attempt": t["attempt"], "runner": t["runner"],
               "started_at": iso(t["started_at"]), "finished_at": iso(t["finished_at"]),
               "seconds": round(t["finished_at"] - t["started_at"], 1) if t["finished_at"] and t["started_at"] else None,
-              "cost_usd": t["cost_usd"], "error_code": t["error_code"], "error": t["error"]}
+              "cost_usd": t["cost_usd"], "error_code": t["error_code"], "error": t["error"],
+              "ran_on": json.loads(t["usage"] or "{}").get("ran_on")}
              for t in store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run["id"],))]
     return {"run": run["id"], "pipeline": run["pipeline"], "status": run["status"], "created_at": iso(run["created_at"]),
             "spent_usd": run["spent_usd"], "max_cost_usd": run["max_cost_usd"], "tasks": tasks}
