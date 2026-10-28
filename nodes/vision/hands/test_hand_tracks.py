@@ -125,6 +125,32 @@ def test_a_detector_box_on_a_wrist_that_already_has_its_hand_is_that_hand_again(
     assert len(hands) == 1 and s["detector_duplicate"] == 1
 
 
+@pytest.mark.parametrize("dropped", [[0, 0, 1000, 1000],      # frame-sized (black frames, bokeh)
+                                     [490, 590, 20, 20],      # smaller than MIN_HAND_PX
+                                     [495, 595, 0.0, 10]])    # zero width: no division by it
+def test_a_box_the_gates_drop_takes_no_wrist_from_a_real_hand_box(dropped):
+    """Both boxes hold the wrist (cost 0) and SciPy's tie rule gives it to the first, higher-scoring box: matched
+    before the gates, the dropped box took the wrist and the real hand box was kept unlinked."""
+    body = propose(a_body(wrists={"left": (500, 600)}), IDX, THRESHOLD, W, H)          # a wrist, no hand keypoints
+    s = stats()
+    hands = frame_hands(FRAME, [body], Fake([(dropped, 0.6), ([470, 570, 60, 60], 0.5)]), s)
+    assert [(h["box"], h["side"], h["person"]) for h in hands] == [([470, 570, 60, 60], "left", {"body": "body:0", "face": "face:0"})]
+    assert s["detector_linked"] == 1 and s["detector_unlinked"] == 0
+
+
+def test_a_box_on_a_wrist_hand_takes_no_free_wrist_from_a_real_hand_box():
+    """A detector box that is a wrist hand again (IoU >= DEDUP_IOU) is dropped, so it does not take part in matching
+    either: here it would take body:1's wrist (inside it, cost 0), the only wrist in the frame, from the real box
+    beside it (cost 0.5)."""
+    a = propose(a_body(name="body:0", hands={"left": hand_at(500, 500)}), IDX, THRESHOLD, W, H)   # its wrist not seen
+    b = propose(a_body(name="body:1", face=None, wrists={"right": (560, 520)}), IDX, THRESHOLD, W, H)
+    left = a["proposals"]["left"]
+    s = stats()
+    hands = frame_hands(FRAME, [a, b], Fake([(left, 0.9), ([590, 490, 60, 60], 0.5)]), s)
+    assert [(h["box_source"], h["side"], h["person"]["body"]) for h in hands] == [("wrist", "left", "body:0"), ("detector", "right", "body:1")]
+    assert s["detector_duplicate"] == 1 and s["detector_linked"] == 1
+
+
 def test_a_small_wrist_hand_is_not_posed():
     body = propose(a_body(hands={"left": hand_at(500, 500, r=10)}), IDX, THRESHOLD, W, H)
     assert body["proposals"]["left"][2] < MIN_HAND_PX

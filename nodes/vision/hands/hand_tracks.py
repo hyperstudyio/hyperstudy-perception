@@ -7,11 +7,12 @@ Hands are a gated second stage on top of the bodies, after HaMeR's design:
      above the bodies layer's score threshold and inside the frame gives a square box around those keypoints and the
      body's wrist. These hands inherit the body track, its face track and the side (COCO-WholeBody's left_hand is the
      subject's left hand). box_source "wrist".
-  2. RTMDet-nano hand on the full frame finds hands whose body was not posed. Detector boxes are matched to the wrists
-     of every body in the frame by Hungarian assignment (cost = the wrist's distance outside the box / box side, gated
-     by WRIST_GATE). A box matched to a wrist that already gave a hand is that hand again and is dropped; one matched to
-     a wrist with no hand inherits that body and side; an unmatched one is kept with no body and no side.
-     box_source "detector".
+  2. RTMDet-nano hand on the full frame finds hands whose body was not posed. Boxes smaller than MIN_HAND_PX, larger
+     than MAX_DETECTOR_BOX or on a wrist hand are dropped first; the rest are matched to the wrists of every body in
+     the frame by Hungarian assignment (cost = the wrist's distance outside the box / box side, gated by WRIST_GATE).
+     A box matched to a wrist that already gave a hand is that hand again and is dropped; one matched to a wrist with
+     no hand inherits that body and side; an unmatched one is kept with no body and no side. box_source "detector".
+     (The bake-off matched before dropping, so a dropped box could take a real box's wrist: see frame_hands.)
   3. RTMPose-hand runs only on hands whose box side is at least MIN_HAND_PX.
   4. Hands are tracked within the shot: linked hands by (body track, side, box source), unlinked ones by box IoU; a gap
      longer than MAX_TRACK_GAP_S ends a track, and so does a cut.
@@ -147,17 +148,24 @@ def frame_hands(frame, bodies: list[dict], model, stats: dict) -> list[dict]:
                           "kpts": model.keypoints(frame, box)})
             done.add((b, side))
 
-    detections = model.detect(frame)
-    matches = match_detections(detections, bodies)
-    for d, (box, _) in enumerate(detections):
+    # Boxes that cannot be hands are dropped before matching: matched first (as the bake-off did), a dropped box could
+    # take a wrist from a real hand box, which then lost its body, side and face (Hungarian assignment gives a wrist to
+    # one box only, and of two boxes holding it, both at cost 0, to the first: the higher score)
+    candidates = []
+    for box, score in model.detect(frame):
         if min(box[2], box[3]) < MIN_HAND_PX:
             stats["detector_below_gate"] += 1
-            continue
-        if max(box[2], box[3]) > MAX_DETECTOR_BOX * frame.shape[0]:
+        elif max(box[2], box[3]) > MAX_DETECTOR_BOX * frame.shape[0]:
             stats["detector_too_large"] += 1
-            continue
-        # RTMDet's baked-in NMS leaves overlapping boxes on one hand (IoU ~0.5 seen on OOO), so any box overlapping an
-        # accepted hand is that hand again
+        # RTMDet's baked-in NMS leaves overlapping boxes on one hand (IoU ~0.5 seen on OOO), so a box overlapping a
+        # wrist hand is that hand again
+        elif any(iou(box, h["box"]) >= DEDUP_IOU for h in hands):
+            stats["detector_duplicate"] += 1
+        else:
+            candidates.append((box, score))
+    matches = match_detections(candidates, bodies)
+    for d, (box, _) in enumerate(candidates):   # highest score first
+        # ... and so is one overlapping a detector hand accepted before it
         if any(iou(box, h["box"]) >= DEDUP_IOU for h in hands):
             stats["detector_duplicate"] += 1
             continue
