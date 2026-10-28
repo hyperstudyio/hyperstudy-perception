@@ -1359,6 +1359,17 @@ def test_the_sounds_scores_count_as_audio_when_a_step_reads_them_elsewhere():
         assert Backend.sends(remote, reader) == ["audio"]
 
 
+def test_the_speakers_side_files_count_as_transcript_as_the_layer_does():
+    """LR-ASD's per-frame scores say when each face track speaks, and with the faces layer who speaks when, as
+    diarization's turns and the speakers layer do; the votes name voices and who speaks each word: transcript, both."""
+    from perception.backends.base import Backend
+    remote = type("Remote", (), {"remote": True})()
+    for name in ("speakers_scores", "speakers_votes"):
+        assert artifacts.get(f"bundle.{name}@0.1").kinds == artifacts.get("bundle.speakers@0.1").kinds == ("transcript",)
+        reader = type("Manifest", (), {"inputs": {"raw": f"bundle.{name}@0.1"}})()
+        assert Backend.sends(remote, reader) == ["transcript"]
+
+
 def test_the_sounds_side_files_go_into_the_bundle_and_validate(tmp_path):
     out = sounds_bundle(tmp_path)
     for name in ("sounds_tags", "sounds_queries"):

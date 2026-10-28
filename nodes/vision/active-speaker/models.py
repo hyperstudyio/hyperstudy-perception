@@ -59,7 +59,8 @@ def mfcc(samples):
 
 
 class ASDModel:
-    """score(faces uint8 [frames, 112, 112], mfcc [n, 13]) -> one score per frame (the clip cut to its audio)."""
+    """score(faces uint8 [frames, 112, 112], mfcc [n, 13]) -> (one score per frame, the clip cut to its audio; the
+    scores per window length it is the mean of, [len(DURATIONS), frames]), all float32."""
 
     def __init__(self, accelerator: str):
         import torch
@@ -93,4 +94,5 @@ class ASDModel:
                     ea, ev = net.model.forward_audio_frontend(a), net.model.forward_visual_frontend(v)
                     scores.extend(net.lossAV(net.model.forward_audio_visual_backend(ea, ev)))
                 runs.append(scores)
-        return np.mean(np.array(runs), axis=0)
+        windows = np.array(runs)
+        return np.mean(windows, axis=0), windows

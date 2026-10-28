@@ -20,6 +20,8 @@ layers/sounds_tags.parquet
 layers/sounds_queries.parquet
 layers/bodies_scores.parquet
 layers/bodies_duplicates.parquet
+layers/speakers_scores.parquet
+layers/speakers_votes.json
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
 
@@ -71,6 +73,15 @@ which the layer keeps only the box; one row per sample) and `bodies_duplicates` 
 dropped as a second detection of a person, with the sample it duplicated, their head/shoulder distance, and its own
 box and 133 keypoints, so the de-duplication can be revisited). Both are the models' float32 values, unrounded; on a
 two-minute clip of five people (3136 samples, 28 duplicates) 18 KB and 34 KB, about 0.5 MB and 1.0 MB an hour.
+The speakers layer's: `speakers_scores` (its `raw.scores`: LR-ASD's score for every 25 fps frame of every face track it
+scored, each window length's (1 to 6 s) and their mean, the per-frame score whose means over an utterance are the
+layer's candidates; float32, unrounded; one row per frame; transcript, as diarization's turns: with the faces layer
+it says who speaks when, frame by frame, though no face, sound or word can be rebuilt from it) and `speakers_votes` (its `raw.votes`: per voice, each of its words, as an index into the transcript layer's
+words, with the face LR-ASD scored highest over it, that face's person and mean score, and the votes and visible words
+the voice links' word shares come from; transcript, as the layer). The node makes the layer from them, so the scores
+give its candidates and predictions and the votes its voice links exactly, and the voice-link gate or the vote's
+threshold can be revisited from the files. On a two-minute clip (9066 frames of 164 tracks, 328 words) 171 KB and
+27 KB, about 5.2 MB and 0.8 MB an hour.
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; faces_pyfeat, gaze_heatmaps and bodies_scores hold a row for each of

@@ -40,7 +40,7 @@ nodes:
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
   # who on screen speaks each utterance (LR-ASD over the face tracks and the audio), and which person each voice is
   - id: speakers
-    uses: vision.active-speaker@1.0.0
+    uses: vision.active-speaker@1.1.0
     inputs: {video: $inputs.video, audio: $nodes.decode.audio, shots: $nodes.decode.shots, faces: $nodes.faces.faces,
              transcript: $nodes.diarize.transcript}
   - id: bodies
