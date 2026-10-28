@@ -35,17 +35,21 @@ nodes:
     uses: audio.waveform@1.0.0
     inputs: {audio: $nodes.decode.audio}
   - id: faces
-    uses: vision.face-track@1.1.0
+    uses: vision.face-track@1.3.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
   - id: bodies
     uses: vision.body-pose@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, faces: $nodes.faces.faces}
+  # who faces whom: MediaPipe 3D torso direction for the bodies' own person boxes (no second detector pass)
+  - id: facing
+    uses: vision.facing@1.0.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, bodies: $nodes.bodies.bodies}
   # hand boxes from the bodies' hand keypoints and a hand detector; each hand's body and face come with the bodies
   - id: hands
     uses: vision.hands@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, bodies: $nodes.bodies.bodies}
   - id: gaze
-    uses: vision.gaze@1.0.0
+    uses: vision.gaze@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces}
   # the speech it reads is diarized, as the bake-off's captions read it: lines by voice (SPEAKER_00, ...), not one SPEAKER
   - id: captions
