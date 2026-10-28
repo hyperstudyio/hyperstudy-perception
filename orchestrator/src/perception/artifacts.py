@@ -260,6 +260,11 @@ class Side:
 # detector hands are some of these boxes, so its kinds, none. Most of them score under the layer's threshold, and some
 # of those lie on faces (the detector's false positives): a box and a score, no pixels, landmarks or identity, as the
 # bodies layer's person boxes hold faces without counting as faces.
+# The gestures evidence is every hand sample's rule measurements: counts of hand keypoints near the mouth or on the face,
+# each keypoint's distance to the mouth in face sizes, the face box's side, finger ratios, the wrist's rise over the
+# shoulder, and the face or object track pointed at. Scalars about the hand's pose relative to the face and body, with
+# no landmark, face box position, pixel or embedding: the kinds of the hands and bodies layers (none), whose keypoints
+# place the hand and the head far more precisely than these distances do.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -280,6 +285,7 @@ SIDE_FILES: dict[str, Side] = {
     "facing_poses": Side("facing", (), "parquet"),
     "facing_angles": Side("facing", (), "parquet"),
     "hands_detections": Side("hands", (), "parquet"),
+    "gestures_evidence": Side("gestures", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

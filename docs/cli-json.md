@@ -3,7 +3,8 @@
 What the annotator app reads when it drives the CLI as a sidecar (`docs/BACKEND_PLAN.md` step 2 in hyperstudy-annotator).
 Put `--json` before the command: `perception --json run graph.yaml --input video=clip.mp4`. `plan` and `run` also take
 `--place NODE=PLACE` (where a node runs; `plan` lists its options), `--only NODE[,NODE]` (just those nodes and the
-nodes they need) and `--set NODE.KEY=VALUE` (a node's setting; `plan` lists the fixed choices). `run` sends nothing off
+nodes they need; a node's optional input, such as gestures' objects, does not make its node needed: it is read when that
+node is chosen too, and left out otherwise) and `--set NODE.KEY=VALUE` (a node's setting; `plan` lists the fixed choices). `run` sends nothing off
 the machine without `--allow-uploads` (and then only what the graph's `policy.allow_upload` names), as it downloads no
 weights without `--allow-downloads`. The consent is kept with the run: `resume` and `rerun` keep to it (they take
 `--allow-uploads` to give it), and a node that would upload in a run without it fails before it starts (`policy`).
@@ -28,7 +29,7 @@ place (CPU and GPU share memory), so `--place NODE=native:cpu` is refused for it
 | `status` | `status RUN` (a task's `cost_usd`: what is reserved while it runs, what it was charged once it succeeded; a reservation charged by a cancel is in the run's `spent_usd` and the task shows 0) | `run`, `pipeline`, `status`, `created_at`, `spent_usd`, `max_cost_usd`, `tasks` [{`node`, `state`, `attempt`, `runner`, `started_at`, `finished_at`, `seconds`, `cost_usd`, `error_code`, `error`}] |
 | `runs` | `status` | `runs` [{`run`, `pipeline`, `status`, `created_at`}], newest first |
 | `exported` | `export` | `run`, `path` (the bundle folder) |
-| `nodes` | `nodes` | `nodes` [{`ref`, `id`, `version`, `stage`, `description`, `inputs` (name → type), `outputs`, `config` (name → JSON Schema), `places` (where it can run here, best first), `why_not`, `cost` (or null), `uploads`, `secrets` (names), `models` [{`id`, `source`, `size_gb`, `gated`, `licence_mode`}], `gpu`}] |
+| `nodes` | `nodes` | `nodes` [{`ref`, `id`, `version`, `stage`, `description`, `inputs` (name → type), `optional_inputs` (the inputs it runs without when the node feeding one is not chosen), `outputs`, `config` (name → JSON Schema), `places` (where it can run here, best first), `why_not`, `cost` (or null), `uploads`, `secrets` (names), `models` [{`id`, `source`, `size_gb`, `gated`, `licence_mode`}], `gpu`}] |
 | `hosts` | `hosts add`, `list`, `check`, `remove`, `clean` | `hosts` [{`name`, `dest` (the ssh destination), `user`, `port`, `identity` (overrides of `~/.ssh/config` given to `add` with `--user`, `--port`, `--identity` (a key file on this machine, absolute); null when not given: every command to the host uses them), `root` (its folder on the host), `caps` {`platform`, `cpu_cores`, `memory_gb`, `accelerators`, `vram_gb`, `tools` (uv, ffmpeg, ffprobe → path on the host, or null)}, `probed_at`}]: what each host had when it was added or last checked. Its places are `ssh-NAME:ACCELERATOR`. A host that cannot be reached, or a bad name, destination or root, is an `error` |
 | `host_probe` | `hosts probe DEST [--user U] [--port P] [--identity FILE] [--root DIR]` | `dest`, `root` (where its folder would be), `caps` (as for `hosts`): what the destination has, reached as `hosts add` would. A connection test: nothing is added and nothing is changed on the host. An unreachable destination is an `error` |
 | `cloud_check` | `cloud check [aws\|runpod]` | `provider`, `ok`, `detail`: whether `cloud on` would accept the provider now (SkyPilot reaching AWS; RunPod accepting `RUNPOD_API_KEY`), changing nothing. Exit 0 either way |

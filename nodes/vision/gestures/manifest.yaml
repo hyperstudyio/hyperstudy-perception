@@ -1,0 +1,20 @@
+id: vision.gestures
+version: 1.0.0
+stage: gestures
+title: Gestures
+description: Hand over mouth, self-touch of the face, pointing (at a face or an object) and raised hands, by rules over the hands' keypoints, the faces' landmarks and the bodies' shoulders
+# video: one frame, for the upright frame size the keypoints are in. detail: py-feat's 68 landmarks (the mouth, the face
+# region). objects: pointing targets besides faces; optional (optional_inputs), so leaving the objects step out of a run
+# (--only) runs gestures without it, pointing at faces only
+inputs: {video: video.v1, hands: bundle.hands@0.1, bodies: bundle.bodies@0.1, faces: bundle.faces@0.1,
+         detail: bundle.faces_detail@0.1, objects: bundle.objects@0.1}
+optional_inputs: [objects]
+# evidence: layers/gestures_evidence.parquet, every hand sample's measurements and outcome for each rule, which the
+# layer points at with raw.evidence and makes its events from (gesture_evidence.py)
+outputs: {gestures: bundle.gestures@0.1, evidence: bundle.gestures_evidence@0.1}
+runners:
+  # numpy and pyarrow (and PyAV for one frame): envs/core, the environment decode already installs
+  - {kind: native, env: envs/core, entry: node.py, accelerator: cpu}
+resources: {cpu_cores: 1, memory_gb: 2, gpu: none}
+models:
+  - {id: "rules over hand keypoints and face landmarks (bake-off hand_events.py)", licence: this repository, licence_mode: commercial-ok}

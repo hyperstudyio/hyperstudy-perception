@@ -7,6 +7,8 @@
 # per step. max_cost_usd caps the spend.
 #   perception plan graphs/full.yaml --input video=PATH/TO/VIDEO.mp4
 #   perception run graphs/full.yaml --input video=PATH --only asr,faces          # the local, free features
+#   perception run graphs/full.yaml --input video=PATH --only gestures           # gestures without objects (its optional
+#                                                    input): in a run of everything, a refused or failed objects cancels it
 #   perception run graphs/full.yaml --input video=PATH --allow-uploads           # everything, captions too
 schema_version: 1
 pipeline: perception-full
@@ -62,6 +64,13 @@ nodes:
     uses: vision.objects@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes,
              faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
+  # hand over mouth, self-touch, pointing and raised hands from the hands' keypoints, py-feat's landmarks and the bodies'
+  # shoulders. objects is optional: with it, an object can be what a hand points at; leaving objects out (--only)
+  # still runs gestures, pointing at faces only
+  - id: gestures
+    uses: vision.gestures@1.0.0
+    inputs: {video: $inputs.video, hands: $nodes.hands.hands, bodies: $nodes.bodies.bodies, faces: $nodes.faces.faces,
+             detail: $nodes.faces.detail, objects: $nodes.objects.objects}
   - id: gaze
     uses: vision.gaze@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces}

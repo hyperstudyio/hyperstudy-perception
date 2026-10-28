@@ -328,6 +328,39 @@
           { "name": "kpts", "arrow": "fixed_size_list<element: float not null>[399]", "description": "RTMW's 133 keypoints for this box, in the layer's keypoint_names order, each x, y (source pixels), score (the layer's scale)." }
         ]
       },
+      "gestures_evidence": {
+        "description": "layers/gestures_evidence.parquet, a raw side file of the gestures layer (raw.evidence): every hand sample's measurements and outcome for each gesture rule, from which the layer's events are made (positives of one hand and kind merged when at most max_event_gap_s apart, runs shorter than min_event_s dropped), so the thresholds can be revisited. One row per sample of the hands layer, in its order (hands in layer order, each hand's samples in order). The file metadata holds the hand model and every threshold. Columns are not nullable.",
+        "columns": [
+          { "name": "hand", "arrow": "string", "description": "The hand (hand:N): the hands layer's hands[].id." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that hand's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the hands layer's." },
+          { "name": "valid", "arrow": "int32", "description": "How many of the 21 keypoints count: score >= kpt_score_threshold (RTMPose-hand's, file metadata) and inside the upright frame. Below min_valid_kpts no rule is evaluated (the statuses are few_keypoints)." },
+          { "name": "valid_mask", "arrow": "int32", "description": "Which keypoints count: bit i is keypoint i, in the hands layer's keypoint_names order." },
+          { "name": "clasp_iou", "arrow": "float", "description": "IoU of the hand box with the same body's other hand box at t (0 when there is none); pointing is not evaluated at or above clasped_iou." },
+          { "name": "face_status", "arrow": "string", "description": "ok, few_keypoints, no_face (the hand has no face track) or no_landmarks (no faces_detail landmarks or face box within max_face_gap_s of t). The face columns are 0 or false unless ok." },
+          { "name": "face_size", "arrow": "float", "description": "The face box side (source pixels) the face rules scale by, interpolated at t." },
+          { "name": "mouth_dist", "arrow": "fixed_size_list<element: float not null>[21]", "description": "Each keypoint's distance to the mouth centre (the mean of py-feat landmarks 48-67), in face sizes, valid or not (valid_mask says which count)." },
+          { "name": "mouth_near", "arrow": "int32", "description": "Valid keypoints within mouth_radius face sizes of the mouth centre." },
+          { "name": "mouth_in_hull", "arrow": "bool", "description": "Whether the mouth centre lies inside the convex hull of the valid keypoints (at least 3)." },
+          { "name": "face_inside", "arrow": "int32", "description": "Valid keypoints inside the face region: the hull of the 68 landmarks and the brow points raised by forehead face sizes, grown by face_margin face sizes." },
+          { "name": "hand_over_mouth", "arrow": "bool", "description": "The rule's outcome: mouth_near >= min_region_kpts or mouth_in_hull. Its score is mouth_near / valid." },
+          { "name": "self_touch_face", "arrow": "bool", "description": "The rule's outcome: not over the mouth, and face_inside >= min_region_kpts. Its score is face_inside / valid." },
+          { "name": "point_status", "arrow": "string", "description": "ok, few_keypoints, clasped (clasp_iou >= clasped_iou) or missing_keypoints (a joint the rule needs, wrist, index MCP, PIP and tip, middle MCP, or another finger's PIP or tip, does not count). The pointing columns are 0, false or empty unless ok." },
+          { "name": "index_extension", "arrow": "float", "description": "Wrist-to-index-tip over wrist-to-index-PIP; extended needs at least extended_ratio." },
+          { "name": "index_reach", "arrow": "float", "description": "Index MCP-to-tip over wrist-to-middle-MCP; at least min_index_to_palm (shorter is foreshortened, pointing at the camera)." },
+          { "name": "index_straightness", "arrow": "float", "description": "Cosine of the angle between index MCP->PIP and PIP->tip; at least straight_cos." },
+          { "name": "curl", "arrow": "fixed_size_list<element: float not null>[3]", "description": "Wrist-to-tip over wrist-to-PIP for the middle, ring and pinky fingers; each curled below curled_ratio." },
+          { "name": "pointing", "arrow": "bool", "description": "The rule's outcome: all of the above." },
+          { "name": "direction", "arrow": "fixed_size_list<element: double not null>[2]", "description": "The unit vector index MCP -> tip (image x right, y down) when pointing, else [0, 0]. A pointing event's direction is their mean." },
+          { "name": "target", "arrow": "string", "description": "What the ray from the index tip points at when pointing: the shot's other face track (face:N) or object track (obj:N, only when the run had the objects layer) whose box centre is nearest the ray, within half the box's larger side; empty for none. A pointing event's target is the one most samples name." },
+          { "name": "raise_status", "arrow": "string", "description": "ok, few_keypoints, no_body (the hand has no body track), no_wrist (keypoint 0 does not count) or no_shoulders_or_nose (a shoulder or the nose below the bodies layer's score_threshold, or a shoulder below the frame). The raise columns are 0, false or empty unless ok." },
+          { "name": "rise", "arrow": "float", "description": "How far the wrist is above the body's same-side shoulder (source pixels): the lesser of along the image's up and along the body's up (shoulder midpoint -> nose)." },
+          { "name": "shoulder_width", "arrow": "float", "description": "The distance between the shoulders (source pixels)." },
+          { "name": "above_nose", "arrow": "bool", "description": "Whether the wrist is above the nose both in the image and along the body's up." },
+          { "name": "raised_hand", "arrow": "bool", "description": "The rule's outcome: rise > raise_margin x shoulder_width, and the hand not on the face (hand_over_mouth or self_touch_face) unless above_nose." },
+          { "name": "level", "arrow": "string", "description": "head (above_nose) or shoulder when raised, else empty. A raised_hand event is head when most of its samples are." }
+        ]
+      },
       "faces_pyfeat": {
         "description": "layers/faces_pyfeat.parquet, a raw side file of the faces layer (raw.pyfeat): what py-feat Detectorv2 returned for every track sample that neither the layer nor faces_detail, faces_mesh and faces_embeddings keep. One row per sample of the faces layer's tracks, in time order (the samples of one time in the layer's track order). Values are py-feat's float32, unrounded. Columns are not nullable; the file's metadata names the translation and blendshape entries.",
         "per_sample": true,
