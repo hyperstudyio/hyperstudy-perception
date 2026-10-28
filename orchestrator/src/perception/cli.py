@@ -102,7 +102,8 @@ def only(doc: dict, chosen: list[str], reg: Registry) -> dict:
         if n.get("id") not in keep:
             continue
         skip = optional(n)
-        dropped = {k for k, ref in n.get("inputs", {}).items() if k in skip and producer(ref) and producer(ref) not in keep}
+        # a producer the graph lacks stays named, for compile_graph to report
+        dropped = {k for k, ref in n.get("inputs", {}).items() if k in skip and producer(ref) in nodes.keys() - keep}
         kept.append({**n, "inputs": {k: v for k, v in n["inputs"].items() if k not in dropped}} if dropped else n)
     outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (isinstance(v, str) and v.startswith("$nodes.") and v.split(".")[1] not in keep)}
     return {**doc, "nodes": kept, **({"outputs": outputs} if "outputs" in doc else {})}

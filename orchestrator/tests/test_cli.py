@@ -268,6 +268,10 @@ def test_only_leaves_an_optional_input_unconnected_unless_its_producer_is_chosen
     assert cli("run", str(g), "--only", "c") == 0
     out = lines(capsys)
     assert {e["node"] for e in out if e["type"] == "event" and e["kind"] == "task.succeeded"} == {"a", "c"}
+    g = graph(home, [work("a", home), {**c, "inputs": {"a": "$nodes.a.out", "b": "$nodes.zz.out"}}])
+    assert cli("plan", str(g), "--only", "c") == 1   # a producer the graph lacks is still an error, not left out
+    [err] = lines(capsys)
+    assert err["type"] == "error" and "no node 'zz'" in err["problems"][0]
 
 
 # --- perception setup ----------------------------------------------------------------------------------------------
