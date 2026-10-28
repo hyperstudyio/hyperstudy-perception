@@ -13,7 +13,8 @@ Then:
    frames):
    a. Clothing from bodies (garments.py): at `clothing_fps`, every body of the bodies layer present at that frame is
       cropped around its box and SAM 3's detector is asked there for fixed garment nouns and "person". Each body keeps
-      the detections in its own keypoint regions: its items, whose wearer is its person (the face it is linked to). A
+      the detections in its own keypoint regions: its items, whose wearer is the person of the face holding the body's
+      head keypoints (garments.body_person; the bodies layer's face link only for a body whose head is never seen). A
       body track's items of one kind are one object track.
    b. The shot runs through SAM 3 video with its names as text prompts. A session never spans a cut. Each mask of a thing
       not worn is checked against the people's masks of 2a (person_masks.py): one that is mostly people is dropped, one

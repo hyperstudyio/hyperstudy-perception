@@ -16,7 +16,9 @@ def rect(x0, y0, x1, y1):
 
 
 def outer_box(mask):
-    """A stand-in for geometry.filled_outline: the mask's bounding box, filled (an outline around every hole)."""
+    """A stand-in for geometry.filled_outline (OpenCV, which these tests run without): the mask's bounding box, filled.
+    It agrees with the real outer contour on the closed shapes below (a ring, rectangles); on a mask with a notch open
+    to the outside it would not, since the real contour follows the notch (person_masks' docstring)."""
     out = np.zeros_like(mask)
     if mask.any():
         ys, xs = np.nonzero(mask)

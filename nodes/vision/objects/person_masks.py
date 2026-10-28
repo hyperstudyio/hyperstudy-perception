@@ -9,7 +9,10 @@ the body pass's times; a 6 fps object sample takes the nearest of them, at most 
 - covers_person: at least COVER_SHARE of the mask is person pixels (the mask is mostly people): the sample is dropped.
 - trimmed: some of it is: those pixels are taken out, and the sample is the rest (a chair without its sitter).
 - encloses_person: the outline of what is left (its outer contour, filled: what the layer's polygon draws) holds at least
-  ENCLOSE_SHARE of one person's pixels (a frame around people, a chair back seen through its sitter): dropped.
+  ENCLOSE_SHARE of one person's pixels: dropped. That is a person inside a hole of the mask: a frame or ring around
+  people, a chair whose parts close around its sitter. Where what is left only has a notch open to the outside (a chair
+  back in a U around the sitter), the outer contour follows the notch, the person is not enclosed, and the sample is
+  kept as trimmed.
 - kept: no person pixels.
 
 Things worn or carried (the name's class says so, and every body garment) are on a person by nature and are not
