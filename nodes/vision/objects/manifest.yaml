@@ -43,9 +43,12 @@ resources: {cpu_cores: 4, memory_gb: 16, gpu: exclusive}
 privacy: {external_upload: [frames, faces]}
 # both models are gated on Hugging Face (HF_TOKEN); Haiku names and checks the objects (ANTHROPIC_API_KEY)
 secrets: [ANTHROPIC_API_KEY, HF_TOKEN]
-# Upper estimate per shot (measured in the bake-off: $0.028 for OOO's 44 shots, $0.041 for NES's 36: vocabulary, name
-# classes and the crop check together, about $0.001 a shot)
-cost: {usd: 0.003, per: shot, input: shots}
+# Upper estimate per minute of video. Most of the spend is the crop check, a call per 16 tracks of a name, and since
+# 1.1.0 every person's garment tracks are checked too, so it grows with the people on screen and their time, not with
+# the cuts (a one-shot hour-long panel would have been reserved $0.003). Measured with 1.1.0 (vocabulary, name classes
+# and crop check): $0.045 for OOO clip 1 (1.98 min, 7 panelists), $0.056 for clip 2 (2.59 min), $0.055 for NES
+# (2.29 min): $0.021-0.024 a minute; this is about twice that. A crowd costs more than a panel of seven.
+cost: {usd: 0.05, per: minute, input: media}
 # fetches the weights ahead of a run (perception setup)
 prepare: prepare.py
 models:

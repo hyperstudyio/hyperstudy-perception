@@ -19,7 +19,7 @@ policy:
   placement: hybrid
   privacy: local-preferred
   allow_upload: [video, audio, frames, faces, transcript, embeddings]
-  # OOO clip 1's estimates: shot captions $0.13, objects $0.13, delivery captions $0.69 (86 utterances; about $0.35 spent
+  # OOO clip 1's estimates: shot captions $0.13, objects $0.10, delivery captions $0.69 (86 utterances; about $0.35 spent
   # in the bake-off)
   max_cost_usd: 1.50
   retries: 1

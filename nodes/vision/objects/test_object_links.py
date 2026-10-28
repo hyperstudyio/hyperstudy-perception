@@ -225,6 +225,16 @@ def test_a_shots_lookalikes_are_one_identity():
     assert [(i["id"], i["tracks"]) for i in ids] == [("tree 1", ["obj:0", "obj:1", "obj:2"]), ("tree 2", ["obj:3", "obj:4", "obj:5"])]
 
 
+def test_worn_lookalikes_of_two_people_are_not_one_identity():
+    """Gloves classed lookalike (and worn) on two riders in one shot: grouping the shot's lookalikes would make one
+    identity worn by both. Worn lookalikes keep a track each. Failed while every lookalike of a shot was grouped."""
+    classes = {**CLASSES, "glove": {"family": "glove", "kind": "lookalike", "worn": True}}
+    a = track("obj:0", "glove", 1, [1.0, 1.5], box=(100, 0, 40, 40), embedding=unit(1, 0), wearer="person:Person A")
+    b = track("obj:1", "glove", 1, [1.0, 1.5], box=(600, 0, 40, 40), embedding=unit(1, 0), wearer="person:Person B")
+    ids = link_identities([a, b], classes, set(), CFG)
+    assert [(i["tracks"], i["worn_by"]) for i in ids] == [(["obj:0"], ["person:Person A"]), (["obj:1"], ["person:Person B"])]
+
+
 def test_duplicate_tracks_are_one_object_from_the_start():
     """One necklace tracked under two names at once: never linkable as a pair (same time), but one object."""
     a = track("obj:0", "necklace", 1, [1.0, 1.167], embedding=unit(1, 0))

@@ -265,18 +265,20 @@ def link_identities(tracks, classes: dict, different: set[frozenset], c: dict) -
     None) and an average adjusted score >= c["link_threshold"]. Clustering starts from groups of duplicate tracks,
     which are one object from the outset. Lookalike families never link by appearance: a shot's tracks of one are one
     identity ("light 3": the shot's lights), not one each, which made 86 of OOO's 108 identities single light tubes and
-    194 of NES's trees. Each identity is named after its members' most common label ("necklace 2"), numbered per label
+    194 of NES's trees; worn ones (gloves) are grouped only as duplicates, never across wearers. Each identity is named after its members' most common label ("necklace 2"), numbered per label
     in order of first appearance."""
     identities, numbering = [], {}
     for family in sorted({classes[t["label"]]["family"] for t in tracks}):
         members = [t for t in tracks if classes[t["label"]]["family"] == family]
         lookalike = all(classes[t["label"]]["kind"] == "lookalike" for t in members)
         groups = duplicate_groups(members, c["duplicate_iou"])
-        if lookalike:
+        if lookalike:   # worn lookalikes (gloves on two riders) keep a group each: one identity would be worn by both
             per_shot: dict[int, list[int]] = {}
+            worn = [g for g in groups if classes[members[g[0]]["label"]]["worn"]]
             for g in groups:
-                per_shot.setdefault(members[g[0]]["shot"], []).extend(g)
-            groups = list(per_shot.values())
+                if not classes[members[g[0]]["label"]]["worn"]:
+                    per_shot.setdefault(members[g[0]]["shot"], []).extend(g)
+            groups = sorted(list(per_shot.values()) + worn, key=min)
         else:
             groups = average_linkage(members, groups, different, c)
         found = [[members[i] for i in g] for g in groups]
