@@ -8,15 +8,23 @@ inputs: {audio: audio.wav.v1, shots: bundle.shots@0.1}
 # sentence) and the layer word it is part of, which the layer points at with raw.tokens (raw_tokens.py)
 outputs: {transcript: bundle.transcript@0.1, tokens: bundle.transcript_tokens@0.1}
 config:
+  # the model, by its MLX id for every runner: the CUDA and CPU runners read NVIDIA's checkpoint it was converted from
+  # (nemo_model.CHECKPOINTS)
   model: {enum: [mlx-community/parakeet-tdt-0.6b-v3], default: mlx-community/parakeet-tdt-0.6b-v3}
 runners:
   - {kind: native, env: envs/audio, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
-  # TODO: [PERCEPTION-GRAPH] Phase 1 step 7 - a CUDA runner (NeMo nvidia/parakeet-tdt-0.6b-v3 in a pinned image)
-  # Spec: same output on linux/amd64 + CUDA; validate word times against the MLX conversion on the OOO clip.
-  # Plan: docs/plans/GRAPH_MVP_PLAN.md#phase-1--local-mvp
+  # NVIDIA NeMo's Parakeet (node_nemo.py), the same layer and side file. PyPI's torch 2.12 wheels for Linux are built
+  # for CUDA 13 (envs/asr-cuda): an NVIDIA driver >= 580. 4 GB: the 0.6B model in float32 (2.4 GB) and its work
+  - {kind: native, env: envs/asr-cuda, entry: node_nemo.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 4}
+  - {kind: native, env: envs/asr-cuda, entry: node_nemo.py, accelerator: cpu, platforms: [linux/amd64]}
 resources: {cpu_cores: 2, memory_gb: 6, gpu: shared}
-# fetches the weights ahead of a run (perception setup)
+# fetches the weights ahead of a run (perception setup): the ones its environment's runner loads
 prepare: prepare.py
 models:
   - {id: mlx-community/parakeet-tdt-0.6b-v3, source: hf://mlx-community/parakeet-tdt-0.6b-v3, licence: CC-BY-4.0,
-     licence_mode: commercial-ok, size_gb: 2.3}
+     licence_mode: commercial-ok, size_gb: 2.3, envs: [envs/audio]}
+  # the file the MLX conversion was made from, unchanged on Hugging Face since 2025-08-08 (nemo_model.py)
+  - {id: nvidia/parakeet-tdt-0.6b-v3,
+     source: "hf://nvidia/parakeet-tdt-0.6b-v3@541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.nemo",
+     revision: 541d1f99c6b0c3cd0b11a95167540bb8edefd82b, licence: CC-BY-4.0, licence_mode: commercial-ok, size_gb: 2.51,
+     envs: [envs/asr-cuda]}

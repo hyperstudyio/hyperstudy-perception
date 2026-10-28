@@ -1,0 +1,29 @@
+[project]
+name = "perception-env-asr-cuda"
+version = "0.1.0"
+description = "Speech transcript on an NVIDIA GPU or a CPU: Parakeet TDT 0.6B v3 through NVIDIA NeMo (audio.asr's node_nemo.py)"
+requires-python = ">=3.12,<3.13"
+# NeMo 3.0.0, the current release, with its ASR extra; torch 2.12.0, the version NeMo 3.0.0 pins for its own CUDA
+# builds (its cu12 and cu13 extras). PyPI's torch 2.12.0 for Linux is built for CUDA 13.0, whose runtime, cuBLAS and
+# cuDNN 9.20 come with it as wheels: an NVIDIA driver >= 580 (as RunPod's pods have, cloud.py). NeMo's own extras pull
+# torch from PyTorch's indexes and add numba-cuda and Transformer Engine for training; inference needs neither.
+# A lock of its own: NeMo's ASR extra caps lightning at 2.4.0 (envs/audio's pyannote 4.0.7 runs on lightning 2.6.6,
+# and torch 2.8.0 for CUDA 12.8) and brings hydra, omegaconf, lhotse, librosa 1.0 and transformers 5.21 (envs/gaze has
+# 5.20.2 under SAM 3): either shared lock would move versions under the nodes measured on them.
+# pyarrow writes the tokens side file (raw_tokens.py), pinned exactly as in envs/audio: its version names itself in the
+# file's footer.
+dependencies = [
+  "perception-node",
+  "nemo-toolkit[asr]==3.0.0",
+  "torch==2.12.0",
+  "pyarrow==26.0.0",
+]
+
+[tool.uv]
+package = false
+# The runners are linux/amd64 (CUDA, and CPU). darwin/arm64 resolves too, so the node's code can be run on a Mac's CPU
+# from this same lock (it was, on OOO): the manifest never places it there, where the MLX runner is the node's
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'", "sys_platform == 'darwin' and platform_machine == 'arm64'"]
+
+[tool.uv.sources]
+perception-node = { path = "../../sdk", editable = true }

@@ -155,8 +155,9 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         np.needs = sorted(node.upstream)
         np.place = placement.label if placement else None
         # weights not in this machine's cache; on another machine its cache is not known, so every weight is a download
-        # there (a run never downloads silently: --allow-downloads)
-        np.downloads = [x for x in m.models if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
+        # there (a run never downloads silently: --allow-downloads). Only the ones the chosen runner loads
+        loaded = m.models_for(placement.runner) if placement else m.models
+        np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(m.models)

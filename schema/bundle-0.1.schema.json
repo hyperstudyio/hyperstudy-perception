@@ -240,14 +240,14 @@
         ]
       },
       "transcript_tokens": {
-        "description": "layers/transcript_tokens.parquet, the transcript layer's raw side file (raw.tokens): every subword token Parakeet TDT returned (parakeet-mlx 0.5.3, greedy decoding), of which the layer keeps only the words they merge into and those words' times. One row per token, in time order. A token whose text starts with a space starts a word; the others extend it, never across a sentence. Greedy decoding has no alternative hypotheses. Columns are not nullable. Per word: the word column indexes the transcript layer's words in order, each word with a token, its start the first token's and its end the last token's (validate.py checks this).",
+        "description": "layers/transcript_tokens.parquet, the transcript layer's raw side file (raw.tokens): every subword token Parakeet TDT 0.6B v3 returned (greedy decoding: parakeet-mlx 0.5.3 on the Apple GPU, or NVIDIA NeMo 3.0.0 on a CUDA GPU or a CPU; the file metadata's confidence names which), of which the layer keeps only the words they merge into and those words' times. One row per token, in time order. A token whose text starts with a space starts a word; the others extend it, never across a sentence. Greedy decoding has no alternative hypotheses. Columns are not nullable. Per word: the word column indexes the transcript layer's words in order, each word with a token, its start the first token's and its end the last token's (validate.py checks this).",
         "per_word": true,
         "columns": [
           { "name": "id", "arrow": "int32", "description": "The token's id in Parakeet's 8192-token SentencePiece vocabulary." },
           { "name": "text", "arrow": "string", "description": "The token's text, a leading space for SentencePiece's word boundary." },
           { "name": "start", "arrow": "double", "description": "When the token was emitted, in seconds to 3 places: its encoder frame times 0.08 s." },
           { "name": "end", "arrow": "double", "description": "start plus the token's duration as TDT predicts it (0 to 4 frames of 0.08 s), in seconds to 3 places. A word's start and end in the layer are its first token's start and its last token's end." },
-          { "name": "confidence", "arrow": "float", "description": "parakeet-mlx's confidence in [0, 1], as computed: 1 - H / ln(8193), H the entropy of the softmax over the vocabulary and the blank at the step that emitted the token. A sentence's confidence is the geometric mean of its tokens'." },
+          { "name": "confidence", "arrow": "float", "description": "The token's confidence in [0, 1], as computed: 1 - H / ln(8193), H the entropy of the softmax over the vocabulary and the blank at the step that emitted the token (parakeet-mlx's measure; NeMo computes the same as its entropy measure with gibbs entropy, alpha 1 and lin normalisation). A sentence's confidence is the geometric mean of its tokens'." },
           { "name": "sentence", "arrow": "int32", "description": "Parakeet's sentence: it splits the tokens at . ? and ! (counting from 0)." },
           { "name": "word", "arrow": "int32", "description": "The index in the layer's words of the word the token is part of, or -1 for a token in no word (a word that would be only spaces)." }
         ]

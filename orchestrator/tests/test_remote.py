@@ -557,6 +557,23 @@ def test_on_another_machine_every_weight_a_node_uses_counts_as_a_download(tmp_pa
     assert here.nodes[0].downloads == []
 
 
+def test_a_weight_only_another_runner_loads_is_no_download(tmp_path, host, monkeypatch):
+    """A model declared for other runners' environments (audio.asr: the MLX weights, the NeMo ones) is not the placed
+    runner's: never a download for it, here or on another machine."""
+    import perception.plan as plan_mod
+    from perception.manifests import ModelRef
+    monkeypatch.setattr(plan_mod, "hf_cached", lambda source: False)         # nothing on this machine
+    coord = coordinator(tmp_path, host)
+    graph = compile_graph(video_graph(tmp_path, place="ssh-lab:cpu"), coord.registry)
+    m = graph.nodes["shots"].manifest
+    monkeypatch.setattr(m, "models", [ModelRef(id="w", source="hf://org/weights", licence_mode="commercial-ok"),
+                                      ModelRef(id="other", source="hf://org/other", licence_mode="commercial-ok",
+                                               envs=["envs/another-runners"])])
+    assert [d.id for d in make_plan(coord, graph, allow_uploads=True).nodes[0].downloads] == ["w"]
+    here = make_plan(coord, compile_graph(video_graph(tmp_path), coord.registry), allow_uploads=True)
+    assert [d.id for d in here.nodes[0].downloads] == ["w"]
+
+
 def test_code_saved_while_it_is_being_sent_is_not_filed_under_the_old_hash(tmp_path, host, rec, monkeypatch):
     import perception.backends.remote as remote
     coord = coordinator(tmp_path, host)

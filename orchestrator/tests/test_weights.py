@@ -116,3 +116,28 @@ def test_a_hub_source_pinned_to_a_revision_is_cached_only_at_that_revision(tmp_p
     assert not hf_cached(f"hf://org/repo@{pinned}/config.yaml")   # the revision's folder, without that file
     (tmp_path / "models--org--repo" / "snapshots" / pinned / "config.yaml").write_text("{}")
     assert hf_cached(f"hf://org/repo@{pinned}/config.yaml")
+
+
+def test_a_model_for_some_runners_is_a_download_only_where_one_of_them_runs():
+    """audio.asr's runners load different weights (parakeet-mlx's conversion, NVIDIA's NeMo checkpoint): a run on the
+    Apple GPU must not count the NeMo file a download (it would need --allow-downloads for a file it never reads), nor a
+    CUDA run the MLX one."""
+    from pathlib import Path
+
+    from perception.manifests import Manifest, Registry
+    asr = Registry.load(Path(__file__).resolve().parents[2] / "nodes").get("audio.asr@1.1.0")
+    by_accelerator = {r.accelerator: [x.id for x in asr.models_for(r)] for r in asr.runners}
+    assert by_accelerator == {"mps": ["mlx-community/parakeet-tdt-0.6b-v3"], "cuda": ["nvidia/parakeet-tdt-0.6b-v3"],
+                              "cpu": ["nvidia/parakeet-tdt-0.6b-v3"]}
+
+    def manifest(envs):
+        return Manifest.model_validate({
+            "id": "n", "version": "1.0.0", "outputs": {"o": "x"},
+            "runners": [{"kind": "native", "env": "envs/a", "entry": "a.py"}, {"kind": "native", "env": "envs/b", "entry": "b.py"}],
+            "models": [{"id": "every", "licence_mode": "commercial-ok"}, {"id": "some", "licence_mode": "commercial-ok", "envs": envs}]})
+    m = manifest(["envs/b"])
+    assert [x.id for x in m.models_for(m.runners[0])] == ["every"]
+    assert [x.id for x in m.models_for(m.runners[1])] == ["every", "some"]
+    for wrong in (["envs/c"], []):   # an environment no runner runs in, or none: the model would never be counted
+        with pytest.raises(ValueError, match="must name environments of this node's runners"):
+            manifest(wrong)
