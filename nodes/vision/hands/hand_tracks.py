@@ -13,6 +13,10 @@ Hands are a gated second stage on top of the bodies, after HaMeR's design:
      distance outside the box / box side, gated by WRIST_GATE).
      A box matched to a wrist that already gave a hand is that hand again and is dropped; one matched to a wrist with
      no hand inherits that body and side; an unmatched one is kept with no body and no side. box_source "detector".
+     Wrists that already have a hand stay in the matching, as in the bake-off, so that a box on them (a cuff, a
+     scrunchie) is dropped rather than given to another wrist or kept: the price is that where two people's wrists
+     meet (holding hands, passing something), a box on both can go to the wrist with a hand and the other person's
+     hand is lost.
      (The bake-off matched before dropping, so a dropped box could take a real box's wrist: see frame_hands.)
   3. RTMPose-hand runs only on hands whose box side is at least MIN_HAND_PX.
   4. Hands are tracked within the shot: linked hands by (body track, side, box source), unlinked ones by box IoU; a gap

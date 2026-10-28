@@ -162,6 +162,16 @@ def test_a_lower_scoring_duplicate_of_a_detector_box_takes_no_wrist_from_it():
     assert s["detector_duplicate"] == 1 and s["detector_linked"] == 1
 
 
+def test_a_box_on_two_wrists_goes_to_the_one_with_a_hand_and_is_dropped():
+    """The rule's known cost (hand_tracks docstring, step 2): wrists with a hand stay in the matching, so a box holding
+    body:0's wrist (which has its hand) and body:1's (which has none) goes, at a tie, to body:0's and is dropped."""
+    a = propose(a_body(name="body:0", hands={"left": hand_at(500, 480)}, wrists={"left": (500, 600)}), IDX, THRESHOLD, W, H)
+    b = propose(a_body(name="body:1", wrists={"right": (520, 610)}), IDX, THRESHOLD, W, H)
+    s = stats()
+    hands = frame_hands(FRAME, [a, b], Fake([([480, 590, 70, 70], 0.5)]), s)
+    assert [h["person"]["body"] for h in hands] == ["body:0"] and s["detector_duplicate"] == 1
+
+
 def test_a_small_wrist_hand_is_not_posed():
     body = propose(a_body(hands={"left": hand_at(500, 500, r=10)}), IDX, THRESHOLD, W, H)
     assert body["proposals"]["left"][2] < MIN_HAND_PX
