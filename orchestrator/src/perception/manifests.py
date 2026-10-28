@@ -73,6 +73,10 @@ class ModelRef(Strict):
     # a URL source's file, as the node fetches it (perception_node.weights): checked, and the key of the shared weights
     # cache, so plan can tell whether a run would download it
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # the environments of the runners that load it, when the node's runners load different weights (audio.asr: the MLX
+    # conversion on the Apple GPU, NVIDIA's checkpoint through NeMo on CUDA): plan counts it a download only where such
+    # a runner is placed. None: every runner loads it
+    envs: list[str] | None = None
 
     @model_validator(mode="after")
     def _url_has_sha256(self):
@@ -156,6 +160,20 @@ class Manifest(Strict):
         if missing:
             raise ValueError(f"cost: no price for {self.cost.by} {', '.join(map(repr, missing))}")
         return self
+
+    @model_validator(mode="after")
+    def _model_envs_are_runners(self):
+        """A model's envs name environments its runners run in: one that names none would never be counted."""
+        runner_envs = {r.env for r in self.runners if r.env}
+        for x in self.models:
+            if x.envs is not None and (not x.envs or set(x.envs) - runner_envs):
+                raise ValueError(f"model {x.id}: envs {x.envs} must name environments of this node's runners "
+                                 f"({', '.join(sorted(runner_envs)) or 'none'})")
+        return self
+
+    def models_for(self, runner: Runner) -> list[ModelRef]:
+        """The models a runner loads: those for its environment, and those for every runner."""
+        return [x for x in self.models if x.envs is None or runner.env in x.envs]
 
     @property
     def ref(self) -> str:

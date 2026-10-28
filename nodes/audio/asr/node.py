@@ -1,8 +1,8 @@
 """audio.asr: words with times, grouped into utterances, as the bundle's transcript layer.
 
-Parakeet TDT 0.6B v3 (MLX, Apple silicon). Utterances split at a pause over 0.25 s, a sentence end, or a shot cut,
-as the annotator prototype did (pipeline/bakeoff/label_page.py). Voices come from the diarization node, not here:
-every word's voice is null.
+Parakeet TDT 0.6B v3 (MLX, Apple silicon; node_nemo.py runs NVIDIA's NeMo on a CUDA GPU or a CPU). Utterances split
+at a pause over 0.25 s, a sentence end, or a shot cut, as the annotator prototype did (utterances.py). Voices come from
+the diarization node, not here: every word's voice is null.
 
 Beside the layer, the side file layers/transcript_tokens.parquet keeps every token Parakeet returned: its vocabulary
 id, text, times and confidence, its sentence, and the layer word it is part of (raw_tokens.py, which also merges the
@@ -13,32 +13,8 @@ import time
 
 import raw_tokens
 from perception_node import Node, NodeError
+from utterances import utterances
 from wav import read_wav
-
-PAUSE_SPLIT = 0.25            # seconds of silence between words that starts a new utterance
-SENTENCE_END = (".", "?", "!")
-
-
-def utterances(words: list[dict], shots: list[dict]) -> list[dict]:
-    cuts = [s["start"] for s in shots[1:]]
-    units, current = [], []
-    for i, word in enumerate(words):
-        if current:
-            prev = words[current[-1]]
-            crosses_cut = any(prev["end"] <= c <= word["start"] or prev["start"] < c <= word["start"] for c in cuts)
-            if word["start"] - prev["end"] > PAUSE_SPLIT or prev["w"].endswith(SENTENCE_END) or crosses_cut:
-                units.append(current)
-                current = []
-        current.append(i)
-    if current:
-        units.append(current)
-
-    def shot_at(t):
-        return next(s["id"] for s in reversed(shots) if s["start"] <= t)
-
-    return [{"id": f"utt:{n}", "start": words[u[0]]["start"], "end": words[u[-1]]["end"],
-             "text": " ".join(words[i]["w"] for i in u), "shot": shot_at((words[u[0]]["start"] + words[u[-1]]["end"]) / 2),
-             "words": [u[0], u[-1]], "voice": None} for n, u in enumerate(units)]
 
 
 with Node() as node:
@@ -63,7 +39,7 @@ with Node() as node:
     except ValueError as e:   # a confidence that is not finite
         raise NodeError("internal", f"Parakeet's output: {e}") from None
     words = [{**w, "voice": None} for w in words]
-    raw_tokens.write(node.path("tokens", "transcript_tokens.parquet"), tokens)
+    raw_tokens.write(node.path("tokens", "transcript_tokens.parquet"), tokens, raw_tokens.MLX_CONFIDENCE)
     shots = node.input_json("shots")["shots"]
     node.write_json("transcript", "transcript.json", {
         "layer": "transcript", "schema_version": "0.1.0",

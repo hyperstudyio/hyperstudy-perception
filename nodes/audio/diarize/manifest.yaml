@@ -29,3 +29,5 @@ models:
      licence_mode: commercial-ok, size_gb: 0.03, gated: true}
   # the words it gives voices to: asr's model, recorded as asr records it (no source: this node downloads nothing of it)
   - {id: mlx-community/parakeet-tdt-0.6b-v3, licence: CC-BY-4.0, licence_mode: commercial-ok}
+  # asr's CUDA and CPU runners record NVIDIA's checkpoint instead (nodes/audio/asr/nemo_model.py)
+  - {id: nvidia/parakeet-tdt-0.6b-v3, licence: CC-BY-4.0, licence_mode: commercial-ok}

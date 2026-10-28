@@ -61,9 +61,10 @@ content_val reach adaptive_threshold and min_content_val, min_scene_len frames a
 re-thresholded from the file, and the node checks the stored scores give the layer's cuts exactly; one row per frame,
 about 32 B a frame, 113 KB for a two-minute clip, 3.4 MB an hour at 29.97 fps).
 The transcript layer's: `transcript_tokens` (its `raw.tokens`: every subword token Parakeet returned, of which the
-layer keeps the words they merge into, with its vocabulary id, text, start and end, parakeet-mlx's entropy confidence
-as float32, its sentence, and the index of the layer word it is part of; one row per token; about 15 bytes a token,
-10 KB for a two-minute clip). Its kind is `transcript`, as the layer's. Its other side files are diarize's:
+layer keeps the words they merge into, with its vocabulary id, text, start and end, its entropy confidence as float32
+(parakeet-mlx's on the Apple GPU, NeMo's computed the same way on a CUDA GPU or a CPU: the file metadata's
+`confidence` names which), its sentence, and the index of the layer word it is part of; one row per token; about 15
+bytes a token, 10 KB for a two-minute clip). Its kind is `transcript`, as the layer's. Its other side files are diarize's:
 `transcript_diarization` (its `raw.diarization`: pyannote's speaker turns, overlapping where two
 voices speak at once, from which each word takes the voice whose turns overlap it longest, and its exclusive turns, one
 voice at a time; times unrounded, so the turns give exactly the layer's voices; about 9 KB for a two-minute clip, 0.3 MB

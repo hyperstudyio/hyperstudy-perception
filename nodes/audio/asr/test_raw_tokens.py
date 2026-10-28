@@ -10,7 +10,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from raw_tokens import COLUMNS, DESCRIPTION, FILE, ROW_GROUP_ROWS, to_words, write
+from raw_tokens import (COLUMNS, DESCRIPTION, FILE, MLX_CONFIDENCE, NEMO_CONFIDENCE, ROW_GROUP_ROWS, to_words,
+                        write)
 
 SCHEMA = Path(__file__).resolve().parents[3] / "schema" / "bundle-0.1.schema.json"
 
@@ -86,8 +87,10 @@ def test_no_tokens_is_no_words_and_a_confidence_that_is_not_finite_is_refused():
 def test_the_file_has_the_columns_the_bundle_schema_documents(tmp_path):
     pq = pytest.importorskip("pyarrow.parquet", reason="pyarrow writes the side file (envs/audio); CI installs it")
     words, rows = to_words(SENTENCES)
-    assert write(tmp_path / "transcript_tokens.parquet", rows) == len(rows)
+    assert write(tmp_path / "transcript_tokens.parquet", rows, MLX_CONFIDENCE) == len(rows)
     table = pq.read_table(tmp_path / "transcript_tokens.parquet")
+    # the metadata says which runner computed the confidences, and how
+    assert table.schema.metadata == {b"side": b"transcript_tokens", b"confidence": MLX_CONFIDENCE.encode()}
     spec = json.loads(SCHEMA.read_text())["$defs"]["parquet"]["transcript_tokens"]
     assert [(f.name, str(f.type)) for f in table.schema] == [(c["name"], c["arrow"]) for c in spec["columns"]]
     assert tuple(table.schema.names) == COLUMNS and all(not f.nullable for f in table.schema)
@@ -105,8 +108,9 @@ def test_the_same_tokens_are_the_same_bytes(tmp_path):
              "end": round((k + 2) * 0.08, 3), "confidence": float(np.float32(rng.uniform(0.6, 1))), "sentence": k // 12,
              "word": k} for k in range(ROW_GROUP_ROWS + 7)]
     first, second = tmp_path / "a.parquet", tmp_path / "b.parquet"
-    write(first, rows)
-    write(second, rows)
+    confidence = NEMO_CONFIDENCE.format(device="cuda")
+    write(first, rows, confidence)
+    write(second, rows, confidence)
     assert first.read_bytes() == second.read_bytes()
     meta = pq.ParquetFile(first).metadata
     assert meta.num_rows == len(rows) and meta.num_row_groups == 2   # groups of ROW_GROUP_ROWS
@@ -116,7 +120,7 @@ def test_the_same_tokens_are_the_same_bytes(tmp_path):
 def test_no_tokens_is_a_file_with_no_rows(tmp_path):
     pq = pytest.importorskip("pyarrow.parquet", reason="pyarrow writes the side file (envs/audio); CI installs it")
     path = tmp_path / "transcript_tokens.parquet"
-    assert write(path, []) == 0
+    assert write(path, [], MLX_CONFIDENCE) == 0
     data = path.read_bytes()
     assert data[:4] == data[-4:] == b"PAR1"
     table = pq.read_table(path)
