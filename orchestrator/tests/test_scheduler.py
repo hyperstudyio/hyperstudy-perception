@@ -22,8 +22,16 @@ from perception.store import Store
 NODES = Path(__file__).parent / "nodes"
 
 
+class OneGpu(SelfBackend):
+    """This machine with its GPU counted as one, whatever it has: the tests that count GPU nodes then run the same on a
+    laptop, on CI (no GPU) and on a lab server with several cards (TwoCards is that machine)."""
+    def probe_capabilities(self):
+        import dataclasses
+        return dataclasses.replace(super().probe_capabilities(), gpus=[])
+
+
 def coordinator(root: Path, backend=None, lease_s: float = 30) -> Coordinator:
-    return Coordinator(Store(root / "store"), Registry.load(NODES), [backend or SelfBackend()],
+    return Coordinator(Store(root / "store"), Registry.load(NODES), [backend or OneGpu()],
                        lease_s=lease_s, tick_s=0.02, backoff_s=0.01)
 
 
@@ -459,14 +467,14 @@ class TwoDevices(SelfBackend):
     """A machine with a CUDA GPU as well as a CPU, as far as placement can tell (the test node runs on the CPU)."""
     def probe_capabilities(self):
         import dataclasses
-        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=24)
+        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=24, gpus=[])
 
 
 class AppleSilicon(SelfBackend):
     """A Mac: an Apple GPU sharing its memory with the CPU, as far as placement can tell."""
     def probe_capabilities(self):
         import dataclasses
-        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "mps"})
+        return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "mps"}, gpus=[])
 
 
 def test_on_apple_silicon_a_node_that_runs_on_the_gpu_is_not_offered_the_cpu_too(tmp_path):
