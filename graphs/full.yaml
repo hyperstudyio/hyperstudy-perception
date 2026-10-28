@@ -8,6 +8,8 @@
 # per step. max_cost_usd caps the spend.
 #   perception plan graphs/full.yaml --input video=PATH/TO/VIDEO.mp4
 #   perception run graphs/full.yaml --input video=PATH --only asr,faces          # the local, free features
+#   perception run graphs/full.yaml --input video=PATH --only gestures           # gestures without objects (its optional
+#                                                    input): in a run of everything, a refused or failed objects cancels it
 #   perception run graphs/full.yaml --input video=PATH --allow-uploads           # everything, captions too
 schema_version: 1
 pipeline: perception-full
@@ -43,7 +45,7 @@ nodes:
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
   # who on screen speaks each utterance (LR-ASD over the face tracks and the audio), and which person each voice is
   - id: speakers
-    uses: vision.active-speaker@1.0.0
+    uses: vision.active-speaker@1.1.0
     inputs: {video: $inputs.video, audio: $nodes.decode.audio, shots: $nodes.decode.shots, faces: $nodes.faces.faces,
              transcript: $nodes.diarize.transcript}
   - id: bodies
@@ -51,11 +53,11 @@ nodes:
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, faces: $nodes.faces.faces}
   # who faces whom: MediaPipe 3D torso direction for the bodies' own person boxes (no second detector pass)
   - id: facing
-    uses: vision.facing@1.0.0
+    uses: vision.facing@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, bodies: $nodes.bodies.bodies}
   # hand boxes from the bodies' hand keypoints and a hand detector; each hand's body and face come with the bodies
   - id: hands
-    uses: vision.hands@1.0.0
+    uses: vision.hands@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, bodies: $nodes.bodies.bodies}
   # names objects with Claude Haiku 5.5 from decode's keyframes (frames and faces go to the API: ANTHROPIC_API_KEY),
   # outlines and tracks them with SAM 3, links them across shots with DINOv3 (both gated: HF_TOKEN), and finds who wears
@@ -65,9 +67,18 @@ nodes:
     uses: vision.objects@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes,
              faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
+  # hand over mouth, self-touch, pointing and raised hands from the hands' keypoints, py-feat's landmarks and the bodies'
+  # shoulders. objects is optional: with it, an object can be what a hand points at; leaving objects out (--only)
+  # still runs gestures, pointing at faces only
+  - id: gestures
+    uses: vision.gestures@1.0.0
+    inputs: {video: $inputs.video, hands: $nodes.hands.hands, bodies: $nodes.bodies.bodies, faces: $nodes.faces.faces,
+             detail: $nodes.faces.detail, objects: $nodes.objects.objects}
+  # objects is optional for gaze: when the objects step runs, its tracks are gaze targets too (gaze waits for it); when
+  # --only leaves it out, gaze runs on the faces alone
   - id: gaze
-    uses: vision.gaze@1.1.0
-    inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces}
+    uses: vision.gaze@1.2.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces, objects: $nodes.objects.objects}
   # the speech it reads is diarized, as the bake-off's captions read it: lines by voice (SPEAKER_00, ...), not one SPEAKER
   - id: captions
     uses: vlm.shot-captions@1.0.0

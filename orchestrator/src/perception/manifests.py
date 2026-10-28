@@ -95,6 +95,11 @@ class Manifest(Strict):
     description: str = ""
     stage: str | None = None                 # the bundle producer's stage name (default: the node id)
     inputs: dict[str, str] = Field(default_factory=dict)      # name -> artifact type
+    # inputs a graph may leave unconnected: the node runs without them (its request has no such input). `--only` does
+    # not pull in the node that feeds one, and drops the connection when it leaves that node out: gestures and gaze take
+    # the objects layer (pointing and gaze targets) when the run makes it, and run without it when the user leaves
+    # objects out. A graph that connects one makes the node wait for it (CompiledNode.optional_upstream)
+    optional_inputs: list[str] = Field(default_factory=list)
     outputs: dict[str, str]                                    # name -> artifact type
     config: dict[str, dict] = Field(default_factory=dict)     # name -> JSON Schema (with default)
     runners: list[Runner]
@@ -110,6 +115,16 @@ class Manifest(Strict):
     cost: Cost | None = None
 
     directory: Path = Field(default=Path("."), exclude=True)
+
+    @model_validator(mode="after")
+    def _optional_inputs_are_inputs(self):
+        if unknown := [name for name in self.optional_inputs if name not in self.inputs]:
+            raise ValueError(f"optional_inputs: {', '.join(unknown)} is not one of this node's inputs "
+                             f"({', '.join(self.inputs) or 'none'})")
+        # the budget counts a billable node's units in its cost.input (plan, the reservation): it must be connected
+        if self.cost and self.cost.per != "run" and self.cost.input in self.optional_inputs:
+            raise ValueError(f"optional_inputs: {self.cost.input} holds the units cost counts (cost.input), so it cannot be optional")
+        return self
 
     @model_validator(mode="after")
     def _cost_counts_an_input(self):

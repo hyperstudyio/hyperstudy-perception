@@ -1,10 +1,13 @@
 id: vision.gaze
-version: 1.1.0
+version: 1.2.0
 stage: gaze
 title: Gaze targets
-description: Where each tracked face looks (Gaze-LLE ViT-L/14 heatmaps and in-frame scores), its target face or out of frame, and looks_at, mutual gaze and joint attention events
-# Faces only for now; objects as targets come with an objects input (gaze_targets.py says how)
-inputs: {video: video.v1, media: media.v1, faces: bundle.faces@0.1}
+description: Where each tracked face looks (Gaze-LLE ViT-L/14 heatmaps and in-frame scores), its target face or object or out of frame, and looks_at, mutual gaze and joint attention events
+inputs: {video: video.v1, media: media.v1, faces: bundle.faces@0.1, objects: bundle.objects@0.1}
+# objects: the tracked objects' outlines are targets too (the bake-off's gaze_stage.py with objects.json). Optional: a
+# run that leaves the objects step out (it calls an API, and the user can turn it off) still runs gaze, on faces alone,
+# with the layer 1.1.0 wrote; one that runs it waits for it
+optional_inputs: [objects]
 # heatmaps: layers/gaze_heatmaps.parquet, the rest of Gaze-LLE's output for every head (its whole heatmap, as uint8
 # relative to its maximum, and its unrounded in-frame score), which the layer points at with raw.heatmaps (heatmaps.py)
 outputs: {gaze: bundle.gaze@0.1, heatmaps: bundle.gaze_heatmaps@0.1}

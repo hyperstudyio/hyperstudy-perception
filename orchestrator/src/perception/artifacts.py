@@ -242,6 +242,29 @@ class Side:
 # translation, blendshapes, mesh depth): face geometry and expression, no identity vector, so faces. The faces untracked
 # file holds every face py-feat detected that tracking left out, with all of py-feat's values for it, its ArcFace
 # embedding among them (to revisit clustering as well as tracking): faces and embeddings, like faces_embeddings.
+# The speakers scores are LR-ASD's score for every 25 fps frame of a face track (per window length and their mean):
+# when each face track speaks, and with the faces layer's track -> person who speaks when, frame by frame, which the
+# diarization turns and the speakers layer (whose candidates are means of these scores) count as transcript; so
+# transcript too. No face image, landmark or box, no samples or spectra, no words: not faces or audio.
+# The speakers votes are, per voice, each of its words (an index into the transcript layer's words) with the face and
+# person LR-ASD scored highest over it: the voices and who speaks when, as the speakers layer (whose voice links they
+# give) holds them, so transcript, as that layer is. No word text and no audio.
+# The facing poses are MediaPipe's 33 body landmarks (2D in the crop, and 3D world) per face-linked body sample, with
+# the torso direction from them, and the facing angles each pair's angle and image distance per sample time: the same
+# kind of data as the bodies layer (a skeleton per person) and the facing layer (who is turned to whom), which hold no
+# kind, so none. The 33 landmarks include 11 coarse face points (nose, eyes, ears, mouth corners), fewer than the
+# bodies layer's 68: if the bodies layer is ever counted as faces, the poses go with it (no pixels, face images or
+# identity embeddings either way).
+# The hands detections are every box the hand detector (RTMDet-nano hand) returned, with its score, why it is or is not
+# a hand, and the wrist (body, side) and hand sample it went to: the same kind of data as the hands layer, whose
+# detector hands are some of these boxes, so its kinds, none. Most of them score under the layer's threshold, and some
+# of those lie on faces (the detector's false positives): a box and a score, no pixels, landmarks or identity, as the
+# bodies layer's person boxes hold faces without counting as faces.
+# The gestures evidence is every hand sample's rule measurements: counts of hand keypoints near the mouth or on the face,
+# each keypoint's distance to the mouth in face sizes, the face box's side, finger ratios, the wrist's rise over the
+# shoulder, and the face or object track pointed at. Scalars about the hand's pose relative to the face and body, with
+# no landmark, face box position, pixel or embedding: the kinds of the hands and bodies layers (none), whose keypoints
+# place the hand and the head far more precisely than these distances do.
 # The prosody tracks are Praat's frames: pitch every 10 ms over the whole clip and over each utterance, intensity every
 # 10 ms, harmonicity per utterance and the glottal pulses: no samples, but a dense measure of the voice (pitch and loudness
 # every 10 ms are enough to resynthesise a buzz with its melody and rhythm), as sounds_tags is of the soundtrack. So
@@ -268,6 +291,12 @@ SIDE_FILES: dict[str, Side] = {
     "sounds_queries": Side("sounds", ("audio",), "parquet"),
     "bodies_scores": Side("bodies", (), "parquet"),
     "bodies_duplicates": Side("bodies", (), "parquet"),
+    "speakers_scores": Side("speakers", ("transcript",), "parquet"),
+    "speakers_votes": Side("speakers", ("transcript",)),
+    "facing_poses": Side("facing", (), "parquet"),
+    "facing_angles": Side("facing", (), "parquet"),
+    "hands_detections": Side("hands", (), "parquet"),
+    "gestures_evidence": Side("gestures", (), "parquet"),
     "prosody_tracks": Side("prosody", ("audio",), "parquet"),
     "prosody_speakers": Side("prosody", ("audio",)),
     "prosody_emotion": Side("prosody", ()),

@@ -16,7 +16,8 @@
 
 References are `$inputs.<name>` or `$nodes.<node id>.<output name>`. Compilation checks that every reference
 exists, that its artifact type is the one the consuming node's manifest declares, that every declared input is
-supplied, that config keys are known and valid, and that the graph has no cycles. The privacy policy is checked here
+supplied (but the manifest's optional_inputs, which may be left out), that config keys are known and valid, and that
+the graph has no cycles. The privacy policy is checked here
 too, so a graph that would upload what it may not never starts.
 """
 
@@ -102,6 +103,8 @@ class CompiledNode:
     inputs: dict[str, Ref]
     config: dict                              # manifest defaults + the graph's values
     upstream: set[str] = field(default_factory=set)
+    # the upstream nodes it reads only through optional inputs: it waits for them, but a stage picker need not add them
+    optional_upstream: set[str] = field(default_factory=set)
 
     @property
     def id(self) -> str:
@@ -177,8 +180,11 @@ def compile_graph(doc: dict, registry: Registry) -> Graph:
             problems.append(f"node {n.id}: {m.ref} has no input {name!r} (inputs: {', '.join(m.inputs) or 'none'})")
         for name, want in m.inputs.items():
             text = n.inputs.get(name)
+            if text is None and name in m.optional_inputs:
+                continue
             if text is None:
-                problems.append(f"node {n.id}: input {name!r} ({want}) is not connected")
+                if name not in m.optional_inputs:   # an optional one left out: the node runs without it
+                    problems.append(f"node {n.id}: input {name!r} ({want}) is not connected")
                 continue
             ref = parse_ref(text)
             if ref is None:
@@ -214,7 +220,9 @@ def compile_graph(doc: dict, registry: Registry) -> Graph:
         elif not_allowed := [k for k in m.privacy.external_upload if k not in spec.policy.allow_upload]:
             problems.append(f"node {n.id}: {m.ref} uploads {', '.join(not_allowed)}, which policy.allow_upload does not permit")
 
-        compiled[n.id] = CompiledNode(n, m, refs, config, {r.node for r in refs.values() if r.node})
+        upstream = {r.node for r in refs.values() if r.node}
+        required = {r.node for name, r in refs.items() if r.node and name not in m.optional_inputs}
+        compiled[n.id] = CompiledNode(n, m, refs, config, upstream, upstream - required)
 
     order = _topological(compiled, problems)
     if problems:
