@@ -64,7 +64,7 @@ nodes:
   # what (faces, bodies). The naming duplicates the captions' pass over the same keyframes; it is to fold into captions
   # (PLAN.md §4)
   - id: objects
-    uses: vision.objects@1.0.0
+    uses: vision.objects@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes,
              faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
   # hand over mouth, self-touch, pointing and raised hands from the hands' keypoints, py-feat's landmarks and the bodies'

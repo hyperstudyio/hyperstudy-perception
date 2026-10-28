@@ -35,8 +35,20 @@ def mask_box(mask) -> list[int]:
     return [x0, y0, int(xs.max()) - x0 + 1, int(ys.max()) - y0 + 1]
 
 
-def frame_sample(t, mask, score) -> dict:
-    return {"t": t, "box": mask_box(mask), "poly": mask_polygon(mask), "score": round(float(score), 3)}
+def frame_sample(t, mask, score, offset=(0, 0)) -> dict:
+    """A layer sample from a mask; a crop's mask at offset (x0, y0) gives frame pixels."""
+    x0, y0 = offset
+    x, y, w, h = mask_box(mask)
+    return {"t": t, "box": [x + x0, y + y0, w, h], "poly": [[x + x0, y + y0] for x, y in mask_polygon(mask)],
+            "score": round(float(score), 3)}
+
+
+def filled_outline(mask):
+    """What a mask's layer polygon (mask_polygon) covers, as a mask of the same shape; empty for an empty mask."""
+    out = np.zeros(mask.shape, np.uint8)
+    if mask.any():
+        cv2.fillPoly(out, [np.array(mask_polygon(mask), np.int32)], 1)
+    return out.astype(bool)
 
 
 def padded_crop(frame, box):

@@ -128,10 +128,11 @@ def load_embedder(device, token: str | None):
     return _from_hub(lambda: AutoModel.from_pretrained(EMBEDDER, revision=EMBEDDER_REVISION, token=token).to(device).eval(), EMBEDDER)
 
 
-def segment_shot(segmenter, frames: list, times, nouns, device, frame_sample) -> dict:
-    """SAM 3 over one shot, all its nouns as text prompts: {SAM 3 object id: {label, score, samples}}. A session never
-    spans a cut; SAM 3 detects on every frame and tracks with memory, so objects entering mid-shot are picked up.
-    Empties `frames` once the session holds its own copy: the RGB frames are not needed for the pass (budget.py)."""
+def segment_shot(segmenter, frames: list, times, nouns, device, on_mask) -> None:
+    """SAM 3 over one shot, all its nouns as text prompts: on_mask(t, noun, SAM 3 object id, detection score, tracker
+    score, mask) for every non-empty mask of every frame, in frame order. A session never spans a cut; SAM 3 detects on
+    every frame and tracks with memory, so objects entering mid-shot are picked up. Empties `frames` once the session
+    holds its own copy: the RGB frames are not needed for the pass (budget.py)."""
     import torch
     model, processor = segmenter
     with torch.inference_mode():
@@ -139,19 +140,70 @@ def segment_shot(segmenter, frames: list, times, nouns, device, frame_sample) ->
                                                video_storage_device="cpu", dtype=segmenter_dtype(device))
         frames.clear()
         processor.add_text_prompt(session, nouns)
-        tracks = {}
         for out in model.propagate_in_video_iterator(inference_session=session):
             post = processor.postprocess_outputs(session, out)
             prompt_of = {obj: text for text, objs in post["prompt_to_obj_ids"].items() for obj in objs}
             masks = post["masks"].cpu().numpy()
             for obj_id, det_score, mask in zip(post["object_ids"].tolist(), post["scores"].tolist(), masks):
-                if not mask.any():
-                    continue
-                s = frame_sample(times[out.frame_idx], mask, out.obj_id_to_tracker_score.get(obj_id, det_score))
-                track = tracks.setdefault(obj_id, {"label": prompt_of[obj_id], "score": det_score, "samples": []})
-                track["samples"].append(s)
+                if mask.any():
+                    on_mask(times[out.frame_idx], prompt_of[obj_id], obj_id, det_score,
+                            out.obj_id_to_tracker_score.get(obj_id, det_score), mask)
         del session
-    return tracks
+
+
+class CropDetector:
+    """SAM 3's detector (the video model's own, detector_model: no second copy of the weights) on still crops, with
+    fixed text prompts whose embeddings are made once: what garments.py asks for inside each body's box. Each crop is
+    resized to SAM 3's 1008x1008 by its image processor; a detection's score is the video model's (the query's
+    probability times the image's presence probability), its mask the query's mask logits resized to the crop, > 0."""
+
+    BATCH = 8   # crops through the vision encoder at once
+
+    def __init__(self, segmenter, prompts, device, token: str | None):
+        import torch
+        from transformers import Sam3Processor
+        model, _ = segmenter
+        self.model, self.prompts, self.device = model.detector_model, list(prompts), device
+        self.processor = _from_hub(lambda: Sam3Processor.from_pretrained(SEGMENTER, revision=SEGMENTER_REVISION, token=token),
+                                   SEGMENTER)
+        with torch.inference_mode():
+            text = self.processor(text=self.prompts, return_tensors="pt")
+            self.attention = text["attention_mask"].to(device)
+            self.text = self.model.get_text_features(input_ids=text["input_ids"].to(device), attention_mask=self.attention,
+                                                     return_dict=True).pooler_output
+
+    def detect(self, crops: list, min_score: float) -> list[list[dict]]:
+        """For each crop (RGB array): [{noun, score, mask}] scoring at least min_score and with a pixel in its mask, in
+        prompt order, then the detector's query order."""
+        out = []
+        for start in range(0, len(crops), self.BATCH):
+            out += self._batch(crops[start:start + self.BATCH], min_score)
+        return out
+
+    def _batch(self, crops, min_score):
+        from types import SimpleNamespace
+
+        import numpy as np
+        import torch
+        from PIL import Image
+        k = len(crops)
+        found = [[] for _ in crops]
+        with torch.inference_mode():
+            pixels = self.processor(images=[Image.fromarray(c) for c in crops], return_tensors="pt")["pixel_values"]
+            vision = self.model.get_vision_features(pixel_values=pixels.to(self.device, segmenter_dtype(self.device)))
+            for i, noun in enumerate(self.prompts):
+                o = self.model(vision_embeds=vision, text_embeds=SimpleNamespace(pooler_output=self.text[i:i + 1].expand(k, -1, -1)),
+                               attention_mask=self.attention[i:i + 1].expand(k, -1))
+                scores = (o.pred_logits.float().sigmoid() * o.presence_logits.float().sigmoid()).cpu().numpy()
+                for c, crop in enumerate(crops):
+                    keep = np.flatnonzero(scores[c] >= min_score)
+                    if not len(keep):
+                        continue
+                    logits = o.pred_masks[c, torch.from_numpy(keep).to(self.device)].float()[None]
+                    masks = (torch.nn.functional.interpolate(logits, size=crop.shape[:2], mode="bilinear")[0] > 0).cpu().numpy()
+                    found[c] += [{"noun": noun, "score": float(scores[c, q]), "mask": m}
+                                 for q, m in zip(keep.tolist(), masks) if m.any()]   # a query can score with no pixel
+        return found
 
 
 def embed_crops(model, crops, device):

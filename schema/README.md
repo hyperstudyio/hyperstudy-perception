@@ -25,6 +25,7 @@ layers/speakers_votes.json
 layers/facing_poses.parquet
 layers/facing_angles.parquet
 layers/hands_detections.parquet
+layers/objects_masks.parquet
 layers/prosody_tracks.parquet
 layers/prosody_speakers.json
 layers/prosody_emotion.json
@@ -107,6 +108,14 @@ wrist the matching gave it and the layer sample it became, so the score threshol
 can be revisited; with the bodies layer and shots the rows give the layer's hands again through the node's own
 matching and tracking, which the node checks; one row per detection, about 36 a frame of which 1 or 2 score at least
 the layer's 0.25: 32,222 rows, 0.58 MB for a two-minute clip, about 18 MB an hour at 8 frames a second).
+The objects layer's: `objects_masks` (its `raw.masks`: every mask SAM 3 gave the objects node, as box and outline: each
+sample of each track of the shots' SAM 3 sessions, with SAM 3's detection and tracker scores unrounded and what the
+check against the people's masks made of it (`kept`, `trimmed`, `covers_person`, `encloses_person`, `worn`) with the
+person and enclosed shares it was judged on, and each detection scoring at least 0.3 in each body crop (the garment
+nouns and `person`), with its score, the body whose crop it is and why it is or is not one of that body's items
+(`item`, `person`, `below_keep`, `not_this_body`, `not_picked`); a row with a track names the layer sample it became,
+so the thresholds (keep score, person shares, the slots' regions) can be revisited; OBJECTS_MASKS_SIZE). Outlines and
+boxes, no pixels or face data: no kind.
 The prosody layer's: `prosody_tracks` (its `raw.tracks`: Praat's frames the measures and the contour come from, the
 first-pass pitch and the intensity every 10 ms over the clip, and per utterance its speaker's second-pass pitch over it,
 its harmonicity frames and its glottal pulses; unrounded; a row per frame, so every word's and utterance's pitch, HNR
@@ -124,7 +133,8 @@ numbers an utterance: no kind. The captions file quotes the transcript: `transcr
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
 of the faces layer's samples, at the same times; faces_pyfeat, gaze_heatmaps and bodies_scores hold a row for each of
 their layer's samples; every bodies_duplicates row names a sample of the bodies layer; each of the hands layer's
-detector samples is named by exactly one hands_detections row, and no other sample is; transcript_tokens' word column
+detector samples is named by exactly one hands_detections row, and no other sample is; every objects_masks row with a
+track names one of the objects layer's samples; transcript_tokens' word column
 indexes the transcript layer's words in order, each word spanning its first token's start to its last token's end).
 
 The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's

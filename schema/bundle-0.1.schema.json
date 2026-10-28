@@ -554,6 +554,30 @@
           { "name": "hand", "arrow": "string", "description": "The hand (hand:N) of the layer sample it became (linked, unlinked), or empty." },
           { "name": "sample", "arrow": "int32", "description": "That sample's index in the hand's samples, or -1." }
         ]
+      },
+      "objects_masks": {
+        "description": "layers/objects_masks.parquet, a raw side file of the objects layer (raw.masks): every mask SAM 3 gave the producer, so its thresholds can be revisited. Two kinds of row (found): vocabulary, every sample of every track of the shots' SAM 3 video sessions (the vocabulary's names as text prompts), with the session's detection and tracker scores and what the check against the people's masks made of it; body, every detection scoring at least the file metadata's store_score in every body crop (the fixed garment nouns and person, the metadata's prompts), with its score, the body whose crop it is, and why it is or is not one of that body's items. Rows are in the producer's order: shot by shot, the body crops' detections (by time, body, prompt, then SAM 3's query order), then the session's masks (by frame, then SAM 3's order). Boxes and outlines are whole source pixels, as the layer's; scores are SAM 3's float32 values, unrounded; -1 where a value does not apply. The metadata names the segmenter, the frame size, fps and clothing_fps, store_score and keep_score. Columns are not nullable. A row with a track names one of the layer's samples (validate.py checks this).",
+        "of_samples": true,
+        "track": { "column": "track", "field": "id", "none": "" },
+        "columns": [
+          { "name": "t", "arrow": "double", "description": "The frame's time, as the layer's samples' (to 3 places)." },
+          { "name": "shot", "arrow": "string", "description": "The shot (shot:N)." },
+          { "name": "found", "arrow": "string", "description": "vocabulary (a session mask) or body (a body-crop detection)." },
+          { "name": "label", "arrow": "string", "description": "The text prompt: the vocabulary's name, or the body pass's noun (person for a person mask)." },
+          { "name": "sam", "arrow": "int32", "description": "SAM 3's object id within the shot's session (vocabulary), or -1." },
+          { "name": "body", "arrow": "string", "description": "The body track (body:N) whose crop it was found in (body), or empty." },
+          { "name": "score", "arrow": "float", "description": "SAM 3's detection score: of the session object (vocabulary; the track score of the layer before 1.1.0), or of this detection (body): the query's probability times the presence probability." },
+          { "name": "tracker_score", "arrow": "float", "description": "The session tracker's score for this frame (vocabulary; the layer's sample score, unrounded), or -1." },
+          { "name": "box", "arrow": "fixed_size_list<element: int32 not null>[4]", "description": "The mask's box [x, y, w, h], before any trim." },
+          { "name": "poly", "arrow": "list<element: int32 not null>", "description": "The mask's outline before any trim (its largest outer contour, simplified to at most 40 points, as the layer's polygons), as x0, y0, x1, y1, ..." },
+          { "name": "person_share", "arrow": "float", "description": "The part of the mask on the people's masks at that time (vocabulary, things not worn), or -1." },
+          { "name": "enclosed_share", "arrow": "float", "description": "The most of one person's mask inside the filled outline of what was kept (vocabulary, things not worn, when not mostly people), or -1." },
+          { "name": "reason", "arrow": "string", "description": "What the producer made of it. Vocabulary: kept (no person pixels), trimmed (the people's pixels taken out: the layer sample is the rest), covers_person (at least half of it is people: dropped), encloses_person (the outline of what is left holds at least half of a person: dropped), worn (worn or carried, as the name's class says: not checked). Body: item (part of one of the body's items), person (the body's person mask), below_keep (under keep_score), not_this_body (its mask centre is in no region of this body's for its slot, or nearer another body's), not_picked (this body's, but its slot took a better one)." },
+          { "name": "outcome", "arrow": "string", "description": "What became of its track (vocabulary) or item (body): tracks (in the layer's tracks), rejected (in its rejected_tracks: the crop check), too_short (fewer than two samples were kept), none (a body detection that is no item)." },
+          { "name": "track", "arrow": "string", "description": "The layer track (obj:N) whose sample it is, or empty." },
+          { "name": "rejected", "arrow": "string", "description": "The rejected track (obj:N, rejected_tracks) whose sample it is, or empty." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that layer track's samples, or -1 (a rejected track's sample is the one at t)." }
+        ]
       }
     },
     "sidePointer": {
@@ -760,6 +784,8 @@
               "shot": { "$ref": "#/$defs/id/shot" }, "start": { "$ref": "#/$defs/time" }, "end": { "$ref": "#/$defs/time" },
               "wearer": { "oneOf": [{ "$ref": "#/$defs/id/person" }, { "type": "null" }] },
               "verdict": { "enum": ["object", "graphic", "absent", null] },
+              "found": { "enum": ["vocabulary", "body"], "description": "How the track was found: vocabulary, a SAM 3 session track of a name the vocabulary gave for the shot; body, a garment SAM 3 found inside a body's box (with body). Absent: vocabulary (layers before vision.objects 1.1.0)." },
+              "body": { "$ref": "#/$defs/id/body", "description": "The body track (bodies layer) a body garment was found on; its wearer is that body's person." },
               "samples": { "type": "array", "items": { "type": "object", "required": ["t", "box"],
                 "properties": { "t": { "$ref": "#/$defs/time" }, "box": { "$ref": "#/$defs/box" },
                   "poly": { "type": "array", "items": { "$ref": "#/$defs/point" } }, "score": { "type": ["number", "null"] } } } } } } },
@@ -768,7 +794,9 @@
               "worn_by": { "type": "array", "items": { "$ref": "#/$defs/id/person" } },
               "tracks": { "type": "array", "items": { "$ref": "#/$defs/id/obj" } }, "crop": { "type": ["string", "null"] } } } },
           "rejected_tracks": { "type": "array", "items": { "type": "object", "required": ["id", "label", "verdict", "start", "end"],
-            "properties": { "id": { "$ref": "#/$defs/id/obj" }, "verdict": { "enum": ["graphic", "absent"] } } } }
+            "properties": { "id": { "$ref": "#/$defs/id/obj" }, "verdict": { "enum": ["graphic", "absent"] },
+              "found": { "enum": ["vocabulary", "body"], "description": "How the track was found: vocabulary, a SAM 3 session track of a name the vocabulary gave for the shot; body, a garment SAM 3 found inside a body's box (with body). Absent: vocabulary (layers before vision.objects 1.1.0)." },
+              "body": { "$ref": "#/$defs/id/body", "description": "The body track (bodies layer) a body garment was found on; its wearer is that body's person." } } } }
         }
       },
 
