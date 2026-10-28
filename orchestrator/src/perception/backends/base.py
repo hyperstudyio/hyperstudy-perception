@@ -4,7 +4,8 @@ a remote job or an API call.
 
     probe_capabilities()   what this backend can run here (platform, accelerators, memory, tools)
     runner_for(manifest)   the manifest runner this backend would use, or why none fits
-    identity(manifest, r)  what makes this runner's results this runner's (env lock, code, SDK): cache key
+    identity(manifest, r)  what makes a result this node's wherever it was made (the code that runs, the accelerator,
+                           the platform; never the machine): the cache key's runner, one rule for every backend
     estimate(...)          cost and time, before anything is reserved
     stage_inputs(...)      make the inputs readable where the node runs; returns the request's input entries
     submit(...)            start it; returns a JSON-able handle (kept in the run state, so a restarted coordinator
@@ -17,6 +18,7 @@ a remote job or an API call.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -115,8 +117,45 @@ class Backend(ABC):
     def missing_tools(self, runner: Runner) -> list[str]:
         return []
 
-    @abstractmethod
-    def identity(self, manifest: Manifest, runner: Runner) -> str: ...
+    def identity(self, manifest: Manifest, runner: Runner) -> str:
+        """What makes a result this node's wherever it was made: the cache key's `runner`. One rule for every backend
+        (decided 2026-10-28): the code that runs, the runner that runs it, its accelerator and the platform, and nothing
+        that names the machine or the backend. A result made on one machine is reused on any other of the same kind (a
+        lab server's on a RunPod pod, or on the same server added under a second name), and a store's results stay valid
+        in another coordinator's; where a result was made is in its usage instead (`ran_on`, which the coordinator
+        records).
+
+        The code is the files remote.code_files lists, hashed by path and content: the files git tracks in the node's
+        directory, a script it shares with another node, its uv project with its lock, and the node SDK (installed
+        editable, outside the lock). What another machine runs is exactly what is sent there, so its results and this
+        machine's agree when the code does. Here a node also runs the files beside it that git does not track yet (a
+        module being written), so those git does not ignore count too: a result made with them is never served to
+        another machine, which runs without them. A node git cannot list (outside the repository, a checkout without
+        git) is hashed from every file in its folders, and its results stay this machine's (no other machine is sent
+        it).
+
+        The platform is the OS and architecture (`linux/amd64`, `darwin/arm64`, as the machine was probed) and the
+        accelerator is the runner's (`cpu`, `mps`, `cuda`). Nothing finer: not the GPU model, its driver or the CPU.
+        The lock pins every library, torch and its CUDA build included (and each uv project Python's minor version), so
+        two machines of one platform and accelerator give the same results up to float rounding, which is accepted (a face run on a RunPod RTX A5000
+        was byte-identical to one on an AWS L4). A Mac and a Linux machine stay apart: their wheels and kernels differ
+        (the face node on the Mac and on an L4 agreed on 185 of 186 tracks).
+
+        Every identity starts with the platform and accelerator (`linux/amd64/cuda:...`), which no identity under the
+        rule before this one did (those began with the backend's kind: `native:`, `ssh-gpu1:`, `runpod:`), so no
+        cache key made then is ever read as one made now: results cached under the old rule are made again, once."""
+        from .remote import code_files, code_hash   # remote imports this module
+        here = not self.remote
+        try:
+            code = code_hash(code_files(manifest, runner, untracked=here))
+        except (RuntimeError, OSError) as e:
+            # here: hashed from the files themselves, under a name no listed code has; elsewhere nothing could be sent
+            # (submit says why), and no result is shared
+            from .native import unlisted_code_hash
+            code = f"unlisted {unlisted_code_hash(manifest, runner)}" if here else f"unsendable {e}"
+        plat = self.probe_capabilities().platform
+        doc = {"code": code, "runner": [runner.kind, runner.entry, runner.env], "accelerator": runner.accelerator, "platform": plat}
+        return f"{plat}/{runner.accelerator}:{hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()[:16]}"
 
     def estimate(self, manifest: Manifest, runner: Runner, inputs: dict[str, Artifact], video_s: float | None = None) -> Estimate:
         """`video_s`: the video's length when the caller knows it (a plan, before decode has run)."""

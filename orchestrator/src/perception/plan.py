@@ -186,7 +186,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
             if m.cost:   # units are known once the input exists (from the cache, or a graph input)
                 np.cost_usd += manifest_cost(m, node.config, inputs) if m.cost.per == "run" or m.cost.input in inputs else 0.0
                 np.cost_note = "" if m.cost.per == "run" or m.cost.input in inputs else f"${m.cost.unit_usd(node.config)} per {m.cost.per}, units known after {node.inputs[m.cost.input].node}"
-        for p in options:   # cached or not: moving a node elsewhere runs it again
+        for p in options:   # cached or not: on another platform or accelerator it runs again (Backend.identity)
             seconds, basis = estimate(coord.store, m.ref, p.label, video_s)
             sent, to = coord.uploads(m, p)
             np.estimates[p.label] = {"estimate_s": seconds, "estimate_basis": basis,

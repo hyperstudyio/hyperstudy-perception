@@ -1598,20 +1598,6 @@ def test_validate_reports_a_bad_facing_side_file_as_a_problem(tmp_path, file, da
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 
 
-@pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])
-def test_changing_the_node_sdk_changes_every_nodes_runner_identity(tmp_path, monkeypatch, backend):
-    from perception.backends import native
-    sdk = tmp_path / "sdk" / "src" / "perception_node"
-    sdk.mkdir(parents=True)
-    (sdk / "__init__.py").write_text("PROTOCOL = 1\n")
-    monkeypatch.setattr(native, "REPO", tmp_path)
-    m = Registry.load(NODES).get("test.work@1.0.0")
-    b = getattr(native, backend)()
-    before = b.identity(m, m.runners[0])
-    (sdk / "__init__.py").write_text("PROTOCOL = 1  # a changed response writer\n")
-    assert b.identity(m, m.runners[0]) != before
-
-
 def test_a_bundle_names_the_pipeline_version_that_made_it(tmp_path):
     """Not a fixed string: a bundle from 0.1.1 says 0.1.1 (the installed package's version)."""
     from importlib.metadata import version

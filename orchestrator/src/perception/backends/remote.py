@@ -29,10 +29,11 @@ from .base import Capabilities
 from .native import REPO, NativeBackend
 
 
-def code_files(manifest: Manifest, runner: Runner) -> list[str]:
+def code_files(manifest: Manifest, runner: Runner, untracked: bool = False) -> list[str]:
     """What a node needs on the other machine, relative to the repository: the files git tracks in its directory, its
     uv project and the node SDK. Only tracked files: a working copy can hold images, crops and bundles that must not
-    leave the machine (as launch.sh stages for whole-graph cloud runs)."""
+    leave the machine (as launch.sh stages for whole-graph cloud runs). `untracked`: also the files there git neither
+    tracks nor ignores, which a node running on this machine runs with (its identity: Backend.identity)."""
     if not manifest.directory.resolve().is_relative_to(REPO):
         raise RuntimeError(f"{manifest.ref} is not in the pipeline's repository ({manifest.directory}): only files it tracks are sent")
     dirs = [manifest.directory.resolve().relative_to(REPO).as_posix(), "sdk"]
@@ -44,7 +45,8 @@ def code_files(manifest: Manifest, runner: Runner) -> list[str]:
     if release():
         files = files_in(dirs)   # a copy shipped with an app: every file in it was tracked where it was made
     else:
-        out = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--", *dirs], capture_output=True, text=True)
+        others = ["--others", "--exclude-standard"] if untracked else []
+        out = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--cached", *others, "--", *dirs], capture_output=True, text=True)
         if out.returncode:
             raise RuntimeError(f"{REPO} is not a git checkout: only files git tracks are sent to other machines ({out.stderr.strip()})")
         files = sorted(f for f in out.stdout.split("\0") if f)
@@ -104,16 +106,6 @@ class SshBackend(NativeBackend):
         if not manifest.directory.resolve().is_relative_to(REPO):
             return "it is not in the pipeline's repository, and only files the repository tracks are sent to other machines"
         return ""
-
-    def identity(self, manifest: Manifest, runner: Runner) -> str:
-        """Exactly the code that runs there (what code_files sends: the node's tracked files, a shared entry script, its
-        uv project with its lock, the SDK), the accelerator and the host's platform."""
-        try:
-            code = code_hash(code_files(manifest, runner))
-        except (RuntimeError, OSError) as e:   # nothing could be sent (not a git checkout, a tracked file deleted): submit says so; no cache entry is shared
-            code = f"unsendable {e}"
-        h = hashlib.sha256(f"{code} {runner.accelerator} {self.host.caps.platform}".encode())
-        return f"{self.kind}:{h.hexdigest()[:16]}"
 
     def driver_spec(self, attempt_dir: Path) -> dict:
         """What else the driver needs (a cloud machine to start first)."""

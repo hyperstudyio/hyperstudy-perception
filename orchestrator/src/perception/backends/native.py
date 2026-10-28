@@ -33,6 +33,19 @@ def sdk_hash() -> str:
     return h.hexdigest()
 
 
+def unlisted_code_hash(manifest: Manifest, runner: Runner) -> str:
+    """The code of a node git cannot list (outside the repository, or a checkout without git), for its identity
+    (Backend.identity): every file in its directory, its entry script, its uv project's lock and the node SDK's
+    sources. Only this machine runs such a node, so this never has to agree with what another machine is sent."""
+    h = hashlib.sha256(manifest.code_hash().encode())
+    entry = manifest.directory / runner.entry if runner.entry else None
+    h.update(entry.read_bytes() if entry and entry.is_file() else b"no entry")   # a script shared with another node
+    h.update(sdk_hash().encode())
+    lock = REPO / runner.env / "uv.lock" if runner.env else None
+    h.update(lock.read_bytes() if lock and lock.exists() else b"no lock")
+    return h.hexdigest()
+
+
 class NativeBackend(Backend):
     kind = "native"
 
@@ -47,14 +60,6 @@ class NativeBackend(Backend):
 
     def missing_tools(self, runner: Runner) -> list[str]:
         return [] if self.probe_capabilities().tools.get("uv") else ["uv"]
-
-    def identity(self, manifest: Manifest, runner: Runner) -> str:
-        lock = REPO / runner.env / "uv.lock" if runner.env else None
-        h = hashlib.sha256(manifest.code_hash().encode())
-        h.update(sdk_hash().encode())   # the node SDK shapes what a node writes; it is installed editable, outside the lock
-        h.update(lock.read_bytes() if lock and lock.exists() else b"no lock")
-        h.update(runner.accelerator.encode())
-        return f"native:{h.hexdigest()[:16]}"
 
     def stage_inputs(self, attempt_dir: Path, inputs: dict[str, Artifact]) -> dict[str, dict]:
         # same machine: the node reads published objects in place (they are read-only)
@@ -120,10 +125,6 @@ class SelfBackend(NativeBackend):
 
     def missing_tools(self, runner: Runner) -> list[str]:
         return []
-
-    def identity(self, manifest: Manifest, runner: Runner) -> str:
-        # the accelerator too: a place is a choice, and another place's result must not be served from the cache
-        return f"self:{hashlib.sha256((manifest.code_hash() + sdk_hash() + runner.accelerator).encode()).hexdigest()[:16]}"
 
 
 def _alive(pid: int, request: str) -> bool:
