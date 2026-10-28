@@ -2,7 +2,9 @@
 the model. Run: uv run --project envs/gaze --with pytest pytest nodes/vision/active-speaker"""
 
 import hashlib
+import platform
 import re
+import sys
 from fractions import Fraction
 from pathlib import Path
 
@@ -155,13 +157,19 @@ def ffmpeg_version() -> tuple[int, ...]:
     return tuple(int(x) for x in av.ffmpeg_version_info.split("-")[0].split(".")[:2])
 
 
-@pytest.mark.skipif(ffmpeg_version() < (8, 1), reason=f"PyAV's FFmpeg {av.ffmpeg_version_info} is older than envs/gaze's 8.1 "
-                                                       "(CI runs this test again with PyAV 17.1.0)")
+ON_BAKEOFF_PLATFORM = sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+@pytest.mark.skipif(not ON_BAKEOFF_PLATFORM or ffmpeg_version() < (8, 1),
+                    reason=f"the bake-off's grey bytes are FFmpeg 8.1's on darwin/arm64 (here: FFmpeg "
+                           f"{av.ffmpeg_version_info} on {sys.platform}/{platform.machine()}; on linux/x86_64 8.1.1 "
+                           "rounds some pixels 1 lower)")
 def test_grey_frames_are_ffmpeg_8_1s_the_programs_the_bake_off_cut_its_crops_with(tmp_path):
     """FFmpeg converts BT.709 limited-range YUV to grey through its chroma, and 8.1 rounds it otherwise than 8.0: these
-    are the bytes of 8.1.1 (PyAV 17.1.0, and the ffmpeg 8.1.1 program the bake-off cut its crops with; 8.1.2 and 9.0.2
-    give the same). PyAV 16.1.0's 8.0.1 starts [22, 27, 41, 46, 41, 49, 72, 77]; on OOO it differed in 82% of pixels,
-    by up to 3 levels."""
+    are the bytes of 8.1.1 on an Apple-silicon Mac (PyAV 17.1.0, and the ffmpeg 8.1.1 program the bake-off cut its
+    crops with there; 8.1.2 and 9.0.2 give the same). PyAV 16.1.0's 8.0.1 starts [22, 27, 41, 46, 41, 49, 72, 77]; on
+    OOO it differed in 82% of pixels, by up to 3 levels. The rounding also depends on the CPU's SIMD code: linux/x86_64
+    8.1.1 starts [23, 28, 41, 47, 42, 50, 72, 78]."""
     bt709_clip(tmp_path / "bt709.mkv")
     frames = list(grey_frames(tmp_path / "bt709.mkv"))
     assert len(frames) == 8 and frames[0][1][0, :8].tolist() == [23, 28, 42, 47, 43, 51, 72, 79]
