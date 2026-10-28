@@ -452,7 +452,8 @@ def test_keys_check_hf_token_lists_the_gated_models_the_nodes_use(home, chain, m
 
 def test_the_file_is_asked_for_with_head_and_a_redirect_is_answered_not_followed(monkeypatch):
     """The real HTTP layer, against a local server standing in for Hugging Face: a HEAD with the token, the gate's
-    header read from an error answer, and a redirect elsewhere answered without sending the token on."""
+    header read from an error answer, a redirect to the file in Hugging Face's own cache taken as access (it comes
+    only after the gate: a gate refuses first), and no redirect followed, so the token goes nowhere else."""
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from perception import keycheck
@@ -462,8 +463,15 @@ def test_the_file_is_asked_for_with_head_and_a_redirect_is_answered_not_followed
         def do_HEAD(self):
             seen.append((self.command, self.path, self.headers.get("Authorization")))
             repo = self.path.split("/resolve/")[0].strip("/")
+            here = f"http://127.0.0.1:{self.server.server_port}"
             status, headers = {"a/granted": (200, {}), "a/gated": (403, {"X-Error-Code": "GatedRepo"}),
-                               "a/moved": (307, {"Location": f"http://127.0.0.1:{self.server.server_port}/elsewhere"})}[repo]
+                               # the file served from Hugging Face's cache, once access is checked: relative or absolute
+                               "a/cached": (307, {"Location": "/api/resolve-cache/models/a/cached/c0ffee/.gitattributes?etag=x"}),
+                               "a/cached2": (307, {"Location": f"{here}/api/resolve-cache/models/a/cached2/c0ffee/.gitattributes"}),
+                               # another host, another repo's cache, or anywhere else here: not an answer about this file
+                               "a/away": (307, {"Location": "https://elsewhere.example/api/resolve-cache/models/a/away/c0ffee/.gitattributes"}),
+                               "a/other": (307, {"Location": "/api/resolve-cache/models/b/other/c0ffee/.gitattributes"}),
+                               "a/moved": (307, {"Location": f"{here}/elsewhere"})}[repo]
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -479,10 +487,15 @@ def test_the_file_is_asked_for_with_head_and_a_redirect_is_answered_not_followed
         monkeypatch.setattr(keycheck, "HF_FILE", f"http://127.0.0.1:{server.server_port}/{{repo}}/resolve/{{revision}}/.gitattributes")
         assert keycheck.access(SECRET, "a/granted", "r1") == ("granted", None)
         assert keycheck.access(SECRET, "a/gated", "r1") == ("not-granted", None)
-        assert keycheck.access(SECRET, "a/moved", "r1") == ("unknown", "Hugging Face could not be checked (HTTP 307)")
+        assert keycheck.access(SECRET, "a/cached", "r1") == ("granted", None)
+        assert keycheck.access(SECRET, "a/cached2", "r1") == ("granted", None)
+        for repo in ("a/away", "a/other", "a/moved"):
+            assert keycheck.access(SECRET, repo, "r1") == ("unknown", "Hugging Face could not be checked (HTTP 307)")
     finally:
         server.shutdown()
-    assert seen == [("HEAD", f"/a/{r}/resolve/r1/.gitattributes", f"Bearer {SECRET}") for r in ("granted", "gated", "moved")]
+    # each asked once, and no redirect followed (with the token or without)
+    assert seen == [("HEAD", f"/a/{r}/resolve/r1/.gitattributes", f"Bearer {SECRET}")
+                    for r in ("granted", "gated", "cached", "cached2", "away", "other", "moved")]
 
 
 FINE_GRAINED = "the token cannot read gated repos: turn on its \"Read access to contents of all public gated repos you can access\""

@@ -12,6 +12,7 @@ from __future__ import annotations
 import http.client
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -93,13 +94,25 @@ def gating(repo: str) -> str | None:
     return mode if mode in ("manual", "auto") else None
 
 
+def cached(url: str, location: str | None, repo: str) -> bool:
+    """Whether a redirect sends the file's request to Hugging Face's own cache of this repo's files, on the same host
+    (`/api/resolve-cache/models/<repo>/...`): Hugging Face answers some repos so, and only past the gate (a gate refuses
+    with 403 first). It is not followed: the answer is enough."""
+    if not location:
+        return False
+    there, here = urllib.parse.urlsplit(urllib.parse.urljoin(url, location)), urllib.parse.urlsplit(url)
+    return (there.scheme, there.netloc) == (here.scheme, here.netloc) and there.path.startswith(f"/api/resolve-cache/models/{repo}/")
+
+
 def access(token: str, repo: str, revision: str) -> tuple[str, str | None]:
-    """(`granted`, `not-granted` or `unknown`; why it is unknown). Only the file itself, answered, is `granted`."""
+    """(`granted`, `not-granted` or `unknown`; why it is unknown). Only the file, or a redirect to it in Hugging Face's
+    cache, is `granted`."""
+    url = HF_FILE.format(repo=repo, revision=revision)
     try:
-        status, headers = head(HF_FILE.format(repo=repo, revision=revision), {"Authorization": f"Bearer {token}"})
+        status, headers = head(url, {"Authorization": f"Bearer {token}"})
     except NOT_REACHED as e:
         return "unknown", f"could not reach Hugging Face to check: {e}"
-    if status == 200:
+    if status == 200 or (300 <= status < 400 and cached(url, headers.get("location"), repo)):
         return "granted", None
     if status == 403 and headers.get("x-error-code") == "GatedRepo":   # pending and never asked are answered alike
         if "fine-grained" in (headers.get("x-error-message") or ""):
