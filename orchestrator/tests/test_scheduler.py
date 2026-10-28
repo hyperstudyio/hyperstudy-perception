@@ -796,7 +796,9 @@ def test_a_layers_side_files_go_into_the_bundle_with_it(tmp_path):
         {"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(detail), "bytes": detail.stat().st_size},
         {"file": "layers/faces_embeddings.json", "sha256": artifacts.sha256_file(embeddings),
          "bytes": embeddings.stat().st_size},
-        {"file": "layers/faces_mesh.json", "sha256": artifacts.sha256_file(mesh), "bytes": mesh.stat().st_size}]
+        {"file": "layers/faces_mesh.json", "sha256": artifacts.sha256_file(mesh), "bytes": mesh.stat().st_size},
+        *({"file": f"layers/faces_{role}.parquet", "sha256": artifacts.sha256_file(NODES / "faces" / f"faces_{role}.parquet"),
+           "bytes": (NODES / "faces" / f"faces_{role}.parquet").stat().st_size} for role in ("pyfeat", "untracked"))]
     layer = json.loads((out / "layers" / "faces.json").read_text())
     assert layer["mesh"] == {"file": "layers/faces_mesh.json"} and layer["detail"]["file"] == "layers/faces_detail.json"
     assert layer["embeddings"] == {"file": "layers/faces_embeddings.json"}
@@ -1280,7 +1282,7 @@ def test_validate_without_pyarrow_says_it_skipped_the_parquet_content_check(tmp_
     result = subprocess.run(bare, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "note: gaze: layers/gaze_heatmaps.parquet: Parquet content not checked (pyarrow is not installed" in result.stdout
-    assert "1 check skipped" in result.stdout
+    assert "3 checks skipped" in result.stdout   # the heatmaps, and test.faces' faces_pyfeat and faces_untracked
     (out / HEATMAPS).write_bytes((out / HEATMAPS).read_bytes()[:-1])
     manifest = json.loads((out / "manifest.json").read_text())
     manifest["layers"]["gaze"]["side_files"][0].update(sha256=artifacts.sha256_file(out / HEATMAPS),
@@ -1376,6 +1378,56 @@ def test_validate_refuses_a_score_that_is_not_finite_in_a_list_column(tmp_path):
                             capture_output=True, text=True)
     assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
     assert "sounds_queries.parquet: column probs holds a value that is not finite" in result.stdout, result.stdout
+
+
+
+
+
+
+# --- the faces layer's raw Parquet side files (py-feat's output beyond the layer, and the faces in no track) ----------
+
+def test_the_faces_raw_side_files_say_what_they_hold():
+    """faces_pyfeat is face geometry and expression per sample (no identity vector); faces_untracked holds every value
+    py-feat gave for a face no track holds, its ArcFace embedding among them, so reading it elsewhere needs consent for
+    embeddings, as faces_embeddings does."""
+    from perception.backends.base import Backend
+    assert artifacts.get("bundle.faces_pyfeat@0.1").kinds == ("faces",)
+    assert set(artifacts.get("bundle.faces_untracked@0.1").kinds) == {"faces", "embeddings"}
+    remote = type("Remote", (), {"remote": True})()
+    reader = type("Manifest", (), {"inputs": {"untracked": "bundle.faces_untracked@0.1"}})()
+    assert Backend.sends(remote, reader) == ["embeddings", "faces"]
+
+
+def _parquet_damage(code: str):
+    """A damage for bundle_validation that rewrites a Parquet file with pyarrow (validate.py's dev group): `code` gets
+    the table as t and pyarrow as pa and pyarrow.compute as pc, and binds the new table to t."""
+    def damage(path):
+        script = ("import sys, pyarrow as pa, pyarrow.compute as pc, pyarrow.parquet as pq\n"
+                  f"t = pq.read_table(sys.argv[1])\n{code}\npq.write_table(t, sys.argv[1])\n")
+        subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", "-c", script, str(path)], check=True)
+    return damage
+
+
+# mesh_z (478 floats a row) with its first value NaN: what a check of scalar float columns alone would pass
+NAN_IN_A_LIST = ("v = t['mesh_z'].combine_chunks()\n"
+                 "flat = pc.if_else(pa.array([i == 0 for i in range(len(v.values))]), float('nan'), v.values)\n"
+                 "t = t.set_column(t.schema.get_field_index('mesh_z'), t.schema.field('mesh_z'),"
+                 " pa.FixedSizeListArray.from_arrays(flat.cast(pa.float32()), type=t.schema.field('mesh_z').type))")
+
+
+@pytest.mark.parametrize("file, damage, problem", [
+    ("layers/faces_pyfeat.parquet", _parquet_damage(NAN_IN_A_LIST),
+     "faces_pyfeat.parquet: column mesh_z holds a value that is not finite"),
+    ("layers/faces_pyfeat.parquet", _parquet_damage("t = t.slice(0, 1)"),
+     "faces_pyfeat.parquet does not match the layer's samples: 1 rows for 2 samples"),
+    ("layers/faces_untracked.parquet", _parquet_damage("t = t.drop_columns(['embedding'])"),
+     "faces_untracked.parquet: columns are"),
+])
+def test_validate_reports_a_bad_faces_raw_side_file_as_a_problem(tmp_path, file, damage, problem):
+    result = bundle_validation(tmp_path, damage, file)
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
+
 
 
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])

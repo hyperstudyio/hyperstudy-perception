@@ -238,10 +238,16 @@ class Side:
 # bodies layer, so they hold its kinds, none. Like the layer's, their 133 COCO-WholeBody keypoints include 68 face
 # landmarks, which faces_detail's py-feat landmarks count as faces: if the bodies layer is ever counted as faces for
 # them, these files go with it (no pixels, face images or identity embeddings either way).
+# The faces pyfeat file is the rest of py-feat's output per track sample (detection score, unrounded box, head
+# translation, blendshapes, mesh depth): face geometry and expression, no identity vector, so faces. The faces untracked
+# file holds every face py-feat detected that tracking left out, with all of py-feat's values for it, its ArcFace
+# embedding among them (to revisit clustering as well as tracking): faces and embeddings, like faces_embeddings.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
     "faces_embeddings": Side("faces", ("faces", "embeddings")),
+    "faces_pyfeat": Side("faces", ("faces",), "parquet"),
+    "faces_untracked": Side("faces", ("faces", "embeddings"), "parquet"),
     "gaze_heatmaps": Side("gaze", ("frames",), "parquet"),
     "shots_scores": Side("shots", (), "parquet"),
     "transcript_tokens": Side("transcript", ("transcript",), "parquet"),

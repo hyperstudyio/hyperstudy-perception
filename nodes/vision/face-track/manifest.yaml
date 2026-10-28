@@ -1,10 +1,14 @@
 id: vision.face-track
-version: 1.3.0
+version: 1.4.0
 stage: faces
 title: Face tracks
-description: Face tracks within shots, identity clusters across the video (py-feat + ArcFace), crops, per-sample landmarks, action units, emotions and pose (the detail side file), the per-sample 478-point face mesh (the mesh side file), and the per-sample ArcFace identity embeddings (the embeddings side file)
+description: Face tracks within shots, identity clusters across the video (py-feat + ArcFace), crops, per-sample landmarks, action units, emotions and pose (the detail side file), the per-sample 478-point face mesh (the mesh side file), the per-sample ArcFace identity embeddings (the embeddings side file), and the rest of py-feat's output as two raw Parquet side files (per sample the detection score, unrounded box, head translation, blendshapes and mesh depth; and every detected face no track holds, with all its values)
 inputs: {video: video.v1, media: media.v1, shots: bundle.shots@0.1}
-outputs: {faces: bundle.faces@0.1, detail: bundle.faces_detail@0.1, mesh: bundle.faces_mesh@0.1, embeddings: bundle.faces_embeddings@0.1, crops: assets.v1}
+# pyfeat and untracked: layers/faces_pyfeat.parquet and layers/faces_untracked.parquet, what py-feat returned that the
+# layer and the other side files do not keep (pyfeat_raw.py lists every column and where it is kept); the layer points
+# at them with raw.pyfeat and raw.untracked
+outputs: {faces: bundle.faces@0.1, detail: bundle.faces_detail@0.1, mesh: bundle.faces_mesh@0.1, embeddings: bundle.faces_embeddings@0.1,
+          pyfeat: bundle.faces_pyfeat@0.1, untracked: bundle.faces_untracked@0.1, crops: assets.v1}
 config:
   fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 8, description: "frames sampled per second"}
   cluster_threshold: {type: number, minimum: 0, maximum: 2, default: 0.65}

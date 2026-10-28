@@ -13,5 +13,5 @@ nodes:
     uses: audio.asr@1.1.0
     inputs: {audio: $nodes.decode.audio, shots: $nodes.decode.shots}
   - id: faces
-    uses: vision.face-track@1.3.0
+    uses: vision.face-track@1.4.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}

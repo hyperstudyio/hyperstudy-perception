@@ -293,6 +293,41 @@
           { "name": "box", "arrow": "fixed_size_list<element: float not null>[4]", "description": "The detection's box [x, y, w, h] in source pixels." },
           { "name": "kpts", "arrow": "fixed_size_list<element: float not null>[399]", "description": "RTMW's 133 keypoints for this box, in the layer's keypoint_names order, each x, y (source pixels), score (the layer's scale)." }
         ]
+      },
+      "faces_pyfeat": {
+        "description": "layers/faces_pyfeat.parquet, a raw side file of the faces layer (raw.pyfeat): what py-feat Detectorv2 returned for every track sample that neither the layer nor faces_detail, faces_mesh and faces_embeddings keep. One row per sample of the faces layer's tracks, in time order (the samples of one time in the layer's track order). Values are py-feat's float32, unrounded. Columns are not nullable; the file's metadata names the translation and blendshape entries.",
+        "per_sample": true,
+        "columns": [
+          { "name": "face", "arrow": "string", "description": "The face track (face:N): the faces layer's tracks[].id." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that track's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the layer's (frame / fps, to 3 places)." },
+          { "name": "frame", "arrow": "int32", "description": "The source frame py-feat read (0-based decode order)." },
+          { "name": "box", "arrow": "fixed_size_list<element: float not null>[4]", "description": "RetinaFace's face box [x, y, w, h] in source pixels, unrounded (the layer's samples[].box is it to 0.1 px)." },
+          { "name": "score", "arrow": "float", "description": "RetinaFace's detection confidence in [0, 1] (py-feat's FaceScore); tracking keeps faces scoring at least 0.9." },
+          { "name": "translation", "arrow": "fixed_size_list<element: float not null>[3]", "description": "The multitask model's head translation outputs [X, Y, Z] (py-feat's X, Y, Z beside its Pitch, Roll, Yaw), as py-feat returns them." },
+          { "name": "blendshapes", "arrow": "fixed_size_list<element: float not null>[52]", "description": "The multitask model's 52 MediaPipe/ARKit blendshape coefficients in [0, 1], in py-feat's MP_BLENDSHAPE_NAMES order (_neutral, browDownLeft, ... noseSneerRight; the file's metadata lists them)." },
+          { "name": "mesh_z", "arrow": "fixed_size_list<element: float not null>[478]", "description": "The 478-point mesh's relative depth per point (py-feat's mesh_z_0 ... mesh_z_477, in the model's chip-normalised units); faces_mesh keeps the points' x and y." }
+        ]
+      },
+      "faces_untracked": {
+        "description": "layers/faces_untracked.parquet, a raw side file of the faces layer (raw.untracked): every face py-feat Detectorv2 detected that is in no track, because tracking left it out (shorter side under 40 px, or detection score under 0.9), with all of py-feat's values for it, so tracking and clustering can be revisited. One row per detection, in py-feat's order (frames in time order, RetinaFace's order within a frame); a frame with no face has no row. The value columns hold what faces_detail, faces_mesh, faces_embeddings and faces_pyfeat hold for a tracked face, under faces_detail's names where it has one, as py-feat's float32, unrounded. Columns are not nullable; the file's metadata names the au, emo, translation and blendshape entries.",
+        "columns": [
+          { "name": "frame", "arrow": "int32", "description": "The source frame py-feat read (0-based decode order)." },
+          { "name": "t", "arrow": "double", "description": "frame / fps, to 3 places: the time a sample of this frame has in the layer." },
+          { "name": "dropped", "arrow": "string", "description": "Why tracking left it out: size (shorter side under 40 px), score (under 0.9), or size+score." },
+          { "name": "box", "arrow": "fixed_size_list<element: float not null>[4]", "description": "RetinaFace's face box [x, y, w, h] in source pixels." },
+          { "name": "score", "arrow": "float", "description": "RetinaFace's detection confidence in [0, 1] (at least py-feat's detection threshold, 0.5)." },
+          { "name": "lmk", "arrow": "fixed_size_list<element: float not null>[136]", "description": "68 landmarks in source pixels: all 68 x, then all 68 y (faces_detail's lmk)." },
+          { "name": "au", "arrow": "fixed_size_list<element: float not null>[20]", "description": "Action units in faces_detail's au_names order (AU01 ... AU43, sorted)." },
+          { "name": "emo", "arrow": "fixed_size_list<element: float not null>[7]", "description": "Emotion probabilities in faces_detail's emotion_names order (Neutral, Happy, Sad, Surprise, Fear, Disgust, Anger)." },
+          { "name": "va", "arrow": "fixed_size_list<element: float not null>[2]", "description": "Valence and arousal." },
+          { "name": "head", "arrow": "fixed_size_list<element: float not null>[3]", "description": "Head pose [yaw, pitch, roll] in radians, in the faces layer's angles convention." },
+          { "name": "translation", "arrow": "fixed_size_list<element: float not null>[3]", "description": "Head translation [X, Y, Z], as faces_pyfeat's." },
+          { "name": "gaze", "arrow": "fixed_size_list<element: float not null>[2]", "description": "Gaze [yaw, pitch] in radians, in the faces layer's angles convention." },
+          { "name": "embedding", "arrow": "fixed_size_list<element: float not null>[512]", "description": "py-feat's 512-d ArcFace identity embedding, not L2-normalised (as faces_embeddings')." },
+          { "name": "mesh", "arrow": "fixed_size_list<element: float not null>[1434]", "description": "The 478-point mesh: all 478 x, then all 478 y (source pixels), then all 478 z (relative depth, as faces_pyfeat's mesh_z)." },
+          { "name": "blendshapes", "arrow": "fixed_size_list<element: float not null>[52]", "description": "The 52 blendshape coefficients, as faces_pyfeat's." }
+        ]
       }
     },
     "sidePointer": {
