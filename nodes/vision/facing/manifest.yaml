@@ -1,11 +1,15 @@
 id: vision.facing
-version: 1.0.0
+version: 1.1.0
 stage: facing
 title: Facing
 description: Who faces whom, from each person's torso direction in 3D (MediaPipe Pose Landmarker heavy on the bodies layer's people), and whether it is mutual
 # the people are body-pose's (one person-box pass for every node); only bodies linked to a face track are posed
 inputs: {video: video.v1, media: media.v1, bodies: bundle.bodies@0.1}
-outputs: {facing: bundle.facing@0.1}
+# poses and angles: layers/facing_poses.parquet and layers/facing_angles.parquet, what the layer drops (every pose
+# MediaPipe returned for each crop: 33 landmarks with visibility and presence, world landmarks, torso direction; and
+# every pair's angle and distance at every sample time, which the events are thresholded from), which the layer points at
+# with raw.poses and raw.angles (facing_raw.py)
+outputs: {facing: bundle.facing@0.1, poses: bundle.facing_poses@0.1, angles: bundle.facing_angles@0.1}
 config:
   cone_deg: {type: number, exclusiveMinimum: 0, maximum: 180, default: 60.0,description: "a person faces another inside this angle of their torso direction"}
   min_facing_s: {type: number, minimum: 0, default: 1.0, description: "shortest facing event, in seconds"}

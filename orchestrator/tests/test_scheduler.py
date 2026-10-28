@@ -1418,6 +1418,17 @@ def test_the_sounds_scores_count_as_audio_when_a_step_reads_them_elsewhere():
         assert Backend.sends(remote, reader) == ["audio"]
 
 
+def test_the_speakers_side_files_count_as_transcript_as_the_layer_does():
+    """LR-ASD's per-frame scores say when each face track speaks, and with the faces layer who speaks when, as
+    diarization's turns and the speakers layer do; the votes name voices and who speaks each word: transcript, both."""
+    from perception.backends.base import Backend
+    remote = type("Remote", (), {"remote": True})()
+    for name in ("speakers_scores", "speakers_votes"):
+        assert artifacts.get(f"bundle.{name}@0.1").kinds == artifacts.get("bundle.speakers@0.1").kinds == ("transcript",)
+        reader = type("Manifest", (), {"inputs": {"raw": f"bundle.{name}@0.1"}})()
+        assert Backend.sends(remote, reader) == ["transcript"]
+
+
 def test_the_sounds_side_files_go_into_the_bundle_and_validate(tmp_path):
     out = sounds_bundle(tmp_path)
     for name in ("sounds_tags", "sounds_queries"):
@@ -1484,6 +1495,59 @@ NAN_IN_A_LIST = ("v = t['mesh_z'].combine_chunks()\n"
 ])
 def test_validate_reports_a_bad_faces_raw_side_file_as_a_problem(tmp_path, file, damage, problem):
     result = bundle_validation(tmp_path, damage, file)
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
+
+
+# --- the facing layer's poses and angles (Parquet side files: MediaPipe's landmarks, the angles events come from) ----
+
+def facing_bundle(tmp_path, damage=lambda p: None, file="layers/facing.json") -> Path:
+    """An exported facing bundle (test.facing: no event, its poses and angles files) after `damage(path of file)`, with
+    the manifest's checksums updated."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = faces_graph(video)
+    doc["nodes"].append({"id": "facing", "uses": "test.facing@1.0.0", "inputs": {"video": "$inputs.video"}})
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    damage(out / file)
+    manifest = json.loads((out / "manifest.json").read_text())
+    for entry in manifest["layers"].values():
+        for f in [entry, *entry.get("side_files", [])]:
+            f.update(sha256=artifacts.sha256_file(out / f["file"]), bytes=(out / f["file"]).stat().st_size)
+    (out / "manifest.json").write_text(json.dumps(manifest))
+    return out
+
+
+def test_the_facing_side_files_hold_no_kind():
+    """Body landmarks per face-linked sample and angles between people: what the bodies and facing layers hold, no kind."""
+    for name in ("facing_poses", "facing_angles"):
+        side = artifacts.get(f"bundle.{name}@0.1")
+        assert side.kinds == () and side.side_of == "facing" and side.bundle_file == f"layers/{name}.parquet"
+
+
+def test_the_facing_side_files_go_into_the_bundle_and_validate(tmp_path):
+    out = facing_bundle(tmp_path)
+    for name in ("facing_poses", "facing_angles"):
+        assert (out / "layers" / f"{name}.parquet").read_bytes() == (NODES / "facing" / f"{name}.parquet").read_bytes()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert [f["file"] for f in manifest["layers"]["facing"]["side_files"]] == [
+        "layers/facing_angles.parquet", "layers/facing_poses.parquet"]
+    result = _validate(out)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("file, damage, problem", [
+    ("layers/facing_poses.parquet", _parquet_damage("t = t.drop_columns(['world'])"), "facing_poses.parquet: columns are"),
+    ("layers/facing_angles.parquet",
+     _parquet_damage("t = t.set_column(3, t.schema.field('angle'), pa.array([float('nan'), 1.0]))"),
+     "facing_angles.parquet: column angle holds a value that is not finite"),
+])
+def test_validate_reports_a_bad_facing_side_file_as_a_problem(tmp_path, file, damage, problem):
+    result = _validate(facing_bundle(tmp_path, damage, file))
     assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
     assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 

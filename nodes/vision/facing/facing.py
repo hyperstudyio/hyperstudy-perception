@@ -19,6 +19,9 @@ A's torso centre to B's, at zero depth, is at most cone_deg. The 3D poses are ro
 between people: the bodies of a shot are taken to stand at equal depth. Of several bodies inside the cone, the nearest
 in the image is the one faced. Positive samples of one (A, B) pair are merged when at most max_gap_s apart; runs
 shorter than min_facing_s are dropped; score = mean cos(angle); mutual when B faces A for at least min_facing_s of it.
+In two steps, so the events can be thresholded again from what the node stores (layers/facing_angles.parquet,
+facing_raw.py): pair_angles measures every pair's angle and distance, whatever the cone, and events_from_angles
+thresholds them.
 
 The bake-off wrote each body's facing and landmarks to a file (pose_mediapipe.json) and facing.py read them back:
 stored() rounds them as that file did, so the events are the bake-off's to the last digit.
@@ -27,6 +30,7 @@ stored() rounds them as that file did, so the events are the bake-off's to the l
 from __future__ import annotations
 
 from collections import defaultdict
+from itertools import groupby
 
 import numpy as np
 
@@ -72,16 +76,24 @@ def crop(frame, box):
 
 
 def in_frame(poses, window):
-    """The landmarker's poses for a crop at window (x0, y0, side), with their 2D landmarks in frame pixels."""
+    """The landmarker's poses for a crop at window (x0, y0, side), with their 2D landmarks in frame pixels: [(kpts
+    (33, 3) x, y in frame pixels and visibility, world)]. poses: [(landmarks (33, 5) x, y in [0, 1] of the crop, z,
+    visibility, presence; world (33, 3))], as models.Landmarker returns them."""
     x0, y0, side = window
-    return [(np.c_[lms[:, 0] * side + x0, lms[:, 1] * side + y0, lms[:, 2]], world) for lms, world in poses]
+    return [(np.c_[lms[:, 0] * side + x0, lms[:, 1] * side + y0, lms[:, 3]], world) for lms, world in poses]
+
+
+def nearest_index(poses, box):
+    """The index of the pose whose 2D landmarks centre nearest the box centre (the first of equals), or None. poses:
+    [(kpts (33, 3) x, y, visibility in frame pixels, world (33, 3) metres)]."""
+    centre = np.array([box[0] + box[2] / 2, box[1] + box[3] / 2])
+    return min(range(len(poses)), key=lambda i: np.linalg.norm(poses[i][0][:, :2].mean(0) - centre)) if poses else None
 
 
 def nearest_pose(poses, box):
-    """The pose whose 2D landmarks centre nearest the box centre, or None. poses: [(kpts (33, 3) x, y, visibility in
-    frame pixels, world (33, 3) metres)]."""
-    centre = np.array([box[0] + box[2] / 2, box[1] + box[3] / 2])
-    return min(poses, key=lambda p: np.linalg.norm(p[0][:, :2].mean(0) - centre)) if poses else None
+    """The pose nearest_index picks, or None."""
+    i = nearest_index(poses, box)
+    return None if i is None else poses[i]
 
 
 def unit(v):
@@ -127,6 +139,29 @@ def body_facing(pose):
     return k, facing, source
 
 
+def body_poses(raw, window, box):
+    """Every pose the landmarker returned for one body's crop, as the side file keeps them, and what the events use of
+    the kept one: ([{"pose", "kept", "landmarks", "world", "source", "yaw", "pitch", "centre"}], (torso centre, stored
+    facing, source) of the kept pose, or None when the crop held no pose).
+
+    raw: the landmarker's [(landmarks (33, 5), world (33, 3))]; window: the crop's (x0, y0, side). Each pose's yaw,
+    pitch and source are torso_facing's, unrounded (None where it has none); its centre is torso_centre of its
+    landmarks as stored, the point its facing is measured from. The kept pose is nearest_index's, and the rest of its
+    tuple is body_facing's."""
+    poses = in_frame(raw, window)
+    kept = nearest_index(poses, box)
+    out, chosen = [], None
+    for i, ((lms, world), (kpts, _)) in enumerate(zip(raw, poses)):
+        yaw, pitch, source = torso_facing(world, kpts[:, 2] >= SCORE_THRESHOLD)
+        k, facing = stored(kpts, yaw, pitch)
+        centre = torso_centre(k, box)
+        out.append({"pose": i, "kept": i == kept, "landmarks": lms, "world": world, "source": source, "yaw": yaw,
+                    "pitch": pitch, "centre": centre})
+        if i == kept:
+            chosen = (centre, facing, source)
+    return out, chosen
+
+
 # ---------------------------------------------------------------- between bodies
 
 def facing_vector(yaw_deg, pitch_deg):
@@ -160,16 +195,18 @@ def face_number(face_id: str) -> int:
     return int(face_id.split(":", 1)[1])
 
 
-def facing_events(frames, cone_deg=CONE_DEG, min_facing_s=MIN_FACING_S, max_gap_s=MAX_GAP_S):
-    """The facing layer's events. frames: {(shot, t): [(face number, torso centre (2,), [yaw, pitch] or None)]}, the
-    face-linked bodies posed at each sample time."""
-    positives = defaultdict(list)   # (A, B) -> [(t, angle)]
+def pair_angles(frames):
+    """Every angle the events are thresholded from: (t, A, B, angle, dist) for each ordered pair of face-linked bodies
+    posed at a sample time, A with a facing (yaw, pitch) and B elsewhere in the image: angle (degrees) between A's
+    facing vector and the image direction from A's torso centre to B's, dist (pixels) between the centres. In time
+    order, then A and B in the frame's body order. A pair whose centres coincide has no direction and no row.
+    frames: {(shot, t): [(face number, torso centre (2,), [yaw, pitch] or None)]}."""
+    rows = []
     for (_, t), bodies in sorted(frames.items(), key=lambda kv: kv[0][1]):
         for a, centre_a, facing in bodies:
             if facing is None:
                 continue
             f = facing_vector(*facing)
-            inside = []
             for b, centre_b, _ in bodies:
                 if b == a:
                     continue
@@ -178,11 +215,20 @@ def facing_events(frames, cone_deg=CONE_DEG, min_facing_s=MIN_FACING_S, max_gap_
                 if dist == 0:
                     continue
                 angle = float(np.degrees(np.arccos(np.clip(f[0] * d[0] / dist + f[1] * d[1] / dist, -1, 1))))
-                if angle <= cone_deg:
-                    inside.append((dist, b, angle))
-            if inside:
-                _, b, angle = min(inside)
-                positives[(a, b)].append((t, angle))
+                rows.append((t, a, b, angle, dist))
+    return rows
+
+
+def events_from_angles(rows, cone_deg=CONE_DEG, min_facing_s=MIN_FACING_S, max_gap_s=MAX_GAP_S):
+    """The facing layer's events from pair_angles' rows (as stored in layers/facing_angles.parquet, faces as numbers):
+    at each (t, A), of the Bs within cone_deg the nearest in the image (ties: the lower face number) is the one A faces;
+    then runs of one pair merged across gaps of at most max_gap_s, at least min_facing_s long."""
+    positives = defaultdict(list)   # (A, B) -> [(t, angle)]
+    for (t, a), group in groupby(rows, key=lambda row: row[:2]):   # one A's rows at one time are consecutive
+        inside = [(dist, b, angle) for _, _, b, angle, dist in group if angle <= cone_deg]
+        if inside:
+            _, b, angle = min(inside)
+            positives[(a, b)].append((t, angle))
 
     runs = {}
     for pair, samples in positives.items():
@@ -206,7 +252,14 @@ def facing_events(frames, cone_deg=CONE_DEG, min_facing_s=MIN_FACING_S, max_gap_
              "mutual": e["mutual"], "score": e["score"], "detail": e["detail"]} for i, e in enumerate(events)]
 
 
+def facing_events(frames, cone_deg=CONE_DEG, min_facing_s=MIN_FACING_S, max_gap_s=MAX_GAP_S):
+    """The facing layer's events. frames: {(shot, t): [(face number, torso centre (2,), [yaw, pitch] or None)]}, the
+    face-linked bodies posed at each sample time."""
+    return events_from_angles(pair_angles(frames), cone_deg, min_facing_s, max_gap_s)
+
+
 def linked_samples(bodies_layer):
-    """[(shot, t, face number, box)] for every sample of a body track linked to a face, in track order."""
-    return [(tr["shot"], s["t"], face_number(tr["face"]), s["box"])
-            for tr in bodies_layer["tracks"] if tr["face"] is not None for s in tr["samples"]]
+    """[(shot, t, face number, box, body id, sample index)] for every sample of a body track linked to a face, in track
+    order."""
+    return [(tr["shot"], s["t"], face_number(tr["face"]), s["box"], tr["id"], j)
+            for tr in bodies_layer["tracks"] if tr["face"] is not None for j, s in enumerate(tr["samples"])]

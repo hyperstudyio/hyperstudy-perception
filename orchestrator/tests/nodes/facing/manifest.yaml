@@ -1,0 +1,9 @@
+id: test.facing
+version: 1.0.0
+description: Writes a bundle facing layer and its Parquet poses and angles side files, as vision.facing does (validate tests)
+inputs: {video: video.v1}
+outputs: {facing: bundle.facing@0.1, poses: bundle.facing_poses@0.1, angles: bundle.facing_angles@0.1}
+runners:
+  - {kind: self, entry: node.py}
+models:
+  - {id: test-mediapipe, licence_mode: commercial-ok}

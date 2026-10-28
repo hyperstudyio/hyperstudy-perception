@@ -211,6 +211,40 @@
               { "type": "null", "description": "A voice the pipeline has no centroid for (it pads that row with zeros)." }] }
           }
         }
+      },
+      "speakers_votes": {
+        "description": "layers/speakers_votes.json, a raw side file of the speakers layer (raw.votes): the word votes the layer's voice links come from. Each word of the transcript layer with a voice and at most max_word_seconds long is looked at: of the scored face tracks with a person that have frames during it (speakers_scores), the one whose mean score over the word is highest (of equals, the first in the faces layer's track order) is its top face; the word votes for that face's person if the score is above 0. A voice's share for a person is its votes for that person over its visible words; voices and people (in the order of people) are matched one to one on those shares (Hungarian, maximising the total share), and a voice matched with a share above 0 is linked (the layer's voice_links, its word_share the share to 2 decimals, trusted at the producer's voice_link_min_share or more).",
+        "type": "object",
+        "required": ["max_word_seconds", "people", "voices"],
+        "properties": {
+          "max_word_seconds": { "type": "number", "description": "Longer words (alignment errors) do not vote and are not listed." },
+          "people": { "type": "array", "items": { "$ref": "#/$defs/id/person" }, "uniqueItems": true, "description": "The people voices are matched to: the faces layer's people, in its order (the matching's columns)." },
+          "voices": {
+            "type": "array",
+            "description": "One entry per voice with a word that can vote, by voice id.",
+            "items": {
+              "type": "object", "required": ["voice", "visible", "votes", "words"],
+              "properties": {
+                "voice": { "$ref": "#/$defs/id/voice" },
+                "visible": { "type": "integer", "minimum": 0, "description": "The voice's words with a person's face visible (score not null): the denominator of its shares." },
+                "votes": { "type": "object", "propertyNames": { "$ref": "#/$defs/id/person" }, "additionalProperties": { "type": "integer", "minimum": 1 }, "description": "Votes per person: the voice's words whose top face is that person's and scores above 0." },
+                "words": {
+                  "type": "array",
+                  "description": "The voice's words that can vote, in transcript order.",
+                  "items": {
+                    "type": "object", "required": ["word", "face", "person", "score"],
+                    "properties": {
+                      "word": { "type": "integer", "minimum": 0, "description": "The word's index in the transcript layer's words." },
+                      "face": { "oneOf": [{ "$ref": "#/$defs/id/face" }, { "type": "null" }], "description": "Its top face track; null when no person's face has frames during the word." },
+                      "person": { "oneOf": [{ "$ref": "#/$defs/id/person" }, { "type": "null" }], "description": "That face track's person." },
+                      "score": { "type": ["number", "null"], "description": "That face's mean score over the word (of its scores to 2 decimals, unrounded): the word votes when it is above 0." }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "parquet": {
@@ -327,6 +361,44 @@
           { "name": "embedding", "arrow": "fixed_size_list<element: float not null>[512]", "description": "py-feat's 512-d ArcFace identity embedding, not L2-normalised (as faces_embeddings')." },
           { "name": "mesh", "arrow": "fixed_size_list<element: float not null>[1434]", "description": "The 478-point mesh: all 478 x, then all 478 y (source pixels), then all 478 z (relative depth, as faces_pyfeat's mesh_z)." },
           { "name": "blendshapes", "arrow": "fixed_size_list<element: float not null>[52]", "description": "The 52 blendshape coefficients, as faces_pyfeat's." }
+        ]
+      },
+      "speakers_scores": {
+        "description": "layers/speakers_scores.parquet, a raw side file of the speakers layer (raw.scores): the active speaker detector's (LR-ASD's) score for every 25 fps frame of every face track it scored (the faces layer's tracks of 0.4 s or more, each widened by 0.125 s at both ends within its shot), of which the layer keeps per utterance each candidate face's mean over the utterance. A score above 0 means the face is speaking at that frame. One row per scored frame, in the faces layer's track order, then frame order; a track's frames are consecutive. The layer is made from this file: each track's scores to 2 decimals (from score) are what the layer's candidates, margins and predictions average over the utterance's frames (from int((start - first t) * 25) to int((end - first t) * 25), inclusive), and what speakers_votes' word scores average over each word. The file metadata names the model, fps (25), the window lengths in seconds (windows, in the order of the windows column) and how score is taken from them. No median filter or other smoothing is applied to the scores. Columns are not nullable.",
+        "columns": [
+          { "name": "face", "arrow": "string", "description": "The face track (face:N): the faces layer's tracks[].id." },
+          { "name": "frame", "arrow": "int32", "description": "The 25 fps frame index, from the video stream's first frame: frame i starts at i / 25 s." },
+          { "name": "t", "arrow": "double", "description": "frame / 25, to 3 places." },
+          { "name": "score", "arrow": "float", "description": "The frame's score: the mean of windows (numpy's float32 mean), as LR-ASD's demo scores a frame; the layer reads it to 2 decimals." },
+          { "name": "windows", "arrow": "fixed_size_list<element: float not null>[11]", "description": "The frame's score in each window length the clip was scored in (1, 1, 1, 2, 2, 2, 3, 3, 4, 5, 6 s, as the metadata's windows): the clip is cut into consecutive windows of that length from its first frame and each window scored on its own, as float32 logits (LR-ASD's speaking class), unrounded." }
+        ]
+      },
+      "facing_poses": {
+        "description": "layers/facing_poses.parquet, a raw side file of the facing layer (raw.poses): every pose MediaPipe Pose Landmarker returned for the crop of each face-linked sample of the bodies layer (the body box grown by the metadata's margin, centred in a black square), up to the metadata's poses a crop, of which the layer uses one (kept: the pose whose landmarks centre nearest the box centre). One row per pose, in time order, the bodies of one time in the bodies layer's track order, the poses of one crop in the landmarker's order; a face-linked body sample with no row is one whose crop held no pose. The landmarks are the model's float32 values as it returned them; yaw, pitch and centre the producer's float64 values. The file metadata names the model, the landmarks (names) and the score_threshold a landmark's visibility must reach to count. Columns are not nullable.",
+        "columns": [
+          { "name": "body", "arrow": "string", "description": "The body track (body:N): the bodies layer's tracks[].id." },
+          { "name": "sample", "arrow": "int32", "description": "The sample's index in that track's samples." },
+          { "name": "t", "arrow": "double", "description": "The sample's time, as the bodies layer's." },
+          { "name": "face", "arrow": "string", "description": "The face track the body is linked to (face:N): the facing layer's from and to." },
+          { "name": "pose", "arrow": "int32", "description": "The pose's index in the landmarker's result for this crop." },
+          { "name": "kept", "arrow": "bool", "description": "Whether the layer uses this pose: the one whose 2D landmarks (all 33) centre nearest the body box's centre, the first of equals. One per sample with a row." },
+          { "name": "window", "arrow": "fixed_size_list<element: int32 not null>[3]", "description": "The crop square [x0, y0, side] in source pixels (it may extend past the frame): a landmark at crop coordinates (x, y) is at (x0 + x * side, y0 + y * side) in the frame." },
+          { "name": "landmarks", "arrow": "fixed_size_list<element: float not null>[165]", "description": "The 33 landmarks in the metadata's names order (BlazePose: nose ... right_foot_index), each x, y (in [0, 1] of the crop), z (depth relative to the hips, in x's scale), visibility and presence (in [0, 1])." },
+          { "name": "world", "arrow": "fixed_size_list<element: float not null>[99]", "description": "The 33 world landmarks in the same order, each x, y, z in metres in a camera-aligned frame (x right, y down, z away) with the origin at the mid-hip. Their visibility and presence are the landmarks' (MediaPipe copies them)." },
+          { "name": "source", "arrow": "string", "description": "What the torso direction comes from: torso (both shoulders and both hips visible: yaw and pitch), shoulders (both shoulders, not both hips: yaw only, pitch 0) or none (not both shoulders: no direction, yaw and pitch 0). A landmark is visible when its visibility reaches score_threshold." },
+          { "name": "yaw", "arrow": "double", "description": "The torso direction's yaw in degrees, unrounded: 0 facing the camera, positive turned to the subject's right (image left), +-180 back to the camera. The events use it to 0.1 degree." },
+          { "name": "pitch", "arrow": "double", "description": "The torso direction's pitch in degrees, unrounded, positive tilted back (torso only, else 0). The events use it to 0.1 degree." },
+          { "name": "centre", "arrow": "fixed_size_list<element: double not null>[2]", "description": "The torso centre [x, y] in source pixels the pose's facing is measured from: the mean of its visible shoulders and hips (as stored to 0.1 px), else the body box's centre." }
+        ]
+      },
+      "facing_angles": {
+        "description": "layers/facing_angles.parquet, a raw side file of the facing layer (raw.angles): what its events are thresholded from. At each sample time, for each face-linked body whose kept pose (facing_poses) has a direction (A) and each other face-linked body with a kept pose there (B), the angle between A's facing vector (-sin(yaw) cos(pitch), -sin(pitch), -cos(yaw) cos(pitch), yaw and pitch to 0.1 degree) and the image direction from A's torso centre to B's at zero depth, and the distance between the centres; a pair whose centres coincide has no row. One row per ordered pair, in time order, then A and B in the bodies layer's track order. The events: at each (t, A), of the Bs with angle <= cone_deg the nearest (lowest dist, then lowest face number) is the one A faces; one pair's times merge across gaps of at most max_gap_s into runs, kept when at least min_facing_s long; score = mean cos(angle), mutual when B faces A for at least min_facing_s of the run. At the metadata's cone_deg, min_facing_s and max_gap_s (the layer's) this gives the layer's events exactly. Columns are not nullable.",
+        "columns": [
+          { "name": "t", "arrow": "double", "description": "The sample time, as the bodies layer's." },
+          { "name": "from", "arrow": "string", "description": "A's face track (face:N)." },
+          { "name": "to", "arrow": "string", "description": "B's face track (face:N)." },
+          { "name": "angle", "arrow": "double", "description": "Degrees in [0, 180] between A's facing vector and the direction to B, unrounded." },
+          { "name": "dist", "arrow": "double", "description": "The distance between A's and B's torso centres in source pixels." }
         ]
       },
       "hands_detections": {

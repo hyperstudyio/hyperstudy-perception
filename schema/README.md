@@ -20,6 +20,10 @@ layers/sounds_tags.parquet
 layers/sounds_queries.parquet
 layers/bodies_scores.parquet
 layers/bodies_duplicates.parquet
+layers/speakers_scores.parquet
+layers/speakers_votes.json
+layers/facing_poses.parquet
+layers/facing_angles.parquet
 layers/hands_detections.parquet
 assets/                       optional small images (keyframes, person and object crops) referenced by relative path
 ```
@@ -72,6 +76,25 @@ which the layer keeps only the box; one row per sample) and `bodies_duplicates` 
 dropped as a second detection of a person, with the sample it duplicated, their head/shoulder distance, and its own
 box and 133 keypoints, so the de-duplication can be revisited). Both are the models' float32 values, unrounded; on a
 two-minute clip of five people (3136 samples, 28 duplicates) 18 KB and 34 KB, about 0.5 MB and 1.0 MB an hour.
+The speakers layer's: `speakers_scores` (its `raw.scores`: LR-ASD's score for every 25 fps frame of every face track it
+scored, each window length's (1 to 6 s) and their mean, the per-frame score whose means over an utterance are the
+layer's candidates; float32, unrounded; one row per frame; transcript, as diarization's turns: with the faces layer
+it says who speaks when, frame by frame, though no face, sound or word can be rebuilt from it) and `speakers_votes` (its `raw.votes`: per voice, each of its words, as an index into the transcript layer's
+words, with the face LR-ASD scored highest over it, that face's person and mean score, and the votes and visible words
+the voice links' word shares come from; transcript, as the layer). The node makes the layer from them, so the scores
+give its candidates and predictions and the votes its voice links exactly, and the voice-link gate or the vote's
+threshold can be revisited from the files. On a two-minute clip (9066 frames of 164 tracks, 328 words) 171 KB and
+27 KB, about 5.2 MB and 0.8 MB an hour.
+The facing layer's: `facing_poses` (its `raw.poses`: every pose MediaPipe Pose Landmarker returned for the crop of
+each face-linked body sample, a row per pose, with all 33 landmarks as the model returned them, x, y in the crop, z,
+visibility and presence, the 33 world landmarks in metres, the torso direction from them, unrounded, the torso centre
+its facing is measured from, the crop, and which pose the layer kept) and `facing_angles` (its `raw.angles`: at every
+sample time, the angle between each posed person's torso direction and the image direction to each other posed person,
+and their distance, whatever the angle: what the events are thresholded from, so thresholding them again at the layer's
+`cone_deg`, `min_facing_s` and `max_gap_s` gives its events exactly, and at other values the events those would give;
+the node checks the first before it finishes). The landmarks are float32, the rest float64; on a two-minute clip
+(2528 posed samples, 2577 poses, 7747 angles) 2.55 MB and 0.10 MB, about 77 MB and 3 MB an hour at its two to three
+posed people a frame.
 The hands layer's: `hands_detections` (its `raw.detections`: every box the hand detector, RTMDet-nano hand, returned on
 every sampled frame, down to its own NMS's score of 0.05, with its float32 score and box unrounded, why it is or is not
 a hand of the layer (`below_score`, `below_gate`, `too_large`, `duplicate`, `wrist_taken`, `linked`, `unlinked`), the
@@ -93,6 +116,8 @@ weights, which are licensed for non-commercial research only (`academic-only`). 
 each is computed from the whole frame, and together they are a coarse picture of where the people and things in each
 frame are: a step that reads them elsewhere needs `allow_upload` to name `frames` (not `faces`: they hold no face
 image, landmarks or box). The shots scores hold no kind: a few numbers a frame for how much the picture changed.
+The facing poses and angles hold none either, like the bodies and facing layers: a skeleton per person (its 33
+landmarks include 11 coarse face points, fewer than the bodies layer's 68) and the angles between people.
 The hands detections hold no kind either, as the hands layer: boxes and scores (some low-scoring boxes lie on faces,
 with no pixels, landmarks or identity).
 The voice embeddings are identity data too (a voiceprint): `embeddings`. The diarization's turns, like the
