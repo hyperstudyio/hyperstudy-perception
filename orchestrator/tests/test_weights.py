@@ -141,3 +141,17 @@ def test_a_model_for_some_runners_is_a_download_only_where_one_of_them_runs():
     for wrong in (["envs/c"], []):   # an environment no runner runs in, or none: the model would never be counted
         with pytest.raises(ValueError, match="must name environments of this node's runners"):
             manifest(wrong)
+
+
+def test_diarize_declares_every_model_asr_can_record():
+    """audio.diarize reports the transcript's model as asr recorded it (its node.py copies producer.models), and a node
+    may report only models its manifest declares: whichever runner made the words (MLX, or NeMo on CUDA or a CPU)."""
+    from pathlib import Path
+
+    from perception.manifests import Registry
+    reg = Registry.load(Path(__file__).resolve().parents[2] / "nodes")
+    asr, diarize = reg.get("audio.asr@1.1.0"), reg.get("audio.diarize@1.1.0")
+    declared = {x.id: x for x in diarize.models}
+    for x in asr.models:
+        assert x.id in declared, x.id
+        assert declared[x.id].licence_mode == x.licence_mode and declared[x.id].source is None   # nothing downloaded

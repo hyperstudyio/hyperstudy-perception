@@ -407,7 +407,7 @@ class Coordinator:
             "accelerator": placement.runner.accelerator,
             "inputs": placement.backend.stage_inputs(attempt_dir, inputs), "config": node.config,
             "out_dir": str(placement.backend.output_dir(attempt_dir)), "secrets": m.secrets,
-            "producer": {"stage": m.stage or m.id, "stage_version": m.version, "models": [x.model_dump(exclude={"size_gb", "gated"}) for x in m.models]},
+            "producer": {"stage": m.stage or m.id, "stage_version": m.version, "models": [x.model_dump(exclude={"size_gb", "gated", "envs"}) for x in m.models_for(placement.runner)]},
         }
         (attempt_dir / "request.json").write_text(json.dumps(request, indent=1))
         try:
