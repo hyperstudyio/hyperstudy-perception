@@ -219,7 +219,9 @@ class Side:
 # layer (which holds no kind) has too.
 # The bodies scores are YOLOX-m's score for every body sample, and the bodies duplicates the detections dropped as
 # second detections of a person (box, score, RTMW keypoints, the sample they duplicated): the same kind of data as the
-# bodies layer, which holds no kind (boxes and skeletons, no pixels, face images or identity), so they hold none either.
+# bodies layer, so they hold its kinds, none. Like the layer's, their 133 COCO-WholeBody keypoints include 68 face
+# landmarks, which faces_detail's py-feat landmarks count as faces: if the bodies layer is ever counted as faces for
+# them, these files go with it (no pixels, face images or identity embeddings either way).
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
