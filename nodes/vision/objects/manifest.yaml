@@ -1,8 +1,8 @@
 id: vision.objects
-version: 1.0.0
+version: 1.1.0
 stage: objects
 title: Objects
-description: Things on screen (named by Claude Haiku 5.5 from each shot's keyframes), outlined and tracked within shots by SAM 3, linked across shots by DINOv3 embeddings, with the person who wears each worn item
+description: Things on screen (named by Claude Haiku 5.5 from each shot's keyframes) and the clothing on every posed person (SAM 3 inside each body's box), outlined and tracked within shots by SAM 3 with no people inside an object's outline, linked across shots by DINOv3 embeddings, with the person who wears each worn item
 inputs:
   video: video.v1
   media: media.v1
@@ -10,10 +10,15 @@ inputs:
   keyframes: assets.v1
   faces: bundle.faces@0.1
   bodies: bundle.bodies@0.1
-outputs: {objects: bundle.objects@0.1, crops: assets.v1}
+# masks: layers/objects_masks.parquet, every mask SAM 3 gave (session samples and body-crop detections) with its scores and
+# what became of it; the layer points at it with raw.masks (object_raw.py)
+outputs: {objects: bundle.objects@0.1, crops: assets.v1, masks: bundle.objects_masks@0.1}
 # The bake-off's settings (objects/objects.py), where it says how each was chosen. All provisional, from two clips.
 config:
   fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 6, description: "frames per second SAM 3 sees (its cost is per frame; 6 keeps fast bike motion trackable)"}
+  # 3 at fps 6: every other frame, the slowest rate at which every moment is within 1/fps of a garment sample (the app
+  # and the gaze node show an object sample within 1/fps of the time)
+  clothing_fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 3, description: "frames per second at which each posed body is searched for clothing (a body crop costs about a SAM 3 frame); fps / clothing_fps must be a whole number"}
   link_threshold: {type: number, minimum: -1, maximum: 1, default: 0.62, description: "average adjusted cosine for merging tracks into one object"}
   cross_name_margin: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "subtracted from the cosine of two tracks with different names in one family"}
   same_wearer_bonus: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "added to the cosine of two worn tracks on the same person"}
@@ -38,9 +43,12 @@ resources: {cpu_cores: 4, memory_gb: 16, gpu: exclusive}
 privacy: {external_upload: [frames, faces]}
 # both models are gated on Hugging Face (HF_TOKEN); Haiku names and checks the objects (ANTHROPIC_API_KEY)
 secrets: [ANTHROPIC_API_KEY, HF_TOKEN]
-# Upper estimate per shot (measured in the bake-off: $0.028 for OOO's 44 shots, $0.041 for NES's 36: vocabulary, name
-# classes and the crop check together, about $0.001 a shot)
-cost: {usd: 0.003, per: shot, input: shots}
+# Upper estimate per minute of video. Most of the spend is the crop check, a call per 16 tracks of a name, and since
+# 1.1.0 every person's garment tracks are checked too, so it grows with the people on screen and their time, not with
+# the cuts (a one-shot hour-long panel would have been reserved $0.003). Measured with 1.1.0 (vocabulary, name classes
+# and crop check): $0.045 for OOO clip 1 (1.98 min, 7 panelists), $0.056 for clip 2 (2.59 min), $0.055 for NES
+# (2.29 min): $0.021-0.024 a minute; this is about twice that. A crowd costs more than a panel of seven.
+cost: {usd: 0.05, per: minute, input: media}
 # fetches the weights ahead of a run (perception setup)
 prepare: prepare.py
 models:
