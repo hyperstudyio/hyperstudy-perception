@@ -136,5 +136,15 @@ def test_the_tracks_hold_every_frame_the_measures_read():
     assert tr["speaker_index"] == {"A": 0, "B": 1}
 
 
+def test_a_zero_length_word_has_no_duration_z_and_the_others_keep_theirs():
+    """log(0) is -inf, whose mean made every word of the pool lose its duration z (the bake-off's zscores)."""
+    f0, words, units = two_speakers()
+    words[1] = {**words[1], "end": words[1]["start"]}   # "there" with no duration
+    units[0] = {**units[0], "analysed_end": words[1]["start"]}
+    rows = [w for u in measure(units, words, int(4.0 * RATE), FakePraat(f0))["utterances"] for w in u["words"]]
+    assert rows[1]["prominence_parts"]["duration"] is None
+    assert all(r["prominence_parts"]["duration"] is not None for r in rows[:1] + rows[2:])
+
+
 def test_syllables_are_vowel_groups_less_a_silent_e():
     assert [syllables(w) for w in ("hello", "there", "fine", "thanks.", "table", "free", "1999", "rhythm")] == [2, 1, 1, 1, 2, 1, 2, 1]

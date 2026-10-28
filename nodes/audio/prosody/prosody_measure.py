@@ -13,7 +13,8 @@ the whole clip's pitch contour at 20 Hz: each bin the median of the pitch track 
 it, in semitones re that speaker's median (the layer) and in Hz (the speakers side file).
 
 Every analysis stops a word WORD_MAX_S after its onset (prosody_units.word_end). Rounding is the bake-off's, so the
-same frames give the same numbers. Two changes: a speaker with voiced frames in an utterance's pauses but none in its
+same frames give the same numbers. Three changes: a word of zero duration has no duration z of its own (the bake-off's
+log 0 took every word's in the pool); a speaker with voiced frames in an utterance's pauses but none in its
 words has no median, and its contour bins there are null (the bake-off would have failed on it); and a 50 ms bin two
 utterances share takes the later one's speaker and pitch only where the later one has voiced frames in it, so its
 speaker and pitch come from one utterance (the bake-off gave such a bin the later speaker with the earlier one's pitch:
@@ -184,8 +185,9 @@ def measure(units: list[dict], words: list[dict], n_samples: int, praat) -> dict
     for s, idx in speaker_words.items():
         own = len(idx) >= MIN_PROMINENCE_WORDS
         pool = idx if own else sorted(rows)
-        with np.errstate(divide="ignore"):   # a word of zero duration: log 0, no duration z (as the bake-off)
-            durations = [np.log(rows[i]["duration"] / rows[i]["syllables"]) for i in pool]
+        # a word of zero duration has no log duration (None, as a missing F0): only its own duration z is missing (the
+        # bake-off's -inf made the pool's mean -inf, and every word's duration z nan)
+        durations = [np.log(rows[i]["duration"] / rows[i]["syllables"]) if rows[i]["duration"] > 0 else None for i in pool]
         z = {"f0": zscores([rows[i]["f0_max_st"] for i in pool]),
              "intensity": zscores([rows[i]["intensity_rel_db"] for i in pool]),
              "duration": zscores(durations)}
