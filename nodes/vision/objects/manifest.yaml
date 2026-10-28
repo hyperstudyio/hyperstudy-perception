@@ -1,0 +1,56 @@
+id: vision.objects
+version: 1.0.0
+stage: objects
+title: Objects
+description: Things on screen (named by Claude Haiku 5.5 from each shot's keyframes), outlined and tracked within shots by SAM 3, linked across shots by DINOv3 embeddings, with the person who wears each worn item
+inputs:
+  video: video.v1
+  media: media.v1
+  shots: bundle.shots@0.1
+  keyframes: assets.v1
+  faces: bundle.faces@0.1
+  bodies: bundle.bodies@0.1
+outputs: {objects: bundle.objects@0.1, crops: assets.v1}
+# The bake-off's settings (objects/objects.py), where it says how each was chosen. All provisional, from two clips.
+config:
+  fps: {type: number, exclusiveMinimum: 0, maximum: 30, default: 6, description: "frames per second SAM 3 sees (its cost is per frame; 6 keeps fast bike motion trackable)"}
+  link_threshold: {type: number, minimum: -1, maximum: 1, default: 0.62, description: "average adjusted cosine for merging tracks into one object"}
+  cross_name_margin: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "subtracted from the cosine of two tracks with different names in one family"}
+  same_wearer_bonus: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "added to the cosine of two worn tracks on the same person"}
+  min_link_px: {type: number, minimum: 0, default: 48, description: "tracks with a smaller median box side link only to tracks on the same wearer"}
+  wearer_share: {type: number, exclusiveMinimum: 0, maximum: 1, default: 0.5, description: "share of a worn track's samples a body must hold to be its wearer"}
+  different_person_distance: {type: number, minimum: 0, maximum: 2, default: 0.8, description: "ArcFace distance at which two wearers are certainly different people"}
+  duplicate_iou: {type: number, minimum: 0, maximum: 1, default: 0.6, description: "mean box IoU at which two tracks at once are one object under two names"}
+runners:
+  # SAM 3 in bfloat16 on the Apple GPU, with CPU stand-ins for its CUDA-only post-processing (models.py)
+  - {kind: native, env: envs/gaze, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # PyPI's torch 2.14 wheels for Linux are built for CUDA 13 (an NVIDIA driver >= 580). Not yet run on a GPU, here or in
+  # the bake-off
+  - {kind: native, env: envs/gaze, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 16}
+  - {kind: native, env: envs/gaze, entry: node.py, accelerator: cpu}
+# memory: the models and the work, plus a SAM 3 session that holds every frame of a shot: ~31 MB a 1080p frame while it
+# is made, 6 MB after (budget.py). 16 GB holds shots up to about 45 s at 6 fps; a longer shot needs more, and one this
+# machine cannot hold at all fails the node at the start
+resources: {cpu_cores: 4, memory_gb: 16, gpu: exclusive}
+# Sent to Anthropic: each shot's keyframes, and crops of video frames around each track (the crop check), with the
+# object names. Both show the people on screen: a worn item's crop (glasses, earrings, a hat) centres on its wearer's
+# face. No data from the faces or bodies layers is sent.
+privacy: {external_upload: [frames, faces]}
+# both models are gated on Hugging Face (HF_TOKEN); Haiku names and checks the objects (ANTHROPIC_API_KEY)
+secrets: [ANTHROPIC_API_KEY, HF_TOKEN]
+# Upper estimate per shot (measured in the bake-off: $0.028 for OOO's 44 shots, $0.041 for NES's 36: vocabulary, name
+# classes and the crop check together, about $0.001 a shot)
+cost: {usd: 0.003, per: shot, input: shots}
+# fetches the weights ahead of a run (perception setup)
+prepare: prepare.py
+models:
+  - {id: facebook/sam3, source: "hf://facebook/sam3@3c879f39826c281e95690f02c7821c4de09afae7",
+     revision: 3c879f39826c281e95690f02c7821c4de09afae7, size_gb: 3.44, gated: true,
+     licence: "SAM License (Meta; gated on Hugging Face): commercial use permitted; acknowledge use in publications; trade-control, no-reverse-engineering and indemnity terms",
+     licence_mode: commercial-ok}
+  - {id: facebook/dinov3-vitl16-pretrain-lvd1689m,
+     source: "hf://facebook/dinov3-vitl16-pretrain-lvd1689m@ea8dc2863c51be0a264bab82070e3e8836b02d51",
+     revision: ea8dc2863c51be0a264bab82070e3e8836b02d51, size_gb: 1.21, gated: true,
+     licence: "DINOv3 License (Meta; gated on Hugging Face): commercial use permitted; acknowledge use in publications; redistribution only under the same licence with a copy of it; trade-control, no-reverse-engineering and indemnity terms; Meta may amend the terms",
+     licence_mode: commercial-ok}
+  - {id: claude-haiku-5-5, licence: Anthropic API terms, licence_mode: api-terms}
