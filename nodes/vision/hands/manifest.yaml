@@ -1,11 +1,14 @@
 id: vision.hands
-version: 1.0.0
+version: 1.1.0
 stage: hands
 title: Hands
 description: Each hand's 21 keypoints (RTMPose-m Hand5; boxes from the bodies' hand keypoints and RTMDet-nano hand), tracked within shots and linked to its body and face tracks
 # sampled on the bodies layer's grid, at its fps; the face links come with the bodies
 inputs: {video: video.v1, media: media.v1, shots: bundle.shots@0.1, bodies: bundle.bodies@0.1}
-outputs: {hands: bundle.hands@0.1}
+# detections: layers/hands_detections.parquet, every detection RTMDet-nano hand returned (score >= 0.05), kept or not,
+# with its score, box, why it is or is not a hand, the wrist it matched and the sample it became, which the layer points
+# at with raw.detections (hand_detections.py)
+outputs: {hands: bundle.hands@0.1, detections: bundle.hands_detections@0.1}
 runners:
   # RTMPose-hand on CoreML (NeuralNetwork format, as the bake-off), RTMDet-hand on the CPU: see models.py
   - {kind: native, env: envs/vision, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}

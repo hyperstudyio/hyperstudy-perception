@@ -52,7 +52,7 @@ nodes:
     inputs: {video: $inputs.video, media: $nodes.decode.media, bodies: $nodes.bodies.bodies}
   # hand boxes from the bodies' hand keypoints and a hand detector; each hand's body and face come with the bodies
   - id: hands
-    uses: vision.hands@1.0.0
+    uses: vision.hands@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, bodies: $nodes.bodies.bodies}
   # names objects with Claude Haiku 5.5 from decode's keyframes (frames and faces go to the API: ANTHROPIC_API_KEY),
   # outlines and tracks them with SAM 3, links them across shots with DINOv3 (both gated: HF_TOKEN), and finds who wears

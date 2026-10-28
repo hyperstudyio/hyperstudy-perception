@@ -400,6 +400,21 @@
           { "name": "angle", "arrow": "double", "description": "Degrees in [0, 180] between A's facing vector and the direction to B, unrounded." },
           { "name": "dist", "arrow": "double", "description": "The distance between A's and B's torso centres in source pixels." }
         ]
+      },
+      "hands_detections": {
+        "description": "layers/hands_detections.parquet, a raw side file of the hands layer (raw.detections): every detection the hand detector (RTMDet-nano hand) returned on every sampled frame, down to its own NMS's score of 0.05, kept or not, so the score threshold, the gates and the hand assignment can be revisited. One row per detection, in time order, then in the detector's order (highest score first), the order the producer considered them; a frame with no detection has no row. With the bodies layer and shots, the rows give the layer's hands again through the producer's gates, matching and tracking. The file metadata names the detector, the frame size the boxes are in (frame_width, frame_height) and the gates (detector_threshold, min_hand_px, max_detector_box, dedup_iou, wrist_gate). Values are float32, unrounded. Columns are not nullable. Each of the layer's samples with box_source detector is named by exactly one row, and no other (validate.py checks this).",
+        "of_samples": true,
+        "track": { "column": "hand", "field": "id", "tracks": "hands", "none": "", "covers": { "box_source": "detector" } },
+        "columns": [
+          { "name": "t", "arrow": "double", "description": "The frame's time, as the layer's samples' (frame / fps, to 3 places)." },
+          { "name": "score", "arrow": "float", "description": "The detector's score in [0.05, 1], unrounded (float32, as the model returned it)." },
+          { "name": "box", "arrow": "fixed_size_list<element: float not null>[4]", "description": "The detection's box [x, y, w, h] in source pixels, unrounded (a layer sample from it has it to 0.1)." },
+          { "name": "reason", "arrow": "string", "description": "Why it is or is not a hand of the layer, in the order the producer tests: below_score (under detector_threshold), below_gate (shorter side under min_hand_px), too_large (longer side over max_detector_box x the frame height), duplicate (IoU >= dedup_iou with a hand from the bodies' keypoints or a higher-scoring detection kept so far), wrist_taken (matched to a wrist that already has its hand), linked (kept, with the body and side of the wrist it matched), unlinked (kept, matched to no wrist)." },
+          { "name": "body", "arrow": "string", "description": "The body track (body:N) of the wrist the matching gave it (linked, wrist_taken), or empty." },
+          { "name": "side", "arrow": "string", "description": "That wrist's side (left, right), or empty." },
+          { "name": "hand", "arrow": "string", "description": "The hand (hand:N) of the layer sample it became (linked, unlinked), or empty." },
+          { "name": "sample", "arrow": "int32", "description": "That sample's index in the hand's samples, or -1." }
+        ]
       }
     },
     "sidePointer": {

@@ -255,6 +255,11 @@ class Side:
 # kind, so none. The 33 landmarks include 11 coarse face points (nose, eyes, ears, mouth corners), fewer than the
 # bodies layer's 68: if the bodies layer is ever counted as faces, the poses go with it (no pixels, face images or
 # identity embeddings either way).
+# The hands detections are every box the hand detector (RTMDet-nano hand) returned, with its score, why it is or is not
+# a hand, and the wrist (body, side) and hand sample it went to: the same kind of data as the hands layer, whose
+# detector hands are some of these boxes, so its kinds, none. Most of them score under the layer's threshold, and some
+# of those lie on faces (the detector's false positives): a box and a score, no pixels, landmarks or identity, as the
+# bodies layer's person boxes hold faces without counting as faces.
 SIDE_FILES: dict[str, Side] = {
     "faces_detail": Side("faces", ("faces",)),
     "faces_mesh": Side("faces", ("faces",)),
@@ -274,6 +279,7 @@ SIDE_FILES: dict[str, Side] = {
     "speakers_votes": Side("speakers", ("transcript",)),
     "facing_poses": Side("facing", (), "parquet"),
     "facing_angles": Side("facing", (), "parquet"),
+    "hands_detections": Side("hands", (), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
 # predate raw, the general pointer: any layer points at its side files with raw: {<role>: {file, format, description}}

@@ -1273,6 +1273,65 @@ def test_validate_checks_the_bodies_side_files_rows_against_the_layers_samples(t
     assert all(p in result.stdout for p in problems), result.stdout
 
 
+def hands_bundle(tmp_path, damage=lambda p: None, file="layers/hands.json") -> Path:
+    """An exported hands bundle (test.hands: a wrist hand, a detector hand and the detections side file) after
+    `damage(path of file)`, with the manifest's checksums updated."""
+    from perception import export
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    coord = coordinator(tmp_path)
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                     {"id": "hands", "uses": "test.hands@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    out = export.bundle(coord, run_id, tmp_path / "bundle")
+    damage(out / file)
+    manifest = json.loads((out / "manifest.json").read_text())
+    for entry in manifest["layers"].values():
+        for f in [entry, *entry.get("side_files", [])]:
+            f.update(sha256=artifacts.sha256_file(out / f["file"]), bytes=(out / f["file"]).stat().st_size)
+    (out / "manifest.json").write_text(json.dumps(manifest))
+    return out
+
+
+NOT_ONE = "hands_detections.parquet: 1 samples of the layer's {'box_source': 'detector'} hands are not named by exactly one row"
+
+
+HANDS_SIDE = "layers/hands_detections.parquet"
+
+
+@pytest.mark.parametrize("damage, problem", [
+    (lambda p: None, None),
+    # a row of no hand (hand empty) naming sample 3: rows of no sample have sample -1
+    ((HANDS_SIDE, lambda p: p.write_bytes((NODES / "hands" / "hands_detections_none_sample.parquet").read_bytes())),
+     "hands_detections.parquet: 1 rows name no hand but sample 3, not -1, first row 3"),
+    # hand:1 loses its second sample: a row names a sample the layer lacks
+    (_with(lambda d: d["hands"][1]["samples"].pop()), "hands_detections.parquet: 1 rows name no sample of the layer, first row 2"),
+    # the wrist hand said to come from the detector: no row gives its samples
+    (_with(lambda d: d["hands"][0].update(box_source="detector")),
+     "hands_detections.parquet: 2 samples of the layer's {'box_source': 'detector'} hands are not named by exactly one row"),
+    # a detector hand with a sample no row names
+    (_with(lambda d: d["hands"].append({**d["hands"][1], "id": "hand:2", "samples": d["hands"][1]["samples"][:1]})), NOT_ONE),
+    # the detector hand said to come from the wrists: its rows name samples that are not the detector's
+    (_with(lambda d: d["hands"][1].update(box_source="wrist")),
+     "hands_detections.parquet: 2 samples of the layer's {'box_source': 'detector'} hands are not named by exactly one row"),
+])
+def test_validate_checks_the_hands_detections_name_exactly_the_layers_detector_samples(tmp_path, damage, problem):
+    """A hands_detections row names a sample of the hands layer's hands (track column hand, the layer's list hands) or
+    none (hand empty), and every sample of a detector hand is named by exactly one row, no other sample (covers)."""
+    file, damage = damage if isinstance(damage, tuple) else ("layers/hands.json", damage)
+    out = hands_bundle(tmp_path, damage, file)
+    assert sorted(p.name for p in (out / "layers").iterdir()) == ["hands.json", "hands_detections.parquet", "shots.json"]
+    if file != HANDS_SIDE:
+        assert (out / HANDS_SIDE).read_bytes() == (NODES / "hands" / "hands_detections.parquet").read_bytes()
+    result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                            capture_output=True, text=True)
+    assert "Traceback" not in result.stderr and "note:" not in result.stdout, result.stdout + result.stderr
+    assert result.returncode == (1 if problem else 0), result.stdout + result.stderr
+    assert problem is None or problem in result.stdout, result.stdout
+
+
 def test_validate_without_pyarrow_says_it_skipped_the_parquet_content_check(tmp_path):
     """pyarrow is validate.py's dev dependency: without it the bundle can still be valid, but the output says the
     Parquet columns were not checked rather than passing in silence. Parquet's magic is checked either way."""
