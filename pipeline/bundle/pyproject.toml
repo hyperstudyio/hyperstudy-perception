@@ -4,3 +4,8 @@ version = "0.1.0"
 description = "Write and validate HyperStudy perception track bundles (schema/bundle-0.1.schema.json)"
 requires-python = ">=3.11"
 dependencies = ["jsonschema>=4.23", "referencing>=0.35"]
+
+# validate.py reads Parquet side files' columns with pyarrow; `uv run` installs the dev group by default. Without it,
+# validate.py checks only Parquet's magic and says it skipped the rest.
+[dependency-groups]
+dev = ["pyarrow==26.0.0"]

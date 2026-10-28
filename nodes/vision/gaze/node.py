@@ -6,6 +6,10 @@ Every face sample of the faces layer is one head (its box scaled by `head_box_sc
 decoded in order with OpenCV, and one Gaze-LLE forward per frame scores every head in it (models.py). Targets and
 events: gaze_targets.py.
 
+Beside the layer, the side file layers/gaze_heatmaps.parquet keeps the rest of what the model returned for every head:
+its whole 64x64 heatmap (uint8 relative to its maximum, with the maximum) and its unrounded in-frame score
+(heatmaps.py). The layer points at it with raw.heatmaps.
+
 Faces only for now: the bake-off also offered tracked objects as targets. They join as one more input (objects:
 bundle.objects@0.1, wired from the objects node in graphs/full.yaml) whose same-shot regions candidates_at receives
 beside the faces' (gaze_targets.py says how); until then no sample's target is an object.
@@ -19,7 +23,9 @@ import time
 import cv2
 
 from perception_node import Node, NodeError
-from gaze_targets import candidates_at, events_from, frame_heads, heads_by_frame, layer_content, sample_of, target_for, tracks_of
+from gaze_targets import (candidates_at, events_from, face_id, frame_heads, heads_by_frame, layer_content, sample_of,
+                          target_for, tracks_of)
+import heatmaps
 from models import DINOV2_ID, DINOV2_LICENCE, GAZELLE_ID, GAZELLE_LICENCE, WEIGHTS, GazeModel
 
 
@@ -69,15 +75,20 @@ with Node() as node:
 
     results = {face: [None] * len(track["samples"]) for face, track in face_tracks.items()}
     model_s, t_all = 0.0, time.time()
-    for index, frame in frames_at(video, heads):
-        height, width = frame.shape[:2]
-        tick = time.time()
-        predictions = model.predict(frame, frame_heads(heads[index], width, height, scale))
-        model_s += time.time() - tick
-        for (face, j, _), (heat, inout) in zip(heads[index], predictions):
-            t = face_tracks[face]["samples"][j]["t"]
-            candidates = candidates_at(face, face_tracks[face]["shot"], t, face_tracks, width, height, scale)
-            results[face][j] = sample_of(t, heat, inout, *target_for(heat, inout, candidates, width, height))
+    with heatmaps.Writer(node.path("heatmaps", "gaze_heatmaps.parquet")) as raw:
+        for index, frame in frames_at(video, heads):
+            height, width = frame.shape[:2]
+            tick = time.time()
+            predictions = model.predict(frame, frame_heads(heads[index], width, height, scale))
+            model_s += time.time() - tick
+            for (face, j, _), (heat, inout) in zip(heads[index], predictions):
+                t = face_tracks[face]["samples"][j]["t"]
+                candidates = candidates_at(face, face_tracks[face]["shot"], t, face_tracks, width, height, scale)
+                results[face][j] = sample_of(t, heat, inout, *target_for(heat, inout, candidates, width, height))
+                try:
+                    raw.add(face_id(face), j, t, heat, inout)
+                except ValueError as e:
+                    raise NodeError("internal", f"Gaze-LLE's output for face:{face} at t={t}: {e}") from None
     tracks = [{"face_track": face, "samples": samples} for face, samples in results.items()]
     events = events_from(tracks)
     total_s = round(time.time() - t_all, 1)
@@ -86,7 +97,8 @@ with Node() as node:
         "layer": "gaze", "schema_version": "0.1.0",
         "producer": node.producer(timings={"load_s": load_s, "model_s": round(model_s, 1), "total_s": total_s},
                                   device=str(model.device)),
-        **layer_content(faces["sample_fps"], tracks, events)})
+        **layer_content(faces["sample_fps"], tracks, events),
+        "raw": {"heatmaps": {"file": heatmaps.FILE, "format": "parquet", "description": heatmaps.DESCRIPTION}}})
     samples = [s for tr in tracks for s in tr["samples"]]
     node.usage(frames=len(heads), heads=len(samples), events=len(events),
                targets={"face": sum(isinstance(s["target"], int) for s in samples), "out": sum(s["target"] == "out" for s in samples),
