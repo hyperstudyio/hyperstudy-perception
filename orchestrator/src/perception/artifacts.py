@@ -217,6 +217,9 @@ class Side:
 # together a coarse picture of where the people and things in each frame are, beyond the gaze layer's one peak per
 # head, so they count as frames. Not faces: no face image, landmarks or box, only the face track ids and times the gaze
 # layer (which holds no kind) has too.
+# The shots scores are PySceneDetect's per-frame numbers for how much the picture changed from the frame before (mean
+# hue, saturation, luma and edge differences, their weighted mean and its ratio to its neighbours'): a handful of
+# scalars a frame, from which no picture, face or person can be recovered, only when and how much it changes. No kind.
 # The transcript tokens are Parakeet's subword tokens with their times and confidences: the words the transcript layer
 # holds, split finer, so they count as transcript, as the layer does. Not audio: the confidences say how sure the model
 # was of each token, a number per token, no sound.
@@ -225,6 +228,7 @@ SIDE_FILES: dict[str, Side] = {
     "faces_mesh": Side("faces", ("faces",)),
     "faces_embeddings": Side("faces", ("faces", "embeddings")),
     "gaze_heatmaps": Side("gaze", ("frames",), "parquet"),
+    "shots_scores": Side("shots", (), "parquet"),
     "transcript_tokens": Side("transcript", ("transcript",), "parquet"),
 }
 # the faces layer's fields that point at one of its side files, as {"file": "layers/<name>.json", ...} or null. They
