@@ -220,3 +220,44 @@ def test_the_detector_writes_the_same_bytes_twice(cuts_clip, tmp_path):
     shot_scores.detect(cuts_clip, 3.0, tmp_path / "a.parquet")
     shot_scores.detect(cuts_clip, 3.0, tmp_path / "b.parquet")
     assert (tmp_path / "a.parquet").read_bytes() == (tmp_path / "b.parquet").read_bytes()
+
+
+@pytest.fixture(scope="module")
+def vfr_clip(tmp_path_factory):
+    """8 s at a variable frame rate (each frame 1/60, 1/30 or 1/20 s), its colour changing every 14 or 15 frames: more
+    often than min_scene_len lets the detector cut, so the frames between cuts are counted from uneven times."""
+    path = tmp_path_factory.mktemp("vfr") / "vfr.mp4"
+    rng = np.random.default_rng(0)
+    with av.open(str(path), "w") as out:
+        v = out.add_stream("libx264", rate=30)
+        v.width, v.height, v.pix_fmt = W, H, "yuv420p"
+        v.codec_context.time_base = v.time_base = Fraction(1, 90000)
+        pts = 0
+        for i in range(240):
+            img = np.zeros((H, W, 3), np.uint8)
+            img[:] = COLOURS[(i // 15) % 4 if (i // 15) % 2 else (i // 14) % 4]
+            img[:, (4 * i) % W:(4 * i) % W + 4] = 0
+            frame = av.VideoFrame.from_ndarray(img, format="rgb24")
+            frame.pts, frame.time_base = pts, Fraction(1, 90000)
+            pts += int(rng.choice([1500, 3000, 4500]))
+            out.mux(v.encode(frame))
+        out.mux(v.encode())
+    return path
+
+
+def test_on_variable_frame_rate_video_the_stored_scores_give_scenedetects_cuts_at_any_threshold(vfr_clip, tmp_path):
+    scenedetect = pytest.importorskip("scenedetect", reason="envs/core has PySceneDetect; the CI node tests do not")
+    pq()
+    shot_scores.detect(vfr_clip, 3.0, tmp_path / "s.parquet")
+    columns, stored = shot_scores.read(tmp_path / "s.parquet")
+    steps = {round(b - a, 4) for a, b in zip(columns["t"], columns["t"][1:])}
+    assert steps == {0.0167, 0.0333, 0.05}   # the frame times are uneven
+    counts = set()
+    for threshold in (1.5, 2.5, 3.0, 5.0, 8.0):
+        plain = scenedetect.detect(str(vfr_clip), scenedetect.AdaptiveDetector(adaptive_threshold=threshold))
+        found = cuts(columns["t"], columns["content_val"], columns["adaptive_ratio"], stored, threshold)
+        assert [columns["t"][k] for k in found] == [s.seconds for s, _ in plain[1:]], threshold
+        counts.add(len(found))
+    assert len(counts) > 1   # the thresholds tell cuts apart
+    every = cuts(columns["t"], columns["content_val"], columns["adaptive_ratio"], {**stored, "min_scene_len": 1})
+    assert len(every) > len(cuts(columns["t"], columns["content_val"], columns["adaptive_ratio"], stored))   # it binds
