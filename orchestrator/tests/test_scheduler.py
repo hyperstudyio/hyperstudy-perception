@@ -1109,13 +1109,15 @@ def test_a_refined_layers_pointer_at_a_side_file_no_writer_of_it_wrote_is_not_ex
         export.bundle(coord, run_id, tmp_path / "bundle")
 
 
-def gaze_bundle(tmp_path, damage, file) -> Path:
-    """An exported gaze bundle after `damage(path of file)`, with the manifest's checksums updated."""
+def gaze_bundle(tmp_path, damage, file, graph=None) -> Path:
+    """An exported gaze bundle (or `graph(video)`'s) after `damage(path of file)`, with the manifest's checksums
+    updated."""
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
     coord = coordinator(tmp_path)
-    run_id, _ = run(coord, gaze_graph(video))
+    run_id, status = run(coord, (graph or gaze_graph)(video))
+    assert status == "succeeded", coord._tasks(run_id)
     out = export.bundle(coord, run_id, tmp_path / "bundle")
     damage(out / file)
     manifest = json.loads((out / "manifest.json").read_text())
@@ -1168,6 +1170,48 @@ def test_validate_without_pyarrow_says_it_skipped_the_parquet_content_check(tmp_
     (out / "manifest.json").write_text(json.dumps(manifest))
     result = subprocess.run(bare, capture_output=True, text=True)
     assert result.returncode == 1 and "gaze_heatmaps.parquet: not Parquet" in result.stdout, result.stdout
+
+
+def transcript_graph(video: Path) -> dict:
+    return {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+            "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}},
+                      {"id": "asr", "uses": "test.transcript@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+
+
+TOKENS, TRANSCRIPT = "layers/transcript_tokens.parquet", "layers/transcript.json"
+
+
+def _validate(out: Path):
+    return subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
+                          capture_output=True, text=True)
+
+
+def test_the_transcript_tokens_go_into_the_bundle_and_index_its_words(tmp_path):
+    out = gaze_bundle(tmp_path, lambda p: None, TOKENS, graph=transcript_graph)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert [f["file"] for f in manifest["layers"]["transcript"]["side_files"]] == [TOKENS]
+    assert (out / TOKENS).read_bytes() == (NODES / "transcript" / "transcript_tokens.parquet").read_bytes()
+    result = _validate(out)
+    assert result.returncode == 0 and "note:" not in result.stdout, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("damage, problem", [
+    # a refiner that dropped a word but kept asr's tokens: the last word's tokens index past the layer's words
+    (_with(lambda d: d["words"].pop()), "row 4's word 2 is not one of the layer's 2 words (1 rows)"),
+    (_with(lambda d: d["words"][1].update(end=0.8)),
+     "does not match the layer's words: 1 words with no token or another start or end, e.g. word 1: its tokens span "
+     "[0.48, 0.72], the layer's word [0.48, 0.8]"),
+    # a word inserted before the others: every word's index is off by one
+    (_with(lambda d: d["words"].insert(0, {"w": "Oh", "start": 0.0, "end": 0.08, "voice": None})),
+     "does not match the layer's words: 4 words"),
+    # a word without times is the schema's to report, not a crash in the words check
+    (_with(lambda d: d["words"][0].pop("start")), "transcript: $.words[0]: 'start' is a required property"),
+])
+def test_validate_reports_tokens_that_do_not_index_the_layers_words(tmp_path, damage, problem):
+    out = gaze_bundle(tmp_path, damage, TRANSCRIPT, graph=transcript_graph)
+    result = _validate(out)
+    assert result.returncode == 1 and "Traceback" not in result.stderr, result.stdout + result.stderr
+    assert "INVALID" in result.stdout and problem in result.stdout, result.stdout
 
 
 @pytest.mark.parametrize("backend", ["NativeBackend", "SelfBackend"])

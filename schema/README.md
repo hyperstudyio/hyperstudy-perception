@@ -36,7 +36,9 @@ as float32, its sentence, and the index of the layer word it is part of; one row
 10 KB for a two-minute clip). Its kind is `transcript`, as the layer's.
 `pipeline/bundle/validate.py` checks a bundle directory against them, plus cross-references the schema cannot
 express (every id a layer points at exists; faces_detail, faces_mesh and faces_embeddings each hold a sample for each
-of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples).
+of the faces layer's samples, at the same times; gaze_heatmaps holds a row for each of the gaze layer's samples;
+transcript_tokens' word column indexes the transcript layer's words in order, each word spanning its first token's
+start to its last token's end).
 
 The embeddings are identity data: a pipeline step that reads them on another machine needs the graph policy's
 `allow_upload` and the run's consent to name `embeddings`. Like the faces layer, they come from InsightFace's ArcFace
@@ -68,8 +70,8 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    for its content rather than its source: say why in the comment there.
 2. **Describe it** in `bundle-0.1.schema.json`: a JSON one as a schema at `#/$defs/side/<name>`, which the orchestrator
    validates every output against; a Parquet one as its columns at `#/$defs/parquet/<name>` (name, Arrow type as
-   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, which
-   validate.py then checks). A test fails while a registered side file is not described, or a described one is not
+   pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, or
+   `per_word: true` when its `word` column indexes a transcript layer's words, which validate.py then checks). A test fails while a registered side file is not described, or a described one is not
    registered.
 3. **Write it** from the node: declare an output of type `bundle.<name>@0.1` in its manifest, write the file
    (`node.write_json`, or `node.path` and your Parquet writer), and put the `raw` pointer in the layer. Bump the node's
