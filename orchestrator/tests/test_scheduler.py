@@ -944,7 +944,7 @@ def test_voice_embeddings_are_identity_data_but_the_turns_are_not():
     assert Backend.sends(remote, turns) == ["transcript"]
 
 
-FULL_SAMPLE ={"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
+FULL_SAMPLE = {"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
 
 
 @pytest.mark.parametrize("sample", [{"t": 1.0},                                                 # no fields but t
