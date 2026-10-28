@@ -92,9 +92,11 @@ def access(token: str, repo: str, revision: str) -> tuple[str, str | None]:
         return "not-granted", None
     if status == 401:
         return "unknown", "Hugging Face refused the key"
-    if status == 404:
-        return "unknown", f"Hugging Face has no revision {revision} of {repo}"
-    message = headers.get("x-error-message")
+    code, message = headers.get("x-error-code"), headers.get("x-error-message")
+    missing = {"RepoNotFound": f"Hugging Face has no repo {repo}", "RevisionNotFound": f"Hugging Face has no revision {revision} of {repo}",
+               "EntryNotFound": f"Hugging Face has no .gitattributes at revision {revision} of {repo}"}
+    if status == 404 and code in missing:
+        return "unknown", missing[code]
     return "unknown", f"Hugging Face could not be checked (HTTP {status}{f': {message}' if message else ''})"
 
 
