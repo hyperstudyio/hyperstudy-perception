@@ -121,9 +121,11 @@ class Backend(ABC):
         """What makes a result this node's wherever it was made: the cache key's `runner`. One rule for every backend
         (decided 2026-10-28): the code that runs, the runner that runs it, its accelerator and the platform, and nothing
         that names the machine or the backend. A result made on one machine is reused on any other of the same kind (a
-        lab server's on a RunPod pod, or on the same server added under a second name), and a store's results stay valid
-        in another coordinator's; where a result was made is in its usage instead (`ran_on`, which the coordinator
-        records).
+        lab server's on a RunPod pod, or on the same server added under a second name), and a store made by a
+        coordinator on another machine can be imported, as long as that coordinator's copy of the pipeline lists its
+        files (a checkout, or the package's RELEASE.json; the staged copy cloud/skypilot/launch.sh sends has neither,
+        so its keys are unlisted ones and match no other machine's). Where a result was made is in its usage instead
+        (`ran_on`, which the coordinator records).
 
         The code is the files remote.code_files lists, hashed by path and content: the files git tracks in the node's
         directory, a script it shares with another node, its uv project with its lock, and the node SDK (installed
