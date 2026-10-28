@@ -1,5 +1,5 @@
 """Wearers, cross-shot identities and the objects layer (linking.py), without the models or the API.
-Run: uv run --no-project --with pytest --with numpy --with av==16.1.0 --with pillow --with-editable ./sdk pytest -q nodes/vision/objects"""
+Run: uv run --no-project --with pytest --with numpy --with av==17.1.0 --with pillow --with-editable ./sdk pytest -q nodes/vision/objects"""
 
 import numpy as np
 import pytest

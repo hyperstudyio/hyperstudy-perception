@@ -1,5 +1,5 @@
 """The object node's shot frames (shot_frames.py): the frames `ffmpeg -ss -t -i -vf fps` chose, read with PyAV.
-Run: uv run --no-project --with pytest --with numpy --with av==16.1.0 --with pillow --with-editable ./sdk pytest -q nodes/vision/objects"""
+Run: uv run --no-project --with pytest --with numpy --with av==17.1.0 --with pillow --with-editable ./sdk pytest -q nodes/vision/objects"""
 
 from fractions import Fraction
 

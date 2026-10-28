@@ -1,6 +1,6 @@
 """What the object node checks before it spends: the memory a shot's SAM 3 session needs, the room the name
 classification's reply has, and replies cut short (budget.py, haiku.py). Without the models or the API.
-Run: uv run --no-project --with pytest --with numpy --with av==16.1.0 --with pillow --with-editable ./sdk pytest -q nodes/vision/objects"""
+Run: uv run --no-project --with pytest --with numpy --with av==17.1.0 --with pillow --with-editable ./sdk pytest -q nodes/vision/objects"""
 
 import json
 from types import SimpleNamespace
