@@ -1,11 +1,12 @@
 id: test.faces
 version: 1.0.0
-description: Writes a bundle faces layer and its detail and mesh side files, as vision.face-track does (export tests)
+description: Writes a bundle faces layer and its detail, mesh and embeddings side files, as vision.face-track does (export tests)
 inputs: {video: video.v1}
-outputs: {faces: bundle.faces@0.1, detail: bundle.faces_detail@0.1, mesh: bundle.faces_mesh@0.1}
+outputs: {faces: bundle.faces@0.1, detail: bundle.faces_detail@0.1, mesh: bundle.faces_mesh@0.1, embeddings: bundle.faces_embeddings@0.1}
 config:
   detail_file: {type: string, default: layers/faces_detail.json, description: "what the faces layer's detail.file says"}
   mesh_file: {type: string, default: layers/faces_mesh.json, description: "what the faces layer's mesh.file says"}
+  embeddings_file: {type: string, default: layers/faces_embeddings.json, description: "what the faces layer's embeddings.file says"}
 runners:
   - {kind: self, entry: node.py}
 models:

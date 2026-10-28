@@ -288,7 +288,7 @@ def test_setup_syncs_a_native_nodes_environment_from_its_lock_then_runs_its_prep
     uv = tmp_path / "uv"
     uv.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n[ -e {tmp_path}/sync-fails ] && [ "$1" = sync ] && {{ echo "lock out of date" >&2; exit 2; }}\nexit 0\n')
     uv.chmod(0o755)
-    m = Registry.load(Path(__file__).resolve().parents[2] / "nodes").get("vision.face-track@1.2.0")
+    m = Registry.load(Path(__file__).resolve().parents[2] / "nodes").get("vision.face-track@1.3.0")
     runner = next(r for r in m.runners if r.kind == "native")
     steps = setup.setup_node(m, runner, uv=str(uv))
     assert [(s.what, s.ok) for s in steps] == [("environment", True), ("models", True)]

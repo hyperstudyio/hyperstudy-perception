@@ -775,9 +775,9 @@ def faces_graph(video: Path, **config) -> dict:
 
 
 def test_a_layers_side_files_go_into_the_bundle_with_it(tmp_path):
-    """face-track's detail and mesh outputs become layers/faces_detail.json and layers/faces_mesh.json, listed under the
-    faces layer's side_files, which is where the annotator looks for the files the layer's detail.file and mesh.file
-    name (and the only bundle files it reads by path)."""
+    """face-track's detail, mesh and embeddings outputs become layers/faces_detail.json, layers/faces_mesh.json and
+    layers/faces_embeddings.json, listed under the faces layer's side_files, which is where the annotator looks for the
+    files the layer's detail.file, mesh.file and embeddings.file name (and the only bundle files it reads by path)."""
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
@@ -788,13 +788,18 @@ def test_a_layers_side_files_go_into_the_bundle_with_it(tmp_path):
     manifest = json.loads((out / "manifest.json").read_text())
     outputs = json.loads(coord._tasks(run_id)["faces"]["outputs"])
     detail, mesh = out / "layers" / "faces_detail.json", out / "layers" / "faces_mesh.json"
+    embeddings = out / "layers" / "faces_embeddings.json"
     assert detail.read_bytes() == Path(outputs["detail"]["path"]).read_bytes()
     assert mesh.read_bytes() == Path(outputs["mesh"]["path"]).read_bytes()
+    assert embeddings.read_bytes() == Path(outputs["embeddings"]["path"]).read_bytes()
     assert manifest["layers"]["faces"]["side_files"] == [
         {"file": "layers/faces_detail.json", "sha256": artifacts.sha256_file(detail), "bytes": detail.stat().st_size},
+        {"file": "layers/faces_embeddings.json", "sha256": artifacts.sha256_file(embeddings),
+         "bytes": embeddings.stat().st_size},
         {"file": "layers/faces_mesh.json", "sha256": artifacts.sha256_file(mesh), "bytes": mesh.stat().st_size}]
     layer = json.loads((out / "layers" / "faces.json").read_text())
     assert layer["mesh"] == {"file": "layers/faces_mesh.json"} and layer["detail"]["file"] == "layers/faces_detail.json"
+    assert layer["embeddings"] == {"file": "layers/faces_embeddings.json"}
     assert "side_files" not in manifest["layers"]["shots"]
     validate = Path(__file__).resolve().parents[2] / "pipeline" / "bundle" / "validate.py"
     result = subprocess.run(["uv", "run", "--project", str(validate.parent), "python", str(validate), str(out)],
@@ -802,7 +807,7 @@ def test_a_layers_side_files_go_into_the_bundle_with_it(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("pointer", ["detail", "mesh"])
+@pytest.mark.parametrize("pointer", ["detail", "mesh", "embeddings"])
 def test_a_layer_pointing_at_a_side_file_its_node_did_not_write_is_not_exported(tmp_path, pointer):
     from perception import export
     video = tmp_path / "clip.mp4"
@@ -850,6 +855,42 @@ def test_the_faces_mesh_type_checks_its_shape(tmp_path, doc, ok):
     assert kind.kinds == ("faces",)
 
 
+EMB_SAMPLE = {"t": 1.0, "v": [-0.5] * 512}
+EMB = {"model": "ArcFace", "dims": 512, "normalised": False}
+
+
+@pytest.mark.parametrize("doc, ok", [
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE, EMB_SAMPLE | {"t": 1.125}]}}, True),
+    (EMB | {"tracks": {}}, True),                                                          # no tracks
+    (EMB | {"normalised": True, "tracks": {"face:3": [EMB_SAMPLE]}}, True),
+    (EMB | {"tracks": {"3": [EMB_SAMPLE]}}, False),                                       # not a face track id
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE | {"v": [0.1] * 511}]}}, False),            # a value short
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE | {"v": [0.1] * 513}]}}, False),            # a value over
+    (EMB | {"tracks": {"face:3": [EMB_SAMPLE | {"v": ["0.1"] * 512}]}}, False),        # not numbers
+    (EMB | {"dims": 128, "tracks": {"face:3": [EMB_SAMPLE | {"v": [0.1] * 128}]}}, False),   # another model
+    (EMB | {"tracks": {"face:3": [{"t": 1.0}]}}, False),                                # no v
+    ({"model": "ArcFace", "dims": 512, "tracks": {}}, False),                          # normalisation unstated
+    ({"dims": 512, "normalised": False, "tracks": {}}, False),                           # model unnamed
+])
+def test_the_faces_embeddings_type_checks_its_shape(tmp_path, doc, ok):
+    kind = artifacts.get("bundle.faces_embeddings@0.1")
+    path = tmp_path / "faces_embeddings.json"
+    path.write_text(json.dumps(doc))
+    assert (kind.validate(path) == []) is ok, kind.validate(path)
+    assert kind.side_of == "faces" and kind.layer is None and kind.bundle_file == "layers/faces_embeddings.json"
+
+
+def test_the_faces_embeddings_are_identity_data_and_need_consent_for_embeddings_to_leave_the_machine():
+    """A step that reads the embeddings on another machine sends them there: the policy's allow_upload and the run's
+    consent must name embeddings, not only faces."""
+    from perception.backends.base import Backend
+    kind = artifacts.get("bundle.faces_embeddings@0.1")
+    assert "embeddings" in kind.kinds and set(kind.kinds) == {"faces", "embeddings"}
+    remote = type("Remote", (), {"remote": True})()
+    reader = type("Manifest", (), {"inputs": {"embeddings": "bundle.faces_embeddings@0.1"}})()
+    assert Backend.sends(remote, reader) == ["embeddings", "faces"]
+
+
 FULL_SAMPLE = {"t": 1.0, "lmk": [0.0] * 136, "au": [0.1], "emo": [1.0], "va": [0, 0], "head": [0, 0, 0], "gaze": [0, 0]}
 
 
@@ -890,7 +931,7 @@ def _with(change):
     return damage
 
 
-DETAIL, MESH = "layers/faces_detail.json", "layers/faces_mesh.json"
+DETAIL, MESH, EMBEDDINGS = "layers/faces_detail.json", "layers/faces_mesh.json", "layers/faces_embeddings.json"
 
 
 @pytest.mark.parametrize("file, damage, problem", [
@@ -904,6 +945,15 @@ DETAIL, MESH = "layers/faces_detail.json", "layers/faces_mesh.json"
     (MESH, _with(lambda d: d["tracks"]["face:0"][1].update(t=0.25)), "faces_mesh.json does not match the layer's track samples"),
     ("layers/faces.json", _with(lambda d: d.update(mesh={"file": "layers/faces_other.json"})),
      "mesh.file layers/faces_other.json is not one of the layer's side files"),
+    (EMBEDDINGS, lambda p: p.write_text("{not json"), "faces_embeddings.json: not JSON"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"]["face:0"][0].update(v=[0.25] * 511)), "faces_embeddings.json: $.tracks"),
+    (EMBEDDINGS, _with(lambda d: d.update(dims=511)), "faces_embeddings.json: $.dims"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"].pop("face:0")), "faces_embeddings.json does not match the layer's track samples"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"]["face:0"][1].update(t=0.25)),
+     "faces_embeddings.json does not match the layer's track samples"),
+    (EMBEDDINGS, _with(lambda d: d["tracks"]["face:0"].pop()), "faces_embeddings.json does not match the layer's track samples"),
+    ("layers/faces.json", _with(lambda d: d.update(embeddings={"file": "layers/faces_other.json"})),
+     "embeddings.file layers/faces_other.json is not one of the layer's side files"),
 ])
 def test_validate_reports_a_bad_side_file_as_a_problem(tmp_path, file, damage, problem):
     result = bundle_validation(tmp_path, damage, file)

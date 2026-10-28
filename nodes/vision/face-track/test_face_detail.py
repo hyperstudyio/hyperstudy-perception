@@ -5,7 +5,8 @@ import math
 
 import pytest
 
-from face_detail import (ANGLES, EMOTIONS, FIELDS, FILE, LANDMARKS, MESH, MESH_FILE, MESH_LAYOUT, OTHER, au_names,
+from face_detail import (ANGLES, EMBEDDING, EMBEDDING_DIGITS, EMBEDDINGS_FILE, EMOTIONS, FIELDS, FILE, LANDMARKS, MESH,
+                         MESH_FILE, MESH_LAYOUT, OTHER, au_names, embedding_sample, embeddings_file, embeddings_reference,
                          mesh_file, mesh_reference, mesh_sample, missing_columns, reference, side_file)
 
 AUS = ["AU12", "AU01", "AU25"]
@@ -17,13 +18,20 @@ def row(seed: float) -> dict:
     r |= {c: 0.1 + seed / 10 + i / 300 for i, c in enumerate(AUS + EMOTIONS)}
     r |= {c: -0.2 + seed / 100 + i / 3000 for i, c in enumerate(OTHER)}
     r |= {c: 300 + seed + i / 3 for i, c in enumerate(MESH)}
-    r |= {"FaceRectX": 1.0, "mesh_z_0": 5.0, "Identity_1": 0.3}
+    r |= {c: (-1) ** i * (seed + i / 7) / 100 for i, c in enumerate(EMBEDDING)}
+    r |= {"FaceRectX": 1.0, "mesh_z_0": 5.0, "Identity": "Person_0"}
     return r
 
 
 def mesh_values(r: dict) -> list[float]:
     """What the node passes for a sample's mesh: the row's MESH columns in that order."""
     return [r[c] for c in MESH]
+
+
+def embedding(r: dict) -> list[float]:
+    """What the node passes for a sample's embedding: the row's EMBEDDING columns in that order (tracking.py's
+    detection_rows reads them so, as float32)."""
+    return [r[c] for c in EMBEDDING]
 
 
 def test_samples_hold_each_field_rounded_as_the_bake_off_rounded_it():
@@ -71,8 +79,8 @@ def test_a_value_that_is_not_a_number_is_an_error_not_invalid_json(bad):
 def test_missing_columns_names_each_one():
     r = row(0)
     assert missing_columns(r) == []
-    del r["x_3"], r["Roll"], r["mesh_y_477"]
-    assert missing_columns(r) == ["x_3", "Roll", "mesh_y_477"]
+    del r["x_3"], r["Roll"], r["mesh_y_477"], r["Identity_512"]
+    assert missing_columns(r) == ["x_3", "Roll", "mesh_y_477", "Identity_512"]
     assert missing_columns([c for c in row(0) if not c.startswith("AU")]) == ["AU*"]
 
 
@@ -122,3 +130,57 @@ def test_a_mesh_value_that_is_not_a_number_is_an_error_not_invalid_json(bad):
 def test_a_mesh_sample_needs_every_value():
     with pytest.raises(ValueError, match="955 mesh values"):
         mesh_sample(1.5, mesh_values(row(0))[:-1])
+
+
+def test_the_embedding_columns_are_py_feats_512_identity_columns_in_order():
+    assert EMBEDDING == [f"Identity_{i}" for i in range(1, 513)]
+
+
+def test_an_embeddings_sample_keeps_each_value_to_four_decimal_places():
+    values = embedding(row(1))
+    values[:3] = [0.123456, -1.98767, 2.00004]
+    s = embedding_sample(0.25, values)
+    assert list(s) == ["t", "v"] and s["t"] == 0.25 and EMBEDDING_DIGITS == 4
+    assert s["v"][:3] == [0.1235, -1.9877, 2.0] and s["v"] == [round(float(v), 4) for v in values]
+    assert len(s["v"]) == 512 and all(type(v) is float for v in s["v"])
+
+
+def test_an_embeddings_sample_takes_numpy_float32_values_as_the_node_passes_them():
+    np = pytest.importorskip("numpy")
+    values = np.array(embedding(row(2)), dtype=np.float32)
+    s = embedding_sample(1.0, values.tolist())
+    assert s["v"] == [round(float(v), 4) for v in values]
+    json.loads(json.dumps(s, allow_nan=False))
+
+
+def test_embeddings_tracks_are_keyed_by_the_faces_layer_ids_in_its_order():
+    tracks = [[(0.0, embedding(row(0))), (0.125, embedding(row(1)))], [(2.0, embedding(row(2)))]]
+    doc = embeddings_file(tracks)
+    assert list(doc["tracks"]) == ["face:0", "face:1"]
+    assert [[s["t"] for s in samples] for samples in doc["tracks"].values()] == [[0.0, 0.125], [2.0]]
+    r = row(2)
+    v = doc["tracks"]["face:1"][0]["v"]
+    assert v[0] == round(r["Identity_1"], 4) and v[-1] == round(r["Identity_512"], 4)
+
+
+def test_the_embeddings_document_names_its_model_dims_and_normalisation_and_the_layer_points_at_it():
+    doc = embeddings_file([[(0.0, embedding(row(0)))]])
+    assert list(doc) == ["model", "dims", "normalised", "tracks"]
+    assert doc["model"] == "ArcFace (InsightFace, via py-feat Detectorv2)" and doc["dims"] == 512
+    assert doc["normalised"] is False      # py-feat returns ArcFace's raw output
+    assert embeddings_reference() == {"file": EMBEDDINGS_FILE} and EMBEDDINGS_FILE == "layers/faces_embeddings.json"
+    json.loads(json.dumps(doc, allow_nan=False))
+    assert embeddings_file([])["tracks"] == {}
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_an_embedding_value_that_is_not_a_number_is_an_error_not_invalid_json(bad):
+    values = embedding(row(0))
+    values[6] = bad
+    with pytest.raises(ValueError, match="Identity_7"):
+        embeddings_file([[(1.5, values)]])
+
+
+def test_an_embeddings_sample_needs_every_value():
+    with pytest.raises(ValueError, match="511 embedding values"):
+        embedding_sample(1.5, embedding(row(0))[:-1])

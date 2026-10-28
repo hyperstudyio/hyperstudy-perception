@@ -3,7 +3,8 @@
 1. manifest.json against the root of schema/bundle-<major.minor>.schema.json, and each layer file against
    #/$defs/layer/<name>.
 2. Every layer and side file exists, and its sha256 and size match the manifest. A side file with a schema
-   (#/$defs/side/<name>) validates against it, and a layer's detail.file and mesh.file are among its side files.
+   (#/$defs/side/<name>) validates against it, and a layer's detail.file, mesh.file and embeddings.file are among
+   its side files.
 3. References: every id a layer points at (a shot, utterance, voice, face track, person, body, hand, object track
    or object identity) is defined by the layer that owns that kind of id. JSON Schema checks an id's shape, not
    whether it exists.
@@ -71,15 +72,15 @@ def crop_paths(node, key=None):
 
 
 # a layer's fields that point at one of its side files ({"file": ...} or null)
-SIDE_POINTERS = ("detail", "mesh")
+SIDE_POINTERS = ("detail", "mesh", "embeddings")
 # side files keyed by face track ids, a sample for each of the faces layer's samples
-PER_SAMPLE_SIDES = ("faces_detail", "faces_mesh")
+PER_SAMPLE_SIDES = ("faces_detail", "faces_mesh", "faces_embeddings")
 
 
 def side_file_problems(bundle, name, entry, doc, schema, registry):
-    """A layer's detail.file and mesh.file must be among its side files; a side file with a schema
-    (#/$defs/side/<name>) must validate, and one keyed by face track ids (faces_detail, faces_mesh) must hold the
-    layer's tracks, a sample for each sample."""
+    """A layer's detail.file, mesh.file and embeddings.file must be among its side files; a side file with a schema
+    (#/$defs/side/<name>) must validate, and one keyed by face track ids (faces_detail, faces_mesh,
+    faces_embeddings) must hold the layer's tracks, a sample for each sample."""
     problems, listed = [], {f["file"] for f in entry.get("side_files", [])}
     for pointer in SIDE_POINTERS:
         referenced = doc[pointer].get("file") if isinstance(doc.get(pointer), dict) else None
