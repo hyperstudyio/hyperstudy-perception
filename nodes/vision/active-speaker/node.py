@@ -22,7 +22,7 @@ from scipy.optimize import linear_sum_assignment
 from perception_node import Node, NodeError
 from asd_crops import AUDIO_RATE, FPS, audio_span, plans_for
 from models import LRASD_ID, LRASD_LICENCE, WEIGHTS, ASDModel, mfcc
-from speaker_links import layer_content
+from speaker_links import layer_content, require_diarized
 from video25 import face_clips
 
 
@@ -40,11 +40,9 @@ with Node() as node:
     min_share = node.config["voice_link_min_share"]
     video, shots, faces = node.input("video"), node.input_json("shots"), node.input_json("faces")
     transcript = node.input_json("transcript")
-    if transcript["words"] and not any(w.get("voice") for w in transcript["words"]):
-        raise NodeError("input", "no word of the transcript has a voice: speakers reads the diarized transcript "
-                                 "(the diarize node's), not asr's")
     samples = read_samples(node.input("audio"))
     try:
+        require_diarized(transcript)
         plans = plans_for(faces["tracks"], {s["id"]: s for s in shots["shots"]})
     except ValueError as e:
         raise NodeError("input", str(e)) from None

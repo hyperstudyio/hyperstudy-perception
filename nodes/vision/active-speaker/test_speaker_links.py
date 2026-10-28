@@ -6,8 +6,8 @@ from itertools import permutations
 import numpy as np
 import pytest
 
-from speaker_links import (candidates, layer_content, link_voices, mean_score, speaking_intervals, utterance_row,
-                           votes_for)
+from speaker_links import (candidates, layer_content, link_voices, mean_score, require_diarized, speaking_intervals,
+                           utterance_row, votes_for)
 
 
 def best_assignment(cost):
@@ -111,6 +111,20 @@ def test_the_layer_lists_every_utterance_and_the_voice_links_with_their_trust():
     assert content["voice_links"] == [{"voice": "voice:A", "person": p, "word_share": 1.0, "trusted": True},
                                       {"voice": "voice:B", "person": q, "word_share": 0.33, "trusted": False}]
     assert [r["predicted"]["kind"] for r in content["utterances"]] == ["face", "offscreen"]   # B's link is under 0.4
+
+
+def test_a_diarized_transcript_without_any_voice_is_read_and_asrs_is_refused():
+    """diarize leaves every voice empty when pyannote finds no turns (its test_no_turns_leave_every_voice_empty): that
+    is a valid input, whose utterances are off-screen voices. asr's transcript, which never had voices, is refused."""
+    words = [word(0.1, 0.2, None), word(0.3, 0.4, None)]
+    silent = {"producer": {"stage": "transcribe+diarize"}, "voices": [], "words": words,
+              "utterances": [{"id": "utt:0", "start": 0.1, "end": 0.4, "shot": "shot:0", "voice": None}]}
+    require_diarized(silent)
+    faces = {"people": [{"id": "person:P"}], "tracks": [{"person": "person:P"}]}
+    content = layer_content(silent, faces, [scored(0, [-1.0] * 25, person="person:P")], 0.3, best_assignment)
+    assert content["voice_links"] == [] and content["utterances"][0]["predicted"] == {"kind": "offscreen", "voice": None, "via": "none"}
+    with pytest.raises(ValueError, match="stage 'transcribe', not a diarization"):
+        require_diarized({**silent, "producer": {"stage": "transcribe"}})
 
 
 @pytest.mark.parametrize("share,trusted", [(0.3, True), (0.29, False)])

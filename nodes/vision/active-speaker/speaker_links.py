@@ -22,6 +22,16 @@ import numpy as np
 MAX_WORD_SECONDS = 2.0   # longer "words" are alignment errors, and vote for no one
 
 
+def require_diarized(transcript: dict) -> None:
+    """ValueError unless the transcript is a diarized one (its producer's stage names diarization, as the diarize
+    node's "transcribe+diarize" does): asr's has no voices to link. A diarized transcript whose words all have no
+    voice (pyannote found no speech turns) is valid: its utterances are then off-screen voices."""
+    stage = (transcript.get("producer") or {}).get("stage") or ""
+    if "diarize" not in stage:
+        raise ValueError(f"the transcript comes from stage {stage!r}, not a diarization: speakers reads the diarize "
+                         "node's transcript, whose voices it links to people")
+
+
 def mean_score(track: dict, start: float, end: float) -> float | None:
     """A scored track's mean per-frame score over [start, end] (the frames from start's to end's, inclusive), or None
     where the track has no frames then."""
