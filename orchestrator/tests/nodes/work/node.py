@@ -14,7 +14,9 @@ with Node() as node:
     c = node.config
     record = Path(c["record_dir"])
     record.mkdir(parents=True, exist_ok=True)
-    (record / f"{node.request['node']}-{node.request['attempt']}-{os.getpid()}").write_text(json.dumps({"start": time.time()}))
+    # and which SDK it imported (an environment shared by many versions of the code must not hold its own: test_remote)
+    (record / f"{node.request['node']}-{node.request['attempt']}-{os.getpid()}").write_text(json.dumps(
+        {"start": time.time(), "sdk": __import__("perception_node").__file__}))
     total = c["add"]
     for name in sorted(node.request["inputs"]):
         p = node.input(name)

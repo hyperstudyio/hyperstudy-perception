@@ -528,7 +528,7 @@ def cmd_hosts(args):
                 raise HostError(f"run {busy['run_id']} has {busy['node_id']} on {args.name}: cancel or finish it first "
                                 f"(perception cancel {busy['run_id']})")
             hosts.remove(args.name)
-        elif args.action == "clean":   # what stays on the host between runs: inputs, outputs, code (never a running attempt's folder)
+        elif args.action == "clean":   # what stays on the host between runs: inputs, outputs, code, environments (never a running attempt's folder)
             host = hosts.load().get(args.name)
             if host is None:
                 raise HostError(f"no host {args.name!r}")
@@ -543,7 +543,7 @@ def cmd_hosts(args):
                       f'for f in {root}/work/*/*/*/pid; do [ -f "$f" ] || continue; p=$(cat "$f"); '
                       f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then '
                       f'echo "a node is running there" >&2; exit 4; fi; done\n'
-                      f"chmod -R u+w {root}/objects 2>/dev/null; rm -rf {root}/objects {root}/code {root}/work")
+                      f"chmod -R u+w {root}/objects 2>/dev/null; rm -rf {root}/objects {root}/code {root}/envs {root}/work")
             out = subprocess.run([*host.ssh(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
             if out.returncode:
                 raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")
