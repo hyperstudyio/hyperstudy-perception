@@ -120,6 +120,19 @@ def test_a_file_git_does_not_track_counts_here_but_is_never_sent(repo):
     assert mine.identity(m, r["cuda"]) == sent
 
 
+def test_only_the_repositorys_own_ignore_rules_leave_a_file_out(repo):
+    """A file left out only by this checkout's .git/info/exclude (or the user's global excludes) still runs here, so it
+    still counts: what is code here must not depend on one person's git settings."""
+    m, r = node(repo)
+    mine = here()
+    (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("helper.py\n")
+    (repo / "nodes" / "x" / "helper.py").write_text("SCALE = 1\n")
+    before = mine.identity(m, r["cuda"])
+    (repo / "nodes" / "x" / "helper.py").write_text("SCALE = 2\n")
+    assert mine.identity(m, r["cuda"]) != before
+
+
 def test_a_node_outside_the_repository_has_an_identity_here_from_its_files(repo, tmp_path):
     outside = tmp_path / "mine" / "x"
     outside.mkdir(parents=True)

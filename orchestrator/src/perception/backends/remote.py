@@ -33,7 +33,7 @@ def code_files(manifest: Manifest, runner: Runner, untracked: bool = False) -> l
     """What a node needs on the other machine, relative to the repository: the files git tracks in its directory, its
     uv project and the node SDK. Only tracked files: a working copy can hold images, crops and bundles that must not
     leave the machine (as launch.sh stages for whole-graph cloud runs). `untracked`: also the files there git neither
-    tracks nor ignores, which a node running on this machine runs with (its identity: Backend.identity)."""
+    tracks nor the repository ignores, which a node running on this machine runs with (its identity: Backend.identity)."""
     if not manifest.directory.resolve().is_relative_to(REPO):
         raise RuntimeError(f"{manifest.ref} is not in the pipeline's repository ({manifest.directory}): only files it tracks are sent")
     dirs = [manifest.directory.resolve().relative_to(REPO).as_posix(), "sdk"]
@@ -45,7 +45,9 @@ def code_files(manifest: Manifest, runner: Runner, untracked: bool = False) -> l
     if release():
         files = files_in(dirs)   # a copy shipped with an app: every file in it was tracked where it was made
     else:
-        others = ["--others", "--exclude-standard"] if untracked else []
+        # ignored by the repository's own .gitignore files only: not one checkout's .git/info/exclude or a user's global
+        # excludes, which would leave a file that runs here out of what is code here
+        others = ["--others", "--exclude-per-directory=.gitignore"] if untracked else []
         out = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--cached", *others, "--", *dirs], capture_output=True, text=True)
         if out.returncode:
             raise RuntimeError(f"{REPO} is not a git checkout: only files git tracks are sent to other machines ({out.stderr.strip()})")
