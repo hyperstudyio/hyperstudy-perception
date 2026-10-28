@@ -14,7 +14,8 @@ config:
 runners:
   - {kind: native, env: envs/audio, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
   # NVIDIA NeMo's Parakeet (node_nemo.py), the same layer and side file. PyPI's torch 2.12 wheels for Linux are built
-  # for CUDA 13 (envs/asr-cuda): an NVIDIA driver >= 580. 4 GB: the 0.6B model in float32 (2.4 GB) and its work
+  # for CUDA 13 (envs/asr-cuda): an NVIDIA driver >= 580. 4 GB: the 0.6B model in float32 (2.4 GB) and its work, an
+  # estimate (not yet run on a GPU); attention over the whole recording grows with the square of its length
   - {kind: native, env: envs/asr-cuda, entry: node_nemo.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 4}
   - {kind: native, env: envs/asr-cuda, entry: node_nemo.py, accelerator: cpu, platforms: [linux/amd64]}
 resources: {cpu_cores: 2, memory_gb: 6, gpu: shared}

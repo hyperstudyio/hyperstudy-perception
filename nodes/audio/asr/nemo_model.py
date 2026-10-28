@@ -13,7 +13,9 @@ confidences from alignments, and fails doing it (IndexError in compute_confidenc
 they only make the same decoding faster, through cuda-bindings.
 
 Float32 throughout, TF32 off (PyTorch 2.12 lets cuDNN's convolutions and LSTMs use TF32 by default), deterministic
-algorithms on: the same audio gives the same tokens and confidences, bit for bit, on the same GPU.
+algorithms on, so the same audio gives the same tokens and confidences, bit for bit, on the same device: measured on a
+CPU (two runs on OOO, the same bytes); not yet on a GPU. The whole recording is one attention window, as on MLX: its
+memory grows with the square of the length (not yet measured on a GPU; an hour is about 45,000 encoder frames).
 """
 
 from __future__ import annotations

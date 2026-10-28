@@ -6,8 +6,9 @@ words (raw_tokens.to_words), the utterances (utterances.py), the side file (raw_
 NeMo computed the confidences (raw_tokens.NEMO_CONFIDENCE).
 
 The two runners' transcripts differ where their log-mel features do: parakeet-mlx 0.5.3 takes each STFT bin's
-magnitude as |re| + |im| (audio.get_logmel), NeMo, which the model was trained with, as sqrt(re^2 + im^2). Given
-NeMo's features, parakeet-mlx decodes NeMo's tokens (measured on OOO; the PR that added this runner gives the numbers).
+magnitude as |re| + |im| (audio.get_logmel), NeMo, which the model was trained with, as sqrt(re^2 + im^2). On OOO
+(NeMo on a CPU) 311 of the MLX runner's 330 words come out the same, in 6 places they differ; given NeMo's features,
+parakeet-mlx decodes NeMo's 669 tokens exactly, with confidences within 6e-4 for 95% of them.
 """
 
 import os
