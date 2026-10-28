@@ -126,7 +126,8 @@ To add one (a step's raw output: diarization turns, per-frame class scores, word
    pyarrow prints it, description; `per_sample: true` when it holds a row per sample of the layer's tracks, or
    `of_samples: true` when each row names one of them, which validate.py then checks; `track: {column, field}` when
    its track column is not `face` holding the tracks' `face`, as bodies_scores' `body` holds their `id`, with
-   `tracks` when the layer's list of tracks is not `tracks`, `none` the column's value in a row that names no sample,
+   `tracks` when the layer's list of tracks is not `tracks`, `none` the column's value in a row that names no sample
+   (whose `sample` must be -1),
    and `covers: {field: value}` when every sample of the tracks with that value must be named by exactly one row (as
    hands_detections' rows name the hands layer's detector samples); `per_word: true`
    when its `word` column indexes a transcript layer's words, which validate.py then checks). A test fails while a registered side file is not described, or a described one is not

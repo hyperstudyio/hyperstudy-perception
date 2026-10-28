@@ -239,7 +239,7 @@ def track_hands(frames: list[tuple[float, str, list[dict]]]) -> list[dict]:
                     open_free.setdefault(shot, []).append(track)
                     tracks.append(track)
                 used.add(id(track))
-            # hand: the frame's hand this sample is (hand_detections.side_rows names a detection's sample by it)
+            # hand: the frame's hand this sample is (hand_detections.Detections.columns names a detection's sample by it)
             track["samples"].append({"t": t, "box": hand["box"], "kpts": hand["kpts"], "hand": hand})
     return tracks
 

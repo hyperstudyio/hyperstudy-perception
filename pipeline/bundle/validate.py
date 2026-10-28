@@ -154,10 +154,10 @@ def parquet_problems(name, file, path, spec, doc, notes):
     one time in the layer's track order; for one with of_samples: true, every row (track, sample, t) one of the layer's
     samples. The spec's track says where: {column, field} the track column and the layer field it holds (by default
     face), tracks the layer's list of tracks (by default tracks; the hands layer's is hands), none the column's value in
-    a row that names no sample (of_samples; hands_detections' rows of detections that became no hand), and covers
-    {field: value}: every sample of the tracks with that value is named by exactly one row, and no other sample is
-    (hands_detections: the hands with box_source detector). For a per-word one (per_word: true) word_problems. Without
-    pyarrow, the content check is skipped and a note says so."""
+    a row that names no sample, whose sample must be -1 (of_samples; hands_detections' rows of detections that became
+    no hand), and covers {field: value}: every sample of the tracks with that value is named by exactly one row, and no
+    other sample is (hands_detections: the hands with box_source detector). For a per-word one (per_word: true)
+    word_problems. Without pyarrow, the content check is skipped and a note says so."""
     data = path.read_bytes()
     if len(data) < 12 or data[:4] != PARQUET_MAGIC or data[-4:] != PARQUET_MAGIC:
         return [f"{name}: {file}: not Parquet (no PAR1 magic at both ends)"]
@@ -207,6 +207,11 @@ def parquet_problems(name, file, path, spec, doc, notes):
     if not spec.get("per_sample"):   # of_samples: every row names one of the layer's samples (track, sample, t)
         known = set(expected)
         named = [(i, row) for i, row in enumerate(rows) if "none" not in where or row[0] != where["none"]]
+        # a row that names no track names no sample either: its sample is -1
+        stray = [i for i, row in enumerate(rows) if "none" in where and row[0] == where["none"] and row[1] != -1]
+        if stray:
+            problems.append(f"{name}: {file}: {len(stray)} rows name no {column} but sample {rows[stray[0]][1]}, not -1, "
+                            f"first row {stray[0]}")
         unknown = [i for i, row in named if row not in known]
         if unknown:
             problems.append(f"{name}: {file}: {len(unknown)} rows name no sample of the layer, first row {unknown[0]}")

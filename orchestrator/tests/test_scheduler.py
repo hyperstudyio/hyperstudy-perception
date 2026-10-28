@@ -1273,9 +1273,9 @@ def test_validate_checks_the_bodies_side_files_rows_against_the_layers_samples(t
     assert all(p in result.stdout for p in problems), result.stdout
 
 
-def hands_bundle(tmp_path, damage=lambda p: None) -> Path:
+def hands_bundle(tmp_path, damage=lambda p: None, file="layers/hands.json") -> Path:
     """An exported hands bundle (test.hands: a wrist hand, a detector hand and the detections side file) after
-    `damage(path of the hands layer)`, with the manifest's checksums updated."""
+    `damage(path of file)`, with the manifest's checksums updated."""
     from perception import export
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
@@ -1286,7 +1286,7 @@ def hands_bundle(tmp_path, damage=lambda p: None) -> Path:
     run_id, status = run(coord, doc)
     assert status == "succeeded", coord._tasks(run_id)
     out = export.bundle(coord, run_id, tmp_path / "bundle")
-    damage(out / "layers/hands.json")
+    damage(out / file)
     manifest = json.loads((out / "manifest.json").read_text())
     for entry in manifest["layers"].values():
         for f in [entry, *entry.get("side_files", [])]:
@@ -1298,8 +1298,14 @@ def hands_bundle(tmp_path, damage=lambda p: None) -> Path:
 NOT_ONE = "hands_detections.parquet: 1 samples of the layer's {'box_source': 'detector'} hands are not named by exactly one row"
 
 
+HANDS_SIDE = "layers/hands_detections.parquet"
+
+
 @pytest.mark.parametrize("damage, problem", [
     (lambda p: None, None),
+    # a row of no hand (hand empty) naming sample 3: rows of no sample have sample -1
+    ((HANDS_SIDE, lambda p: p.write_bytes((NODES / "hands" / "hands_detections_none_sample.parquet").read_bytes())),
+     "hands_detections.parquet: 1 rows name no hand but sample 3, not -1, first row 3"),
     # hand:1 loses its second sample: a row names a sample the layer lacks
     (_with(lambda d: d["hands"][1]["samples"].pop()), "hands_detections.parquet: 1 rows name no sample of the layer, first row 2"),
     # the wrist hand said to come from the detector: no row gives its samples
@@ -1314,9 +1320,11 @@ NOT_ONE = "hands_detections.parquet: 1 samples of the layer's {'box_source': 'de
 def test_validate_checks_the_hands_detections_name_exactly_the_layers_detector_samples(tmp_path, damage, problem):
     """A hands_detections row names a sample of the hands layer's hands (track column hand, the layer's list hands) or
     none (hand empty), and every sample of a detector hand is named by exactly one row, no other sample (covers)."""
-    out = hands_bundle(tmp_path, damage)
+    file, damage = damage if isinstance(damage, tuple) else ("layers/hands.json", damage)
+    out = hands_bundle(tmp_path, damage, file)
     assert sorted(p.name for p in (out / "layers").iterdir()) == ["hands.json", "hands_detections.parquet", "shots.json"]
-    assert (out / "layers/hands_detections.parquet").read_bytes() == (NODES / "hands" / "hands_detections.parquet").read_bytes()
+    if file != HANDS_SIDE:
+        assert (out / HANDS_SIDE).read_bytes() == (NODES / "hands" / "hands_detections.parquet").read_bytes()
     result = subprocess.run(["uv", "run", "--project", str(VALIDATE.parent), "python", str(VALIDATE), str(out)],
                             capture_output=True, text=True)
     assert "Traceback" not in result.stderr and "note:" not in result.stdout, result.stdout + result.stderr
