@@ -559,7 +559,7 @@ def test_on_another_machine_every_weight_a_node_uses_counts_as_a_download(tmp_pa
 
 def test_a_weight_only_another_runner_loads_is_no_download(tmp_path, host, monkeypatch):
     """A model declared for other runners' environments (audio.asr: the MLX weights, the NeMo ones) is not the placed
-    runner's: never a download for it, here or on another machine."""
+    runner's: never a download for it, here or on another machine, and not among the models the plan says it uses."""
     import perception.plan as plan_mod
     from perception.manifests import ModelRef
     monkeypatch.setattr(plan_mod, "hf_cached", lambda source: False)         # nothing on this machine
@@ -569,9 +569,10 @@ def test_a_weight_only_another_runner_loads_is_no_download(tmp_path, host, monke
     monkeypatch.setattr(m, "models", [ModelRef(id="w", source="hf://org/weights", licence_mode="commercial-ok"),
                                       ModelRef(id="other", source="hf://org/other", licence_mode="commercial-ok",
                                                envs=["envs/another-runners"])])
-    assert [d.id for d in make_plan(coord, graph, allow_uploads=True).nodes[0].downloads] == ["w"]
+    there = make_plan(coord, graph, allow_uploads=True)
+    assert [d.id for d in there.nodes[0].downloads] == ["w"] and [x.id for x in there.nodes[0].models] == ["w"]
     here = make_plan(coord, compile_graph(video_graph(tmp_path), coord.registry), allow_uploads=True)
-    assert [d.id for d in here.nodes[0].downloads] == ["w"]
+    assert [d.id for d in here.nodes[0].downloads] == ["w"] and [x.id for x in here.nodes[0].models] == ["w"]
 
 
 def test_code_saved_while_it_is_being_sent_is_not_filed_under_the_old_hash(tmp_path, host, rec, monkeypatch):

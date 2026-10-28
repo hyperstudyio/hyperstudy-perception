@@ -2,6 +2,7 @@
 checked against the tag list, and the prosody layer with the captions in."""
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -119,3 +120,38 @@ def test_the_raw_file_has_the_schemas_columns_the_request_and_is_the_same_bytes_
     assert t[1]["utt"] == "utt:1" and t[1]["snippet_start"] == 7.36 and t[1]["tagger_finish_reason"] == ""
     assert sc.parse_caption(t[0]["caption_arguments"])["tags"] == ["calm"]   # the layer's caption, from the file
     assert json.loads(t[0]["caption_usage"])["prompt_tokens_details"]["audio_tokens"] == 31
+
+
+class FailingClient:
+    """An OpenAI client stand-in whose call number `fail_on` (counting from 0) raises, as a reply the node refuses, or
+    a 429 the SDK gave up on, does; it counts the calls made, each one billed."""
+
+    def __init__(self, fail_on: int):
+        self.fail_on, self.calls, self.lock = fail_on, 0, threading.Lock()
+        self.chat = self.completions = self
+
+    def create(self, **request):
+        with self.lock:
+            k = self.calls
+            self.calls += 1
+        if k == self.fail_on:
+            raise RuntimeError(f"call {k} failed")
+        return {"call": k, **request}
+
+
+def test_a_failed_call_stops_the_calls_not_yet_started():
+    """No call starts once one has failed (those running finish, their spend reported): a failed run, and the retry of
+    a transient failure, does not pay for every other utterance first. pool.map cancelled the calls not yet started
+    only when its in-order results reached the failure, and its workers went on starting queued calls until then (here
+    all 50). One worker, so the count is exact."""
+    n, k = 50, 3
+    client = FailingClient(k)
+    with pytest.raises(RuntimeError, match="call 3 failed"):
+        sc.fan_out(lambda i: client.chat.completions.create(utterance=i), range(n), workers=1)
+    assert client.calls == k + 1 < n
+
+
+def test_the_fan_out_keeps_the_items_order():
+    client = FailingClient(-1)
+    got = sc.fan_out(lambda i: client.chat.completions.create(utterance=i)["utterance"], range(50), workers=4)
+    assert got == list(range(50)) and client.calls == 50

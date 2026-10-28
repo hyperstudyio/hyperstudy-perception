@@ -157,12 +157,13 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         np.optional_needs = sorted(node.optional_upstream)
         np.place = placement.label if placement else None
         # weights not in this machine's cache; on another machine its cache is not known, so every weight is a download
-        # there (a run never downloads silently: --allow-downloads). Only the ones the chosen runner loads
+        # there (a run never downloads silently: --allow-downloads). Only the ones the chosen runner loads, which are also
+        # the models the plan says the node uses
         loaded = m.models_for(placement.runner) if placement else m.models
         np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
-        np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(m.models)
+        np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(loaded)
         np.settings = settings(m, node.config)
         if placement:
             inputs = {}

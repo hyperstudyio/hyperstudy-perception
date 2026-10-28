@@ -185,3 +185,24 @@ def request() -> dict:
     return {"model": GPT_MODEL, "tagger": TAGGER, "context_s": CONTEXT_S, "rate": RATE, "prices_usd_per_mtok": PRICES,
             "tags": STYLE_TAGS, "tag_notes": TAG_GLOSSARY, "instructions": GPT_INSTRUCTIONS,
             "tagger_instructions": TAGGER_INSTRUCTIONS, "caption_schema": CAPTION_SCHEMA, "tag_schema": TAG_SCHEMA}
+
+
+def fan_out(fn, items, workers: int = WORKERS) -> list:
+    """[fn(x) for x in items] on `workers` threads, in order, raising the first failure. At most `workers` calls are
+    submitted at a time, the next only once one has finished, so after a failure no call starts: those running finish
+    (each billed call reports its spend itself) and the failure is raised. pool.map submitted every call at once and
+    cancelled the queued ones only when its in-order results reached the failure: until every earlier call had
+    finished, its workers went on starting queued calls (behind one slow early call, all of them), so a failed run, and
+    its node retry, could pay for every call."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    items = list(items)
+    out, running, nxt = [None] * len(items), {}, 0
+    with ThreadPoolExecutor(workers) as pool:   # on a failure, leaving it waits only for the calls already running
+        while nxt < len(items) or running:
+            while nxt < len(items) and len(running) < workers:
+                running[pool.submit(fn, items[nxt])] = nxt
+                nxt += 1
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for f in done:
+                out[running.pop(f)] = f.result()
+    return out
