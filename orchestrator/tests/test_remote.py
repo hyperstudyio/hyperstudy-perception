@@ -116,7 +116,8 @@ def test_a_node_placed_on_a_host_runs_there_and_its_outputs_come_back(tmp_path, 
     assert shots["layer"] == "shots"
     root = host / "home" / ".cache" / "hp"
     sent = [p for p in (root / "objects").rglob("*") if p.is_file() and not p.name.startswith(".")]
-    assert [p.name for p in sent] == ["data"]                   # by content; the node got it under its own name
+    # by content: the video (the node got it under its own name), and the two outputs it made, kept for nodes after it
+    assert [p.name for p in sent] == ["data", "data", "data"]
     assert not any((root / "work").iterdir())                     # the attempt's folder there is gone, and the run's
     code = [p.relative_to(root / "code").parts[1:] for p in (root / "code").rglob("*.py")]
     assert ("orchestrator", "tests", "nodes", "layer", "node.py") in code
@@ -134,7 +135,7 @@ def test_the_same_input_and_code_are_sent_to_a_host_once(tmp_path, host, rec):
     assert "copying" not in log_of(coord, run_id, "a")   # the second run found both there
 
 
-def test_a_node_reads_inputs_another_remote_node_made_through_this_machine(tmp_path, host, rec):
+def test_a_node_reads_what_another_node_made_on_the_same_host_without_it_being_sent_again(tmp_path, host, rec):
     coord = coordinator(tmp_path, host)
     doc = work_graph(tmp_path, rec)
     doc["nodes"].append({"id": "b", "uses": "test.work@1.0.0", "inputs": {"a": "$nodes.a.out"}, "place": "ssh-lab:cpu",
@@ -143,6 +144,8 @@ def test_a_node_reads_inputs_another_remote_node_made_through_this_machine(tmp_p
     assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
     out = json.loads(Path(json.loads(coord._tasks(run_id)["b"]["outputs"])["out"]["path"]).read_text())
     assert out == {"value": 11}
+    assert "[remote] kept out on lab" in log_of(coord, run_id, "a")
+    assert "copying" not in log_of(coord, run_id, "b")   # a's output was already there, and so was the code
 
 
 def test_a_node_that_fails_on_a_host_fails_with_its_own_error(tmp_path, host, rec):
@@ -374,7 +377,197 @@ def test_two_nodes_sending_the_same_input_to_a_host_at_once_both_run(tmp_path, h
     assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
     objects = host / "home" / ".cache" / "hp" / "objects"
     stored = [p for p in objects.iterdir() if not p.name.startswith(".incoming")]
-    assert len(stored) == 1 and sorted(x.name for x in stored[0].iterdir()) == [".complete", "data"]
+    # the input, and the one output the four nodes all made (the same content)
+    assert len(stored) == 2 and all(sorted(x.name for x in p.iterdir()) == [".complete", "data"] for p in stored)
+
+
+# --- outputs kept on the host -------------------------------------------------------------------------------------
+
+def finished(tmp_path, host, make, inputs=None, node="n"):
+    """A driver for an attempt whose node has finished on the fake host: `make(out)` writes its out/ there, brought
+    back here as fetch brings it (rsync -rlt), with a response naming each entry of out/ as an output. What fetch
+    leaves for keep_outputs."""
+    from perception.remote_driver import Driver
+    root = host / "home" / ".cache" / "hp"
+    there = root / "work" / "r1" / node / "1" / "out"
+    there.mkdir(parents=True)
+    (root / "objects").mkdir(exist_ok=True)
+    make(there)
+    local = tmp_path / f"attempt-{node}"
+    local.mkdir()
+    subprocess.run(["rsync", "-rlt", f"{there}/", f"{local}/out/"], check=True)
+    outputs = {p.name: {"path": p.name} for p in sorted(there.iterdir())}
+    (local / "response.json.part").write_text(json.dumps({"ok": True, "outputs": outputs}))
+    (local / "request.json").write_text(json.dumps({"run": "r1", "node": node, "attempt": 1, "inputs": inputs or {}}))
+    spec = {"dest": "lab", "root": str(root), "host": "lab", "ssh": lab(host).ssh(), "code": "c", "lost_after_s": 600}
+    return Driver(local / "request.json", spec), root, there
+
+
+def outputs_of_every_shape(out: Path):
+    """A layer, and a tree whose files sort one way as paths and another as strings ("a/b" before "a-c" as paths, after
+    it as strings), with a hidden file, a name with spaces and accents, an empty folder and a larger file."""
+    (out / "layer.json").write_bytes(b'{"layer": "faces"}')
+    tree = out / "assets"
+    for rel, data in {"a/b": b"1", "a-c": b"2", ".hidden": b"3", "crops/ü é.jpg": b"4", "crops/deep/x": b"5",
+                      "big.bin": os.urandom(3 << 20)}.items():
+        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tree / rel).write_bytes(data)
+    (tree / "empty").mkdir()
+
+
+def test_outputs_kept_on_a_host_are_filed_under_the_hash_this_machines_store_gives_them(tmp_path, host, capsys):
+    from perception import artifacts
+    driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
+    files = [f for f, _ in artifacts.tree_files(driver.local / "out" / "assets")]
+    assert files.index("a/b") < files.index("a-c") and sorted(files) != files   # sorted as paths, not as strings
+    driver.keep_outputs()
+    assert "[remote] kept assets, layer.json on lab" in capsys.readouterr().out
+    store = Store(tmp_path / "store")
+    published = {name: store.publish(driver.local / "out" / name, "x") for name in ("layer.json", "assets")}
+    for name, a in published.items():
+        kept = root / "objects" / a.hash
+        assert sorted(p.name for p in kept.iterdir()) == [".complete", "data"], name
+        assert artifacts.content_hash(kept / "data") == a.hash, name            # the same bytes there as in the store
+        assert (there / name).exists()                  # a copy: nothing the node's processes still hold is kept
+        assert (kept / "data").stat().st_mode & 0o222 == 0                     # read-only, as inputs are
+    assert sorted(p.name for p in (root / "objects").iterdir()) == sorted(a.hash for a in published.values())
+    # the next node on that host is not sent them: they are its inputs, by the store's hashes
+    inputs = {name: {"type": "x", "sha256": a.hash, "path": str(a.path)} for name, a in published.items()}
+    after, _, _ = finished(tmp_path, host, lambda out: None, inputs=inputs, node="m")
+    sent = after.send_inputs()
+    assert "copying" not in capsys.readouterr().out
+    assert sent["assets"]["object"] == f"{root}/objects/{published['assets'].hash}/data"
+    # another node that makes the same layer: it is there already, and said so
+    again, _, _ = finished(tmp_path, host, lambda out: (out / "layer.json").write_bytes(b'{"layer": "faces"}'), node="k")
+    again.keep_outputs()
+    assert "[remote] layer.json: on lab already (the same content)" in capsys.readouterr().out
+
+
+def test_an_output_that_changed_on_the_host_after_it_came_back_is_not_kept(tmp_path, host, capsys):
+    driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
+    (there / "layer.json").write_bytes(b'{"layer": "other"}')   # a process the node left behind, still writing
+    (there / "assets" / "late.jpg").write_bytes(b"")            # a file more than came back
+    driver.keep_outputs()
+    out = capsys.readouterr().out
+    assert "layer.json is not kept on lab" in out and "assets is not kept on lab" in out and "[remote] kept" not in out
+    assert list((root / "objects").iterdir()) == []             # nothing filed, and nothing of this attempt's left
+
+
+def test_an_output_with_a_link_in_it_is_never_kept_and_no_link_is_followed(tmp_path, host, capsys):
+    from perception import artifacts
+    secret = host / "home" / "secret.txt"
+    secret.write_text("private")
+
+    def make(out):
+        outputs_of_every_shape(out)
+        (out / "linked.json").symlink_to(secret)                # an output that is a link
+    driver, root, there = finished(tmp_path, host, make)
+    (there / "assets" / "crops" / "b.jpg").symlink_to(secret)  # and one made in a tree after it came back
+    driver.keep_outputs()
+    assert "assets is not kept on lab" in capsys.readouterr().out
+    [kept] = (root / "objects").iterdir()                       # only the layer
+    assert kept.name == artifacts.sha256_file(driver.local / "out" / "layer.json")
+    assert secret.read_text() == "private" and (there / "linked.json").is_symlink()
+
+
+def test_what_a_process_the_node_left_or_a_hard_link_writes_later_never_reaches_a_kept_output(tmp_path, host):
+    """The node has exited, but a process it left (a worker, an ffmpeg child) still holds an output open for writing,
+    and another output is a hard link to a file outside out/: whatever is written through either after the output is
+    kept must not change it (it would be read under a hash its content no longer has), nor make that file read-only."""
+    from perception import artifacts
+    outside = host / "home" / "notes.txt"
+    outside.write_bytes(b"mine")
+    holder = {}
+
+    def make(out):
+        (out / "layer.json").write_bytes(b'{"layer": "faces"}')
+        holder["f"] = open(out / "layer.json", "r+b")           # held open, as by the process the node left
+        os.link(outside, out / "notes.json")                      # the same file as one outside out/
+    driver, root, there = finished(tmp_path, host, make)
+    driver.keep_outputs()
+    layer, notes = (artifacts.sha256_file(driver.local / "out" / n) for n in ("layer.json", "notes.json"))
+    holder["f"].write(b'{"layer": "later"}')
+    holder["f"].close()
+    with open(outside, "r+b") as f:
+        f.write(b"MINE")
+    for h in (layer, notes):
+        kept = root / "objects" / h / "data"
+        assert (kept.parent / ".complete").exists() and artifacts.sha256_file(kept) == h
+    assert outside.read_bytes() == b"MINE" and outside.stat().st_mode & 0o200   # still the user's own, writable
+
+
+def test_the_drivers_cleanup_running_while_the_host_still_keeps_an_output_never_publishes_part_of_it(tmp_path, host, monkeypatch):
+    """ssh dropped while the host was keeping an output: the driver gave up on it and removes this attempt's unfinished
+    uploads (discard_incoming, by its names: .incoming-<tag>-*) while the host's keep goes on. Its cleanup, run part way
+    just before the host publishes, must not leave an output with files missing filed under its whole hash, with
+    .complete. Keep stages in a folder of its own (.keeping-*) that the cleanup's names never match, so here it removes
+    nothing; staged under the attempt's names (as before), the layer was filed with no data."""
+    import perception.remote_driver as rd
+    from perception import artifacts
+    driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
+    # the driver's cleanup (its glob), having removed one file of each of this attempt's uploads when publish runs
+    cleanup = (f'for d in {root}/objects/.incoming-{driver.tag}-*; do [ -d "$d" ] || continue; chmod -R u+w "$d"; '
+               'f=$(find "$d" -type f ! -name .complete | head -n 1); [ -n "$f" ] && rm -f "$f"; done')
+    monkeypatch.setattr(rd, "PUBLISH", rd.PUBLISH.replace("publish() {", "real_publish() {", 1)
+                        + f'\npublish() {{\n  {cleanup}\n  real_publish "$@"\n}}')
+    driver.keep_outputs()
+    filed = [p for p in (root / "objects").iterdir() if not p.name.startswith(".")]
+    assert len(filed) == 2                                       # the layer and the tree, each whole, under its own hash
+    for p in filed:
+        assert (p / ".complete").exists() and artifacts.content_hash(p / "data") == p.name, p.name
+    assert list((root / "objects").glob(".keeping-*")) == []    # and nothing of the keep's own left
+
+
+def test_a_keep_a_host_never_finished_is_swept_after_a_day_and_one_under_way_is_left(tmp_path, host):
+    driver, root, there = finished(tmp_path, host, lambda out: (out / "layer.json").write_bytes(b"{}"))
+    old, new = root / "objects" / ".keeping-old", root / "objects" / ".keeping-new"
+    for d in (old, new):
+        (d / "obj" / "data").mkdir(parents=True)
+        (d / "obj" / "data" / "x").write_bytes(b"part")
+    (old / "obj" / "data" / "x").chmod(0o444)
+    for p in (old / "obj" / "data" / "x", old / "obj" / "data", old / "obj", old):
+        os.utime(p, (time.time() - 2 * 86400,) * 2)
+    driver.keep_outputs()
+    assert not old.exists() and new.exists()
+
+
+def test_an_output_the_host_could_not_keep_says_why(tmp_path, host, capsys):
+    driver, root, there = finished(tmp_path, host, lambda out: (out / "layer.json").write_bytes(b"{}"))
+    (root / "objects").chmod(0o500)                              # as a full disk would: nothing can be written there
+    try:
+        driver.keep_outputs()
+    finally:
+        (root / "objects").chmod(0o700)
+    assert "[remote] layer.json is not kept on lab (exit 1" in capsys.readouterr().out
+    assert list((root / "objects").iterdir()) == []
+
+
+def test_a_failed_node_or_a_cloud_machine_keeps_nothing(tmp_path, host):
+    driver, root, there = finished(tmp_path, host, outputs_of_every_shape)
+    (driver.local / "response.json.part").write_text(json.dumps({"ok": False, "outputs": {"layer.json": {"path": "layer.json"}}}))
+    driver.keep_outputs()
+    driver.spec["cloud"] = {"provider": "runpod"}               # deleted after the attempt: nothing to keep it for
+    (driver.local / "response.json.part").write_text(json.dumps({"ok": True, "outputs": {"layer.json": {"path": "layer.json"}}}))
+    driver.keep_outputs()
+    assert list((root / "objects").iterdir()) == [] and (there / "layer.json").exists()
+
+
+def test_a_host_without_the_output_kept_there_is_sent_it(tmp_path, host, rec):
+    """A host from before outputs were kept, or one `perception hosts clean` emptied: the next node there is sent it."""
+    coord = coordinator(tmp_path, host)
+    doc = work_graph(tmp_path, rec)
+    doc["nodes"].append({"id": "b", "uses": "test.work@1.0.0", "inputs": {"a": "$nodes.a.out"}, "place": "ssh-lab:cpu",
+                         "config": {"record_dir": rec, "add": 10}})
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    kept = host / "home" / ".cache" / "hp" / "objects" / json.loads(coord._tasks(run_id)["a"]["outputs"])["out"]["hash"]
+    subprocess.run(["chmod", "-R", "u+w", str(kept)], check=True)
+    subprocess.run(["rm", "-rf", str(kept)], check=True)
+    coord.store.db.execute("DELETE FROM cache WHERE key=?", (coord._tasks(run_id)["b"]["cache_key"],))   # b runs again; a is cached
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert coord._tasks(run_id)["a"]["state"] == "cached"
+    assert "[remote] copying a " in log_of(coord, run_id, "b")
 
 
 def test_a_node_that_replaces_its_out_folder_with_a_link_there_has_nothing_fetched(tmp_path, host, rec):
@@ -459,7 +652,8 @@ def test_a_linked_video_is_sent_as_its_content(tmp_path, host):
     doc["inputs"]["video"]["uri"] = str(link)
     run_id = start(coord, doc)
     assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "shots")
-    [stored] = (host / "home" / ".cache" / "hp" / "objects").glob("*/data")
+    sha = coord.store.source(link, "video.v1").hash
+    stored = host / "home" / ".cache" / "hp" / "objects" / sha / "data"
     assert not stored.is_symlink() and stored.read_bytes() == real.read_bytes()
     media = json.loads(Path(json.loads(coord._tasks(run_id)["shots"]["outputs"])["media"]["path"]).read_text())
     assert media["filename"] == "linked.mp4"               # the name it has here, as a local run gives it, not the target's
@@ -486,7 +680,7 @@ def test_a_host_unreachable_when_the_attempt_starts_is_waited_for(tmp_path, host
     assert coord._tasks(run_id)["a"]["attempt"] == 1 and "cannot be reached" in log_of(coord, run_id, "a")
 
 
-def test_inputs_kept_on_a_host_are_read_only_and_still_cleaned(tmp_path, host, monkeypatch, capsys):
+def test_inputs_and_outputs_kept_on_a_host_are_read_only_and_still_cleaned(tmp_path, host, monkeypatch, capsys):
     from perception.cli import main
     monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
     assert main(["hosts", "add", "lab", "lab"]) == 0
@@ -496,8 +690,9 @@ def test_inputs_kept_on_a_host_are_read_only_and_still_cleaned(tmp_path, host, m
     run_id = start(coord, video_graph(tmp_path, place="ssh-lab:cpu"))
     assert asyncio.run(coord.run(run_id)) == "succeeded"
     objects = host / "home" / ".cache" / "hyperstudy-perception" / "objects"
-    [stored] = objects.glob("*/data")
-    for path in (stored, stored.parent):                    # a node cannot change it through its link, as in the store
+    stored = list(objects.glob("*/data"))
+    assert len(stored) == 3                                 # the video, and the two outputs the node made there
+    for path in (*stored, *(p.parent for p in stored)):     # a node cannot change it through its link, as in the store
         assert path.stat().st_mode & 0o222 == 0, path
     assert main(["hosts", "clean", "lab"]) == 0
     assert not objects.exists()

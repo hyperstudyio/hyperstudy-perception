@@ -528,7 +528,7 @@ def cmd_hosts(args):
                 raise HostError(f"run {busy['run_id']} has {busy['node_id']} on {args.name}: cancel or finish it first "
                                 f"(perception cancel {busy['run_id']})")
             hosts.remove(args.name)
-        elif args.action == "clean":   # the inputs and code kept on the host between runs (never a running attempt's folder)
+        elif args.action == "clean":   # what stays on the host between runs: inputs, outputs, code (never a running attempt's folder)
             host = hosts.load().get(args.name)
             if host is None:
                 raise HostError(f"no host {args.name!r}")
@@ -802,7 +802,8 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
     rr.set_defaults(fn=cmd_rerun)
     h = sub.add_parser("hosts", help="lab servers nodes can run on, over SSH")
-    h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe"])
+    h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe"],
+                   help="clean: remove the inputs, the outputs of nodes that ran there and the code kept on a host")
     h.add_argument("name", nargs="?", help="probe: the ssh destination")
     h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias)")
     h.add_argument("--root", default=".cache/hyperstudy-perception", help="add: where on the host its files go (under its home if relative)")

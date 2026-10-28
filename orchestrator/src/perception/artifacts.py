@@ -344,12 +344,22 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def tree_files(path: Path) -> list[tuple[str, str]]:
+    """A directory's files in the order its hash takes them (sorted as paths), each as its relative path and sha256:
+    what sha256_tree hashes, and what a host checks an output it keeps against (remote_driver.keep_outputs)."""
+    return [(p.relative_to(path).as_posix(), sha256_file(p)) for p in sorted(x for x in path.rglob("*") if x.is_file())]
+
+
+def tree_hash(files: list[tuple[str, str]]) -> str:
+    h = hashlib.sha256()
+    for rel, sha in files:
+        h.update(rel.encode() + b"\0" + sha.encode() + b"\n")
+    return h.hexdigest()
+
+
 def sha256_tree(path: Path) -> str:
     """A directory's hash: over its sorted relative paths and their file hashes (so renames and edits both count)."""
-    h = hashlib.sha256()
-    for p in sorted(x for x in path.rglob("*") if x.is_file()):
-        h.update(str(p.relative_to(path).as_posix()).encode() + b"\0" + sha256_file(p).encode() + b"\n")
-    return h.hexdigest()
+    return tree_hash(tree_files(path))
 
 
 def special_files(path: Path) -> list[str]:

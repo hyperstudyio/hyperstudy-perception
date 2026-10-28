@@ -109,6 +109,10 @@ Not done:
   the coordinator's cancel, adoption and publication are unchanged. Sending inputs is an upload: the graph's
   allow_upload and the run's --allow-uploads apply. Checked with a stand-in ssh (tests/test_remote.py) and the real
   decode node through it: outputs byte-identical to a local run.
+  Since 2026-10-28 a node's outputs also stay on the host, filed with its inputs under the hashes this machine's store
+  gives them (`keep_outputs`, after the host checks its bytes against them), so the next node there is not sent them
+  again. Like the inputs, they stay in the host's private root between runs (face embeddings and transcripts among
+  them) until `perception hosts clean`.
 - **Windows.** Untested.
 
 ### Phase 2 progress (2026-10-23)

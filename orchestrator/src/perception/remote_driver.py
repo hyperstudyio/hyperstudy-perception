@@ -9,7 +9,9 @@
 3. Watches it every few seconds, appending its log to this attempt's log.txt. A host that cannot be reached is waited
    for (a laptop changes networks) for up to lost_after_s; after that the attempt ends without a response, which the
    coordinator treats as a crash (retried within the run's policy), and the host's watchdog ends the node.
-4. Brings out/ and response.json back into this attempt's folder, then removes the attempt's folder on the host.
+4. Brings out/ and response.json back into this attempt's folder, files each output the node wrote on the host as an
+   input is (objects/<sha256>, under the hash this machine's store gives it: keep_outputs), so a node after it there is
+   not sent it again, then removes the attempt's folder on the host.
 
 SIGTERM (the coordinator's cancel) stops the node on the host before the driver exits. Its output (stdout) is the
 attempt's log.txt.
@@ -89,6 +91,39 @@ class LaunchFailed(Exception):
 # nested into: GNU mv -T on Linux, perl's rename on a Mac (BSD mv has no -T and would move $1 into $2).
 PUBLISH = r"""publish() {
   mv -T "$1" "$2" 2>/dev/null || perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$1" "$2" 2>/dev/null || { chmod -R u+w "$1"; rm -rf "$1"; [ -e "$2/.complete" ]; }
+}"""
+
+# Keep an output where the node made it: entry $2 of out/ ($1), filed as an input is, at $3/$4 (objects/<its hash>)
+# with PUBLISH, and only if its bytes are the ones this machine hashed: each file's sha256 on stdin (sha256sum's format,
+# its paths under data/), and for a tree ($5: its number of files; "file" for a file) no file more and nothing that is
+# neither a file nor a folder (a link the node made). A copy, never the node's own files: a process the node left may
+# still hold one open for writing, and one may be a hard link to a file outside out/; writes through either must not
+# change what is filed under the hash (nor chmod make that file read-only). Copied into a folder of this process's own
+# (mktemp: .keeping-*, a name no driver knows), so nothing else can change it between the check and the publication: a
+# driver that lost touch with the host removes the attempt's uploads (discard_incoming) while this may still run, and
+# part of a tree removed then would otherwise be filed whole, with .complete. Never through a link: out/ and the entry
+# are refused if they are one, and cp -P copies a link as a link (then refused). Read-only once published, as inputs
+# are. A keep that never finished (the host restarted during it) is removed by the next one a day later, or by
+# `perception hosts clean`. 0: kept; 8: there already (an input, or another output with the same content); 7: nothing
+# to keep; 6: the copy is not what was hashed (written to since it came back): removed, and sent when a node there
+# reads it.
+KEEP = r"""keep() {
+  find "$3" -maxdepth 1 -name '.keeping-*' -mmin +1440 -exec chmod -R u+w {} \; -exec rm -rf {} \; 2>/dev/null
+  [ -e "$3/$4/.complete" ] && return 8
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -e "$1/$2" ] && [ ! -L "$1/$2" ] || return 7
+  k=$(mktemp -d "$3/.keeping-XXXXXX") || return 1
+  mkdir "$k/obj" && cat > "$k/sums" && cp -RP "$1/$2" "$k/obj/data" || { chmod -R u+w "$k"; rm -rf "$k"; return 1; }
+  if [ "$5" = file ]; then
+    [ -f "$k/obj/data" ] && [ ! -L "$k/obj/data" ]
+  else
+    [ -d "$k/obj/data" ] && [ ! -L "$k/obj/data" ] && [ -z "$(find "$k/obj/data" ! -type f ! -type d | head -n 1)" ] &&
+      [ $(find "$k/obj/data" -type f | wc -l) -eq "$5" ]
+  fi && (cd "$k/obj" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$k/sums"; else shasum -a 256 -c -s "$k/sums"; fi) ||
+    { chmod -R u+w "$k"; rm -rf "$k"; return 6; }
+  touch "$k/obj/.complete" && publish "$k/obj" "$3/$4" && chmod -R a-w "$3/$4"
+  done=$?
+  rm -rf "$k"
+  return $done
 }"""
 
 # The host's backstop for a node its driver lost (the laptop gone, a cancel that could not reach the host): every
@@ -393,7 +428,8 @@ echo $pid
     def fetch(self):
         """out/ and response.json, into this attempt's folder. No response there: the node crashed (none is written
         here either, and the coordinator sees a crash). The node has finished: a dropped connection is waited out, and
-        the heartbeat kept up, rather than its results lost."""
+        the heartbeat kept up, rather than its results lost. Its outputs then stay on the host (keep_outputs) before its
+        folder there is removed."""
         q = shlex.quote
         self.fetching = True
         with self.heartbeat():
@@ -404,8 +440,70 @@ echo $pid
                 self.patiently(self.rsync, f"{self.dest}:{self.attempt}/out/", f"{self.local}/out/")
             if "response.json" in listing:
                 self.patiently(self.rsync, f"{self.dest}:{self.attempt}/response.json", f"{self.local}/response.json.part")
+            if "out" in listing:
+                self.keep_outputs()
         # the run's folders too once empty (another node of the run may still be using them)
         self.patiently(self.sh, f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true")
+
+    def keep_outputs(self):
+        """Each output of a node that succeeded, filed on the host as an input is (objects/<sha256>/data, published in
+        one step: KEEP), so a node after it there finds it (send_inputs) and is not sent it again. Filed under the hash
+        this machine's store will give it, computed here from the copy just brought back with the store's own functions
+        (artifacts.sha256_file, artifacts.tree_files), and only once the host has checked that its bytes are the ones
+        hashed: a host needs no code of ours to hash a tree, and nothing there is filed under a hash its content does not
+        have. What is filed there is a copy, which nothing the node left running can write to. Only outputs at the top of out/ (where nodes write them), and none that holds a link or a special file
+        (the coordinator refuses those). Not on a cloud machine: it is deleted after the attempt. Whatever goes wrong
+        here only means an output is sent again when a node there reads it: the results are already here."""
+        from .artifacts import sha256_file, special_files, tree_files, tree_hash
+        from .scheduler import output_path
+        if self.spec.get("cloud"):
+            return
+        q, host = shlex.quote, self.spec["host"]
+        try:
+            response = json.loads((self.local / "response.json.part").read_text())
+        except (OSError, ValueError):
+            return
+        if not isinstance(response, dict) or response.get("ok") is not True or not isinstance(response.get("outputs"), dict):
+            return
+        kept, there = [], []
+        for name, entry in response["outputs"].items():
+            rel = entry.get("path") if isinstance(entry, dict) else None
+            # one plain name, as sha256sum's check format reads it (no newline or backslash, which it would escape)
+            if not isinstance(rel, str) or any(c in rel for c in "/\\\n\0"):
+                continue
+            try:
+                local, _ = output_path(self.local / "out", rel)
+                if local is None or special_files(local):
+                    continue
+                if local.is_dir():
+                    files = tree_files(local)
+                    if not files or any(c in f for f, _ in files for c in "\\\n"):
+                        continue
+                    h, count, sums = tree_hash(files), str(len(files)), "".join(f"{s}  data/{f}\n" for f, s in files).encode()
+                else:
+                    h = sha256_file(local)
+                    count, sums = "file", f"{h}  data\n".encode()
+            except (OSError, ValueError):   # unreadable here, or a name that is not text: sent again if read there
+                continue
+            try:
+                done = self.sh(f"{PUBLISH}\n{KEEP}\nkeep {q(self.attempt + '/out')} {q(rel)} {q(self.root + '/objects')} {h} {count}",
+                               check=False, data=sums)
+            except (Unreachable, subprocess.TimeoutExpired) as e:
+                say(f"could not keep the outputs on {host} ({e}): a node there that reads them is sent them")
+                break
+            if done.returncode == 0:
+                kept.append(name)
+            elif done.returncode == 8:
+                there.append(name)
+            elif done.returncode == 6:
+                say(f"{name} is not kept on {host}: what is there is not what came back here")
+            elif done.returncode != 7:   # a full disk, a folder it may not write: sent when a node there reads it
+                why = done.stderr.decode(errors="replace").strip()[-200:]
+                say(f"{name} is not kept on {host} (exit {done.returncode}{': ' + why if why else ''})")
+        if kept:
+            say(f"kept {', '.join(kept)} on {host}, for the nodes there that read them")
+        if there:
+            say(f"{', '.join(there)}: on {host} already (the same content)")
 
     def prepare(self):
         """What `perception setup` does for a node here, done on the host before it starts: its uv environment synced from
