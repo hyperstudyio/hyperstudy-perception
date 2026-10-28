@@ -230,12 +230,20 @@ def test_linking_merges_as_the_bake_offs_loop_did(seed):
     assert got == want and len(got) < 40   # and some tracks did link
 
 
-def test_linking_a_films_tracks_takes_seconds_not_hours():
-    """A family of a film's size (the bake-off's loop grew with the cube of it), and a large lookalike family, which
-    never links and needs no pair scores at all."""
+def test_linking_a_films_tracks_takes_seconds_not_hours(monkeypatch):
+    """A family of a film's size, and a large lookalike family, which never links. Counted, not timed: each pair of
+    tracks is scored once (the bake-off's loop also re-read every pair on every merge, cubic in the family's size: over
+    a minute for these 400 tracks), and a lookalike family scores none. The time limit is only a backstop, far above
+    what the counted work takes (well under a second here)."""
     import time
+    import linking
+    calls = []
+    scored = linking.pair_score
+    monkeypatch.setattr(linking, "pair_score", lambda *a, **k: calls.append(1) or scored(*a, **k))
     t0 = time.time()
     link_identities(chairs(400, 120, 0), CLASSES, set(), CFG)
+    assert len(calls) <= 400 * 399 // 2
+    calls.clear()
     lights = [track(f"obj:{k}", "tree", k // 10, [1.0, 1.5], box=(30 * (k % 10), 0, 20, 20), embedding=unit(1, 0)) for k in range(3000)]
-    assert len(link_identities(lights, CLASSES, set(), CFG)) == 3000
-    assert time.time() - t0 < 5
+    assert len(link_identities(lights, CLASSES, set(), CFG)) == 3000 and not calls
+    assert time.time() - t0 < 30
