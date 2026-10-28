@@ -31,11 +31,6 @@ WEIGHTS = {
 }
 COREML = ("CoreMLExecutionProvider", {"ModelFormat": "NeuralNetwork", "MLComputeUnits": "ALL"})
 CUDA = "CUDAExecutionProvider"
-# RTMDet-nano hand scores stay low on this footage (none above 0.4 on OOO apart from one 0.71 on a tiny graphic).
-# Contact sheets of 30 random OOO detections per score bin, judged by eye: 0.15-0.2 about 13/30 are hands (the rest
-# faces, necklaces, elbows), 0.2-0.25 about 17/30, >= 0.25 about 24/30. rtmlib's default 0.3 drops visible gesturing
-# hands that score 0.25-0.3, so 0.25 (bake-off, hands.py).
-RTMDET_SCORE = 0.25
 
 
 def weights(name: str):
@@ -69,14 +64,17 @@ class Hands:
         self.detect_s = self.pose_s = 0.0
 
     def detect(self, frame):
-        """[(box [x, y, w, h], score)], highest score first. rtmlib's RTMDet drops the scores, so its preprocess and
-        inference are called directly; its ONNX ends in its own NMS."""
+        """Every detection, [(box [x, y, w, h], score)], highest score first; hand_tracks.frame_hands applies the
+        score threshold (DETECTOR_SCORE), and the side file keeps them all. rtmlib's RTMDet drops the scores, so its
+        preprocess and inference are called directly; its ONNX ends in its own NMS (mmdeploy's), which returns boxes
+        scoring at least 0.05 and then one all-zero row, a placeholder so the output is never empty: that row is not
+        a detection. The values stay float32 (the ONNX's, scaled by a Python float), which the side file stores."""
         tick = time.perf_counter()
         image, ratio = self.det.preprocess(frame)
         dets = self.det.inference(image)[0][0]   # (N, 5): x1, y1, x2, y2, score
         out = []
         for x1, y1, x2, y2, score in dets:
-            if score >= RTMDET_SCORE:
+            if score > 0:
                 x1, y1, x2, y2 = (v / ratio for v in (x1, y1, x2, y2))
                 out.append(([float(x1), float(y1), float(x2 - x1), float(y2 - y1)], float(score)))
         self.detect_s += time.perf_counter() - tick

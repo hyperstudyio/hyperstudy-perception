@@ -4,8 +4,9 @@ Run: uv run --project envs/vision --with pytest pytest nodes/vision/facing"""
 import numpy as np
 import pytest
 
-from facing import (NAMES, TORSO, body_facing, crop, crop_window, face_number, facing_events, facing_vector, in_frame,
-                    linked_samples, merge, nearest_pose, stored, torso_centre, torso_facing)
+from facing import (NAMES, TORSO, body_facing, body_poses, crop, crop_window, events_from_angles, face_number,
+                    facing_events, facing_vector, in_frame, linked_samples, merge, nearest_index, nearest_pose,
+                    pair_angles, stored, torso_centre, torso_facing)
 
 LSH, RSH, LHIP, RHIP = TORSO
 
@@ -90,13 +91,44 @@ def test_the_crop_is_the_grown_box_clipped_to_the_frame_in_a_black_square():
     assert square[:, 33:77].min() == 200 and square[:, :33].max() == 0 and square[:, 77:].max() == 0   # neighbours masked
 
 
+def landmarks(x, y, visibility, z=-0.3, presence=0.99):
+    """33 landmarks as the landmarker returns them: x, y in [0, 1] of the crop, z, visibility, presence."""
+    return np.tile([x, y, z, visibility, presence], (33, 1)).astype(float)
+
+
 def test_of_two_poses_the_one_centred_nearest_the_box_is_kept_in_frame_pixels():
-    near = np.full((33, 3), 0.5)
-    far = np.c_[np.full((33, 2), 0.05), np.ones(33)]
+    near = landmarks(0.5, 0.5, 0.5)
+    far = landmarks(0.05, 0.05, 1.0)
     poses = in_frame([(far, "far world"), (near, "near world")], (65, 45, 110))
-    assert poses[1][0][0].tolist() == [65 + 55, 45 + 55, 0.5]   # centred on the box [100, 50, 40, 100]
+    assert poses[1][0][0].tolist() == [65 + 55, 45 + 55, 0.5]   # centred on the box [100, 50, 40, 100]; visibility
     assert nearest_pose(poses, [100, 50, 40, 100])[1] == "near world"
+    assert nearest_index(poses, [100, 50, 40, 100]) == 1 and nearest_index([], [0, 0, 1, 1]) is None
     assert nearest_pose([], [0, 0, 1, 1]) is None
+
+
+def test_every_pose_of_a_crop_is_kept_for_the_side_file_and_the_nearest_is_what_the_events_use():
+    window, box = (65, 45, 110), [100, 50, 40, 100]
+    near = landmarks(0.5, 0.5, 0.9)
+    near[list(TORSO), :2] = [[0.6, 0.4], [0.4, 0.4], [0.58, 0.7], [0.42, 0.7]]   # torso about the box centre
+    far = landmarks(0.05, 0.05, 0.9)
+    raw = [(far, world(30)), (near, world(-20))]
+    poses, kept = body_poses(raw, window, box)
+    assert [(p["pose"], p["kept"]) for p in poses] == [(0, False), (1, True)]
+    assert poses[1]["landmarks"] is near and poses[1]["world"] is raw[1][1]   # as the landmarker returned them
+    # the kept pose's facing and centre are what the layer's path computed from it (body_facing, torso_centre)
+    k, facing, source = body_facing(nearest_pose(in_frame(raw, window), box))
+    assert kept == (pytest.approx(torso_centre(k, box)), facing, source) and facing == [20.0, 0.0] and source == "torso"
+    assert poses[1]["centre"].tolist() == torso_centre(k, box).tolist()
+    assert poses[1]["yaw"] == pytest.approx(20) and poses[1]["pitch"] == pytest.approx(0, abs=1e-9)   # unrounded
+    assert poses[0]["yaw"] == pytest.approx(-30) and poses[0]["source"] == "torso"   # the other pose has its own
+    assert body_poses([], window, box) == ([], None)
+
+
+def test_a_pose_without_visible_shoulders_is_kept_with_no_facing():
+    hidden = landmarks(0.5, 0.5, 0.2)
+    poses, kept = body_poses([(hidden, world(0))], (0, 0, 100), [10, 10, 80, 80])
+    assert (poses[0]["source"], poses[0]["yaw"], poses[0]["pitch"]) == (None, None, None)
+    assert kept[1:] == (None, None) and kept[0].tolist() == [50, 50]   # no facing; the box centre
 
 
 def test_the_torso_centre_is_the_visible_shoulders_and_hips_else_the_box_centre():
@@ -160,4 +192,100 @@ def test_only_bodies_linked_to_a_face_are_compared():
     layer = {"tracks": [
         {"id": "body:0", "shot": "shot:0", "face": "face:3", "samples": [{"t": 0.0, "box": [1, 2, 3, 4]}, {"t": 0.125, "box": [2, 2, 3, 4]}]},
         {"id": "body:1", "shot": "shot:0", "face": None, "samples": [{"t": 0.0, "box": [9, 9, 9, 9]}]}]}
-    assert linked_samples(layer) == [("shot:0", 0.0, 3, [1, 2, 3, 4]), ("shot:0", 0.125, 3, [2, 2, 3, 4])]
+    assert linked_samples(layer) == [("shot:0", 0.0, 3, [1, 2, 3, 4], "body:0", 0),
+                                     ("shot:0", 0.125, 3, [2, 2, 3, 4], "body:0", 1)]
+
+
+# ---------------------------------------------------------------- the angles side file
+
+def facing_events_before(frames, cone_deg=60.0, min_facing_s=1.0, max_gap_s=0.3):
+    """facing.facing_events as vision.facing 1.0.0 computed it, in one pass (before the angles were stored apart from
+    the thresholding), verbatim but for the name: the reference the split must reproduce."""
+    from collections import defaultdict
+    positives = defaultdict(list)
+    for (_, t), bodies in sorted(frames.items(), key=lambda kv: kv[0][1]):
+        for a, centre_a, facing in bodies:
+            if facing is None:
+                continue
+            f = facing_vector(*facing)
+            inside = []
+            for b, centre_b, _ in bodies:
+                if b == a:
+                    continue
+                d = centre_b - centre_a
+                dist = float(np.hypot(*d))
+                if dist == 0:
+                    continue
+                angle = float(np.degrees(np.arccos(np.clip(f[0] * d[0] / dist + f[1] * d[1] / dist, -1, 1))))
+                if angle <= cone_deg:
+                    inside.append((dist, b, angle))
+            if inside:
+                _, b, angle = min(inside)
+                positives[(a, b)].append((t, angle))
+    runs = {}
+    for pair, samples in positives.items():
+        angle_at = dict(samples)
+        for run in merge(sorted(angle_at), max_gap_s):
+            if run[-1] - run[0] >= min_facing_s - 1e-6:
+                runs.setdefault(pair, []).append((run, [angle_at[t] for t in run]))
+    events = []
+    for (a, b), pair_runs in runs.items():
+        reverse = {t for t, _ in positives.get((b, a), [])}
+        for run, angles in pair_runs:
+            both = [t for t in run if t in reverse]
+            mutual_s = sum(r[-1] - r[0] for r in merge(both, max_gap_s))
+            events.append({"from": a, "to": b, "start": run[0], "end": run[-1],
+                           "score": round(float(np.mean(np.cos(np.radians(angles)))), 3),
+                           "mutual": mutual_s >= min_facing_s - 1e-6,
+                           "detail": {"mean_angle_deg": round(float(np.mean(angles)), 1), "samples": len(run),
+                                      "mutual_s": round(mutual_s, 3)}})
+    events.sort(key=lambda e: (e["start"], e["from"]))
+    return [{"id": f"facing:{i}", "from": f"face:{e['from']}", "to": f"face:{e['to']}", "start": e["start"], "end": e["end"],
+             "mutual": e["mutual"], "score": e["score"], "detail": e["detail"]} for i, e in enumerate(events)]
+
+
+def random_frames(seed, times=160, faces=5):
+    """A random scene at 8 fps: up to `faces` people a time, wandering and turning, some without a facing or a pitch,
+    sometimes two at one point (no direction between them), and a second shot later on."""
+    rng = np.random.default_rng(seed)
+    place = rng.uniform(0, 640, (faces, 2))
+    yaw = rng.uniform(-180, 180, faces)
+    frames = {}
+    for i in range(times):
+        place += rng.normal(0, 3, place.shape)
+        yaw += rng.normal(0, 4, faces)
+        bodies = []
+        for face in rng.permutation(faces):
+            r = rng.random()
+            if r > 0.9:   # not posed at this time
+                continue
+            facing = None if r < 0.1 else [round(float(yaw[face]), 1), None if r < 0.3 else round(float(rng.normal(0, 10)), 1)]
+            bodies.append((int(face) + 3, place[face].round(1), facing))
+        if len(bodies) > 1 and rng.random() < 0.05:
+            bodies[1] = (bodies[1][0], bodies[0][1].copy(), bodies[1][2])
+        frames[(f"shot:{0 if i < times // 2 else 1}", round(i / 8, 3))] = bodies
+    return frames
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_thresholding_the_stored_angles_gives_the_one_pass_events_at_any_thresholds(seed):
+    frames = random_frames(seed)
+    rows = pair_angles(frames)
+    assert events_from_angles(rows) == facing_events(frames) == facing_events_before(frames)
+    for cone, min_s, gap in ((30.0, 0.5, 0.3), (90.0, 1.0, 0.125), (60.0, 0.0, 1.0), (45.0, 2.0, 0.5), (60.0, 1.0, 0.0)):
+        assert events_from_angles(rows, cone, min_s, gap) == facing_events_before(frames, cone, min_s, gap)
+
+
+def test_the_random_scenes_have_events_to_compare():
+    events = [e for seed in range(12) for e in facing_events_before(random_frames(seed))]
+    assert len(events) > 20 and any(e["mutual"] for e in events) and not all(e["mutual"] for e in events)
+
+
+def test_every_pair_is_stored_whatever_its_angle_and_coinciding_centres_are_not():
+    frames = {("shot:0", 0.0): [(0, np.array([100.0, 100]), [-90.0, None]), (1, np.array([300.0, 100]), None),
+                                (2, np.array([100.0, 300]), [0.0, 0.0]), (3, np.array([100.0, 300]), [180.0, 0.0])]}
+    rows = pair_angles(frames)
+    # face 0 (facing image right) to 1, 2 and 3; 2 and 3 (towards and away from the camera) to the others but each other
+    assert [(a, b) for _, a, b, _, _ in rows] == [(0, 1), (0, 2), (0, 3), (2, 0), (2, 1), (3, 0), (3, 1)]
+    assert rows[0] == (0.0, 0, 1, pytest.approx(0.0, abs=1e-9), 200.0) and rows[1][3] == pytest.approx(90)
+    assert rows[3][3] == pytest.approx(90) and rows[3][4] == 200.0   # facing the camera: 90 degrees from anyone

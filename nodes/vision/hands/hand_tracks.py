@@ -7,10 +7,10 @@ Hands are a gated second stage on top of the bodies, after HaMeR's design:
      above the bodies layer's score threshold and inside the frame gives a square box around those keypoints and the
      body's wrist. These hands inherit the body track, its face track and the side (COCO-WholeBody's left_hand is the
      subject's left hand). box_source "wrist".
-  2. RTMDet-nano hand on the full frame finds hands whose body was not posed. Boxes smaller than MIN_HAND_PX, larger
-     than MAX_DETECTOR_BOX, or overlapping a wrist hand or a higher-scoring box (IoU >= DEDUP_IOU) are dropped
-     first; the rest are matched to the wrists of every body in the frame by Hungarian assignment (cost = the wrist's
-     distance outside the box / box side, gated by WRIST_GATE).
+  2. RTMDet-nano hand on the full frame finds hands whose body was not posed. Boxes scoring under DETECTOR_SCORE,
+     smaller than MIN_HAND_PX, larger than MAX_DETECTOR_BOX, or overlapping a wrist hand or a higher-scoring box
+     (IoU >= DEDUP_IOU) are dropped first; the rest are matched to the wrists of every body in the frame by Hungarian
+     assignment (cost = the wrist's distance outside the box / box side, gated by WRIST_GATE).
      A box matched to a wrist that already gave a hand is that hand again and is dropped; one matched to a wrist with
      no hand inherits that body and side; an unmatched one is kept with no body and no side. box_source "detector".
      Wrists that already have a hand stay in the matching, as in the bake-off, so that a box on them (a cuff, a
@@ -32,6 +32,12 @@ import numpy as np
 
 from scipy_lsap.rectangular_lsap import linear_sum_assignment
 
+# RTMDet-nano hand scores stay low on this footage (none above 0.4 on OOO apart from one 0.71 on a tiny graphic).
+# Contact sheets of 30 random OOO detections per score bin, judged by eye: 0.15-0.2 about 13/30 are hands (the rest
+# faces, necklaces, elbows), 0.2-0.25 about 17/30, >= 0.25 about 24/30. rtmlib's default 0.3 drops visible gesturing
+# hands that score 0.25-0.3, so 0.25 (bake-off, hands.py). The detector returns lower scores too (down to its NMS's
+# 0.05): they are kept in the side file only (hand_detections.py), as below_score.
+DETECTOR_SCORE = 0.25
 MIN_HAND_KPTS = 4        # HaMeR's demo builds a hand box only from more than 3 valid hand keypoints
 HAND_BOX_PAD = 1.2       # square box side = this x the larger extent of the valid hand keypoints + wrist (tips sit on the extent edge)
 # Second-stage gate on the hand box side. Contact sheets of 24 random OOO RTMW hand boxes per size bin: at 24-32 px
@@ -140,9 +146,17 @@ def match_detections(detections, bodies) -> dict[int, tuple[int, str]]:
     return {int(r): wrists[c][:2] for r, c in zip(rows, cols) if cost[r, c] <= WRIST_GATE}
 
 
-def frame_hands(frame, bodies: list[dict], model, stats: dict) -> list[dict]:
+# Why a detection is or is not a hand of the layer (frame_hands' `record`): dropped before matching (below_score,
+# below_gate, too_large, duplicate), dropped by matching (wrist_taken: matched to a wrist that already has its hand), or
+# kept (linked to the wrist it matched, unlinked)
+REASONS = ("below_score", "below_gate", "too_large", "duplicate", "wrist_taken", "linked", "unlinked")
+
+
+def frame_hands(frame, bodies: list[dict], model, stats: dict, record: list | None = None) -> list[dict]:
     """One frame's hands, [{box, side, box_source, person, kpts}]: `bodies` from propose(), `model` the detector and
-    the keypoint model (models.Hands). Wrist hands first, in body order, then detector hands, highest score first."""
+    the keypoint model (models.Hands). Wrist hands first, in body order, then detector hands, highest score first.
+    With `record`, every detection the detector returned is appended to it, in its order (highest score first), as
+    {box, score, reason (REASONS), wrist: (body id, side) it matched or None, hand: the hand it became or None}."""
     hands, done = [], set()   # done: (body index, side) already holding a hand
     for b, body in enumerate(bodies):
         for side, box in body["proposals"].items():
@@ -156,32 +170,47 @@ def frame_hands(frame, bodies: list[dict], model, stats: dict) -> list[dict]:
     # Boxes that cannot be hands, or are a hand already boxed, are dropped before matching: matched first (as the
     # bake-off did), a dropped box could take a wrist from a real hand box, which then lost its body, side and face
     # (Hungarian assignment gives a wrist to one box only, the one nearest it)
-    candidates = []
+    candidates, outcomes = [], []   # outcomes: every detection's record entry, in the detector's order
     for box, score in model.detect(frame):   # highest score first
-        if min(box[2], box[3]) < MIN_HAND_PX:
+        outcome = {"box": box, "score": score, "reason": None, "wrist": None, "hand": None}
+        outcomes.append(outcome)
+        if score < DETECTOR_SCORE:
+            stats["detector_below_score"] += 1
+            outcome["reason"] = "below_score"
+        elif min(box[2], box[3]) < MIN_HAND_PX:
             stats["detector_below_gate"] += 1
+            outcome["reason"] = "below_gate"
         elif max(box[2], box[3]) > MAX_DETECTOR_BOX * frame.shape[0]:
             stats["detector_too_large"] += 1
+            outcome["reason"] = "too_large"
         # RTMDet's baked-in NMS leaves overlapping boxes on one hand (IoU ~0.5 seen on OOO), so a box overlapping a
         # wrist hand, or a higher-scoring box kept, is that hand again
-        elif any(iou(box, other) >= DEDUP_IOU for other in [h["box"] for h in hands] + [c for c, _ in candidates]):
+        elif any(iou(box, other) >= DEDUP_IOU for other in [h["box"] for h in hands] + [c for c, _, _ in candidates]):
             stats["detector_duplicate"] += 1
+            outcome["reason"] = "duplicate"
         else:
-            candidates.append((box, score))
-    matches = match_detections(candidates, bodies)
-    for d, (box, _) in enumerate(candidates):
+            candidates.append((box, score, outcome))
+    matches = match_detections([(box, score) for box, score, _ in candidates], bodies)
+    for d, (box, _, outcome) in enumerate(candidates):
         if d in matches:
             b, side = matches[d]
+            outcome["wrist"] = (bodies[b]["person"]["body"], side)
             if (b, side) in done:
                 stats["detector_duplicate"] += 1
+                outcome["reason"] = "wrist_taken"
                 continue
             person = bodies[b]["person"]
             done.add((b, side))
             stats["detector_linked"] += 1
+            outcome["reason"] = "linked"
         else:
             side, person = None, None
             stats["detector_unlinked"] += 1
+            outcome["reason"] = "unlinked"
         hands.append({"box": box, "side": side, "box_source": "detector", "person": person, "kpts": model.keypoints(frame, box)})
+        outcome["hand"] = hands[-1]
+    if record is not None:
+        record += outcomes
     return hands
 
 
@@ -210,14 +239,18 @@ def track_hands(frames: list[tuple[float, str, list[dict]]]) -> list[dict]:
                     open_free.setdefault(shot, []).append(track)
                     tracks.append(track)
                 used.add(id(track))
-            track["samples"].append({"t": t, "box": hand["box"], "kpts": hand["kpts"]})
+            # hand: the frame's hand this sample is (hand_detections.Detections.columns names a detection's sample by it)
+            track["samples"].append({"t": t, "box": hand["box"], "kpts": hand["kpts"], "hand": hand})
     return tracks
 
 
+def ordered(tracks: list[dict]) -> list[dict]:
+    """The tracks in the layer's order, hand:N the N-th: shot then start order (ties in the order the tracks began)."""
+    return sorted(tracks, key=lambda tr: (int(tr["shot"].split(":")[1]), tr["samples"][0]["t"]))
+
+
 def layer_hands(tracks: list[dict]) -> list[dict]:
-    """The hands layer's hands: ids hand:N in shot then start order (ties in the order the tracks began), coordinates
-    rounded as the bake-off's."""
-    ordered = sorted(tracks, key=lambda tr: (int(tr["shot"].split(":")[1]), tr["samples"][0]["t"]))
+    """The hands layer's hands: ids hand:N in ordered()'s order, coordinates rounded as the bake-off's."""
     return [{
         "id": f"hand:{i}", "shot": tr["shot"], "side": tr["side"],
         "body": tr["person"]["body"] if tr["person"] else None, "face": tr["person"]["face"] if tr["person"] else None,
@@ -225,4 +258,4 @@ def layer_hands(tracks: list[dict]) -> list[dict]:
         "samples": [{"t": s["t"], "box": [round(float(v), 1) for v in s["box"]],
                      "kpts": [[round(float(x), 1), round(float(y), 1), round(float(c), 2)] for x, y, c in s["kpts"]]}
                     for s in tr["samples"]],
-    } for i, tr in enumerate(ordered)]
+    } for i, tr in enumerate(ordered(tracks))]
