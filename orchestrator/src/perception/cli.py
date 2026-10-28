@@ -71,10 +71,22 @@ def coordinator(args) -> Coordinator:
     return Coordinator(Store(home()), registry(args), backends(), load_secrets())
 
 
-def only(doc: dict, chosen: list[str]) -> dict:
+def only(doc: dict, chosen: list[str], reg: Registry) -> dict:
     """The graph with just the chosen nodes and the nodes they need (their inputs' $nodes.X, transitively); graph outputs
-    of nodes left out go too. The app's stage picker: run part of a graph."""
+    of nodes left out go too. The app's stage picker: run part of a graph. An optional input (the manifest's
+    optional_inputs) needs nothing: it stays connected when its producer is kept anyway, and is left unconnected when
+    not, so the node runs without it."""
     nodes = {n.get("id"): n for n in doc.get("nodes", [])}
+
+    def optional(node: dict) -> list[str]:
+        try:
+            return reg.get(node.get("uses", "")).optional_inputs
+        except KeyError:   # an unknown node: compile_graph says so
+            return []
+
+    def producer(ref) -> str | None:
+        return ref.split(".")[1] if isinstance(ref, str) and ref.startswith("$nodes.") else None
+
     keep, todo = set(), [c for item in chosen for c in item.split(",") if c]
     while todo:
         name = todo.pop()
@@ -83,11 +95,17 @@ def only(doc: dict, chosen: list[str]) -> dict:
         if name in keep:
             continue
         keep.add(name)
-        for ref in nodes[name].get("inputs", {}).values():
-            if isinstance(ref, str) and ref.startswith("$nodes."):
-                todo.append(ref.split(".")[1])
+        skip = optional(nodes[name])
+        todo += [producer(ref) for key, ref in nodes[name].get("inputs", {}).items() if producer(ref) and key not in skip]
+    kept = []
+    for n in doc["nodes"]:
+        if n.get("id") not in keep:
+            continue
+        skip = optional(n)
+        dropped = {k for k, ref in n.get("inputs", {}).items() if k in skip and producer(ref) and producer(ref) not in keep}
+        kept.append({**n, "inputs": {k: v for k, v in n["inputs"].items() if k not in dropped}} if dropped else n)
     outputs = {k: v for k, v in doc.get("outputs", {}).items() if not (isinstance(v, str) and v.startswith("$nodes.") and v.split(".")[1] not in keep)}
-    return {**doc, "nodes": [n for n in doc["nodes"] if n.get("id") in keep], **({"outputs": outputs} if "outputs" in doc else {})}
+    return {**doc, "nodes": kept, **({"outputs": outputs} if "outputs" in doc else {})}
 
 
 def graph_path(arg: str) -> Path:
@@ -140,7 +158,7 @@ def read_graph(path: Path, reg: Registry, max_cost: float | None = None, inputs:
             raise GraphError([f"--place {name}: the graph has no node {name!r}"])
         node["place"] = place
     if chosen:   # after --place and --set: they may name a node --only leaves out (it goes, with them)
-        doc = only(doc, chosen)
+        doc = only(doc, chosen, reg)
     for item in inputs or []:   # --input name=path overrides a graph input's location
         name, _, value = item.partition("=")
         if name not in doc.get("inputs", {}):
@@ -181,7 +199,7 @@ def plan_json(p) -> dict:
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
               "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
               "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
-              "needs": n.needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
+              "needs": n.needs, "optional_needs": n.optional_needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
               "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
              for n in p.nodes]
     return {"ok": p.ok, "nodes": nodes, "places": p.places, "max_cost_usd": p.max_cost_usd, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
@@ -243,7 +261,7 @@ def cmd_nodes(args):
         options, why = coord.placements(m)
         nodes.append({
             "ref": m.ref, "id": m.id, "version": m.version, "stage": m.stage or m.id, "description": m.description,
-            "inputs": m.inputs, "outputs": m.outputs, "config": m.config, "places": [p.label for p in options], "why_not": why,
+            "inputs": m.inputs, "optional_inputs": m.optional_inputs, "outputs": m.outputs, "config": m.config, "places": [p.label for p in options], "why_not": why,
             "cost": m.cost.model_dump() if m.cost else None, "uploads": list(m.privacy.external_upload), "secrets": m.secrets,
             "models": [x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for x in m.models],
             "gpu": m.resources.gpu})

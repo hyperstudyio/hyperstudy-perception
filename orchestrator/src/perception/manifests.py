@@ -95,6 +95,10 @@ class Manifest(Strict):
     description: str = ""
     stage: str | None = None                 # the bundle producer's stage name (default: the node id)
     inputs: dict[str, str] = Field(default_factory=dict)      # name -> artifact type
+    # inputs a graph may leave unconnected: the node runs without them (perception_node's has_input says which it got).
+    # A graph that connects one makes the node wait for it; `--only` keeps it connected only when its producer is chosen
+    # too (cli.only), so leaving that step out of a run does not leave out the node that would have read it
+    optional_inputs: list[str] = Field(default_factory=list)
     outputs: dict[str, str]                                    # name -> artifact type
     config: dict[str, dict] = Field(default_factory=dict)     # name -> JSON Schema (with default)
     runners: list[Runner]
@@ -110,6 +114,14 @@ class Manifest(Strict):
     cost: Cost | None = None
 
     directory: Path = Field(default=Path("."), exclude=True)
+
+    @model_validator(mode="after")
+    def _optional_inputs_are_inputs(self):
+        if unknown := [n for n in self.optional_inputs if n not in self.inputs]:
+            raise ValueError(f"optional_inputs: {', '.join(unknown)} not among the inputs ({', '.join(self.inputs) or 'none'})")
+        if self.cost and self.cost.input in self.optional_inputs:   # its units must be there to reserve the cost
+            raise ValueError(f"cost.input {self.cost.input!r} cannot be optional")
+        return self
 
     @model_validator(mode="after")
     def _cost_counts_an_input(self):

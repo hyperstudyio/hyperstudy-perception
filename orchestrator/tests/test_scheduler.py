@@ -96,6 +96,32 @@ def test_graph_errors_are_all_reported(tmp_path, rec):
     assert "no node test.work@9.0.0 (available: test.work@1.0.0)" in text
 
 
+def test_an_optional_input_may_be_left_unconnected_and_the_node_runs_without_it(tmp_path, rec):
+    coord = coordinator(tmp_path)
+    alone = {"id": "c", "uses": "test.optional@1.0.0", "inputs": {"a": "$nodes.a.out"}, "config": {"record_dir": rec}}
+    run_id, status = run(coord, graph_doc(tmp_path, [work("a", record_dir=rec), alone]))
+    assert status == "succeeded" and output(coord, run_id, "c") == {"value": 2, "had_b": False}   # a (1) + add
+    wired = {**alone, "inputs": {"a": "$nodes.a.out", "b": "$nodes.b.out"}}
+    doc = graph_doc(tmp_path, [work("a", record_dir=rec), work("b", record_dir=rec, sleep=0.3, add=10), wired])
+    graph = compile_graph(doc, coord.registry)
+    assert graph.nodes["c"].upstream == {"a", "b"} and graph.nodes["c"].optional_upstream == {"b"}
+    run_id, status = run(coord, doc)
+    assert status == "succeeded" and output(coord, run_id, "c") == {"value": 12, "had_b": True}   # waits for b, reads it
+    with pytest.raises(GraphError, match="input 'a' \\(json.v1\\) is not connected"):   # only optional inputs may go
+        compile_graph(graph_doc(tmp_path, [{**alone, "inputs": {"b": "$inputs.seed"}}]), coord.registry)
+
+
+def test_optional_inputs_must_be_inputs_and_cannot_hold_the_cost_units():
+    from perception.manifests import Manifest
+    base = {"id": "x", "version": "1.0.0", "inputs": {"a": "json.v1", "shots": "bundle.shots@0.1"}, "outputs": {},
+            "runners": [{"kind": "self", "entry": "node.py"}]}
+    assert Manifest.model_validate({**base, "optional_inputs": ["a"]}).optional_inputs == ["a"]
+    with pytest.raises(ValueError, match="optional_inputs: b not among the inputs"):
+        Manifest.model_validate({**base, "optional_inputs": ["b"]})
+    with pytest.raises(ValueError, match="cost.input 'shots' cannot be optional"):
+        Manifest.model_validate({**base, "optional_inputs": ["shots"], "cost": {"usd": 0.01, "per": "shot", "input": "shots"}})
+
+
 # --- running ----------------------------------------------------------------------------------------------------
 
 def test_independent_nodes_run_in_parallel_and_dependent_ones_wait(tmp_path, rec):

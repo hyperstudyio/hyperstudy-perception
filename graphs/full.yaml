@@ -62,9 +62,11 @@ nodes:
     uses: vision.objects@1.0.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes,
              faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
+  # objects is optional for gaze: when the objects step runs, its tracks are gaze targets too (gaze waits for it); when
+  # --only leaves it out, gaze runs on the faces alone
   - id: gaze
-    uses: vision.gaze@1.1.0
-    inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces}
+    uses: vision.gaze@1.2.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces, objects: $nodes.objects.objects}
   # the speech it reads is diarized, as the bake-off's captions read it: lines by voice (SPEAKER_00, ...), not one SPEAKER
   - id: captions
     uses: vlm.shot-captions@1.0.0

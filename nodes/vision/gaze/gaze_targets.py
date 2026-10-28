@@ -7,19 +7,22 @@ gaze_layer does.
      its centre, clipped to the frame. One model call per sampled frame carries every head in that frame.
   2. Target per sample (target_for): an in-frame score below INOUT_THRESHOLD is "out" (target_score = 1 - in_frame).
      Otherwise the candidates are the other face tracks of the same shot (their head boxes, linearly interpolated to
-     the sample time). The candidate containing the heatmap peak wins; when several contain it, the one holding the
-     most heatmap mass. When the peak is in none, the candidate holding the most mass wins if that mass is at least
-     MASS_MIN. Otherwise the target is null (something in frame that is not a tracked face). target_score is the
+     the sample time) and, with an objects layer, the object tracks of the same shot (the outline of the object
+     sample nearest in time, within OBJECT_MAX_DT_S; its box when it has no outline), faces first, each in its layer's
+     order. The candidate containing the heatmap peak wins; when several contain it, the one holding the most heatmap
+     mass. When the peak is in none, the candidate holding the most mass wins if that mass is at least MASS_MIN.
+     Otherwise the target is null (something in frame that is not a tracked face or object). target_score is the
      winner's share of the heatmap mass (for null, the best candidate's share; 0.0 without candidates).
   3. Events (events_from): looks_at = a run of at least MIN_LOOK_SAMPLES samples of one face track with the same face
      (or object) target, consecutive samples at most MAX_GAP_S apart; mutual_gaze = A looks_at B and B looks_at A
      sharing at least one sample time; joint_attention = A and C look_at the same target X sharing at least one sample
      time. Face tracks never cross a cut, so every event lies within one shot.
 
-Objects (a later wave): the bake-off also offered the object tracks of the same shot as candidates (the polygon of the
-object sample nearest in time, within 1/6 s; its box when it has none). The events here already carry object targets
-("obj:N", as `object`). Adding them is a candidates_at argument with those objects' regions, a Polygon region beside
-Box (rasterised like Box.coverage, at COVERAGE_GRID), and a bundle.objects@0.1 input to the node.
+A candidate region's heatmap mass is its coverage of each heatmap cell (rasterised at COVERAGE_GRID as the bake-off's
+OpenCV calls did: a Box as cv2.rectangle, a Polygon as cv2.fillPoly, gaze_polygons.py) times the heatmap; it holds the
+peak by an exact test (a Box's edges included; a Polygon's as cv2.pointPolygonTest, its outline included). Object
+targets are the objects layer's track ids ("obj:N"); without an objects layer (the node's optional input) the targets
+are faces, "out" or null, as in vision.gaze 1.1.
 
 Inside this module face tracks are their integer index (face:N -> N), as in the bake-off, so events sort exactly as
 its did (by track number, not by the id's text).
@@ -28,6 +31,8 @@ its did (by track number, not by the id's text).
 from __future__ import annotations
 
 import numpy as np
+
+from gaze_polygons import fill_polygon, point_in_polygon
 
 # Both models' in/out heads are sigmoids trained with BCE on in/out labels, so 0.5 is the decision boundary.
 INOUT_THRESHOLD = 0.5
@@ -38,6 +43,7 @@ MASS_MIN = 0.3
 MIN_LOOK_SAMPLES = 3     # a single-sample argmax flip between neighbouring heads is not a look
 MAX_GAP_S = 0.3          # consecutive samples of a run at most this far apart (one missed face sample at 7.5/s)
 HEATMAP_SIZE = 64        # Gaze-LLE's heatmap side
+OBJECT_MAX_DT_S = 1 / 6  # the objects layer samples at 6 fps: an object sample this close in time stands for the face sample
 COVERAGE_GRID = 256      # candidate regions are rasterised on this grid, then area-averaged to the heatmap's grid
 
 
@@ -100,9 +106,63 @@ class Box:
         return x1 <= x <= x2 and y1 <= y <= y2
 
 
-def candidates_at(face, shot, t, face_tracks, width, height, scale):
-    """[(face index, Box)]: the other face tracks of the shot at time t, as head boxes at the scale the heads fed to
-    the model have."""
+class Polygon:
+    """A candidate region: an object's outline [[x, y], ...] in pixels (at least 3 points)."""
+
+    def __init__(self, points):
+        self.geom = np.array(points, dtype=np.float32)
+        self._coverage = {}
+
+    def coverage(self, width, height):
+        """Fraction of each heatmap cell the outline covers: filled on a COVERAGE_GRID raster as
+        cv2.fillPoly(grid, [np.round(points * [sx, sy]).astype(np.int32)], 1.0) fills it (gaze_polygons.py), then each
+        4x4 block averaged, as Box.coverage. Kept: every head of a frame, and every frame within OBJECT_MAX_DT_S of
+        this sample, asks for the same one."""
+        key = (width, height)
+        if key not in self._coverage:
+            grid = np.zeros((COVERAGE_GRID, COVERAGE_GRID), np.float32)
+            sx, sy = COVERAGE_GRID / width, COVERAGE_GRID / height
+            fill_polygon(grid, np.round(self.geom * [sx, sy]).astype(np.int32))
+            k = COVERAGE_GRID // HEATMAP_SIZE
+            self._coverage[key] = grid.reshape(HEATMAP_SIZE, k, HEATMAP_SIZE, k).mean(axis=(1, 3), dtype=np.float32)
+        return self._coverage[key]
+
+    def contains(self, x, y):
+        return point_in_polygon(self.geom, x, y)
+
+
+def objects_by_shot(objects_layer):
+    """The objects layer's tracks (not its rejected ones) as {shot: [{"id", "samples", "regions"}]}, in the layer's
+    order; "regions" keeps each sample's region once made (object_region)."""
+    out = {}
+    for track in (objects_layer or {}).get("tracks", []):
+        if not track["samples"]:   # no sample: a region at no time
+            continue
+        out.setdefault(track["shot"], []).append({"id": track["id"], "samples": track["samples"], "regions": {}})
+    return out
+
+
+def object_at(samples, t):
+    """Index of the object sample nearest t (the first of equals) when within OBJECT_MAX_DT_S, else None."""
+    best = min(range(len(samples)), key=lambda j: abs(samples[j]["t"] - t))
+    return best if abs(samples[best]["t"] - t) <= OBJECT_MAX_DT_S else None
+
+
+def object_region(track, j):
+    """Sample j's region: its outline, or its box [x, y, w, h] when it has fewer than 3 outline points."""
+    if j not in track["regions"]:
+        sample = track["samples"][j]
+        if sample.get("poly") and len(sample["poly"]) >= 3:
+            track["regions"][j] = Polygon(sample["poly"])
+        else:
+            x, y, w, h = sample["box"]
+            track["regions"][j] = Box(x, y, x + w, y + h)
+    return track["regions"][j]
+
+
+def candidates_at(face, shot, t, face_tracks, objects, width, height, scale):
+    """[(face index or object id, region)]: the other face tracks of the shot at time t, as head boxes at the scale the
+    heads fed to the model have; then the shot's object tracks (objects_by_shot) with a sample near t."""
     out = []
     for other, track in face_tracks.items():
         if other == face or track["shot"] != shot:
@@ -110,6 +170,10 @@ def candidates_at(face, shot, t, face_tracks, width, height, scale):
         box = interpolate_box(track["samples"], t)
         if box is not None:
             out.append((other, Box(*head_box(box, width, height, scale))))
+    for track in objects.get(shot, []):
+        j = object_at(track["samples"], t)
+        if j is not None:
+            out.append((track["id"], object_region(track, j)))
     return out
 
 

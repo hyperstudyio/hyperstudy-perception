@@ -10,9 +10,9 @@ Beside the layer, the side file layers/gaze_heatmaps.parquet keeps the rest of w
 its whole 64x64 heatmap (uint8 relative to its maximum, with the maximum) and its unrounded in-frame score
 (heatmaps.py). The layer points at it with raw.heatmaps.
 
-Faces only for now: the bake-off also offered tracked objects as targets. They join as one more input (objects:
-bundle.objects@0.1, wired from the objects node in graphs/full.yaml) whose same-shot regions candidates_at receives
-beside the faces' (gaze_targets.py says how); until then no sample's target is an object.
+Objects: with the objects layer (an optional input; the objects node can be left out of a run, and then gaze runs on
+faces alone), each object track's outline at the sample time is a candidate too, as in the bake-off (gaze_targets.py,
+gaze_polygons.py), and a target may be "obj:N". Without it the layer is the faces-only one, byte for byte.
 
 Licence: DINOv2 is Apache-2.0, but Gaze-LLE's checkpoints state no licence and its training data's terms are unverified
 (needs-review), and the head boxes are py-feat's (the faces layer, academic-only): the layer is academic-only.
@@ -23,8 +23,8 @@ import time
 import cv2
 
 from perception_node import Node, NodeError
-from gaze_targets import (candidates_at, events_from, face_id, frame_heads, heads_by_frame, layer_content, sample_of,
-                          target_for, tracks_of)
+from gaze_targets import (candidates_at, events_from, face_id, frame_heads, heads_by_frame, layer_content, objects_by_shot,
+                          sample_of, target_for, tracks_of)
 import heatmaps
 from models import DINOV2_ID, DINOV2_LICENCE, GAZELLE_ID, GAZELLE_LICENCE, WEIGHTS, GazeModel
 
@@ -60,6 +60,7 @@ with Node() as node:
     scale = c["head_box_scale"]
     video, media, faces = node.input("video"), node.input_json("media"), node.input_json("faces")
     face_tracks = tracks_of(faces)
+    objects = objects_by_shot(node.input_json("objects")) if node.has_input("objects") else {}
     try:
         heads = heads_by_frame(face_tracks, media["fps"])
     except ValueError as e:
@@ -83,7 +84,7 @@ with Node() as node:
             model_s += time.time() - tick
             for (face, j, _), (heat, inout) in zip(heads[index], predictions):
                 t = face_tracks[face]["samples"][j]["t"]
-                candidates = candidates_at(face, face_tracks[face]["shot"], t, face_tracks, width, height, scale)
+                candidates = candidates_at(face, face_tracks[face]["shot"], t, face_tracks, objects, width, height, scale)
                 results[face][j] = sample_of(t, heat, inout, *target_for(heat, inout, candidates, width, height))
                 try:
                     raw.add(face_id(face), j, t, heat, inout)
@@ -102,5 +103,7 @@ with Node() as node:
     samples = [s for tr in tracks for s in tr["samples"]]
     node.usage(frames=len(heads), heads=len(samples), events=len(events),
                targets={"face": sum(isinstance(s["target"], int) for s in samples), "out": sum(s["target"] == "out" for s in samples),
+                        "object": sum(isinstance(s["target"], str) and s["target"].startswith("obj:") for s in samples),
                         "none": sum(s["target"] is None for s in samples)},
+               objects=sum(len(v) for v in objects.values()) if node.has_input("objects") else None,
                realtime_factor=round(total_s / media["duration"], 3))
