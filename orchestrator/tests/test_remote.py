@@ -1235,7 +1235,7 @@ def test_nvidia_smis_cards_are_read_and_a_card_it_could_not_fill_is_left_out():
     assert parse_gpus(text) == [Gpu(0, "NVIDIA GeForce RTX 3090", 24.0), Gpu(1, "NVIDIA RTX PRO 6000, a name with a comma", 95.6)]
 
 
-def test_a_host_is_probed_for_every_gpu_and_one_saved_before_cards_were_recorded_counts_as_one(tmp_path, host):
+def test_a_host_is_probed_for_every_gpu_and_one_saved_before_cards_were_recorded_counts_as_one(tmp_path, host, monkeypatch):
     from perception.backends.base import Gpu
     smi = host / "home" / ".local" / "bin" / "nvidia-smi"   # on the PATH the probe adds
     smi.parent.mkdir(parents=True)
@@ -1253,6 +1253,12 @@ def test_a_host_is_probed_for_every_gpu_and_one_saved_before_cards_were_recorded
     caps = hosts.load()["lab"].caps
     assert caps.gpus == [] and caps.vram_gb == 95.6 and caps.devices() == [Gpu(None, "", 95.6)]
     assert hosts.check("lab").caps.gpus == added.caps.gpus   # recorded again by a check, not a new `add`
+    # a host whose own environment keeps CUDA off a card: only the cards it leaves can be given (probe.visible_gpus)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")             # (the stand-in ssh passes this one's environment on)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    assert [g.index for g in hosts.check("lab").caps.gpus] == [1]
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")                       # CUDA's own order: not nvidia-smi's, so no card
+    assert hosts.check("lab").caps.gpus == []
 
 
 def test_two_exclusive_gpu_nodes_on_a_host_with_two_cards_run_together_each_on_its_own_card(tmp_path, host, rec):

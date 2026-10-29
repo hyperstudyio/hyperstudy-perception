@@ -188,7 +188,41 @@ def test_on_a_machine_with_two_cards_two_exclusive_nodes_run_together_each_seein
     assert runs[2]["start"] >= min(runs[0]["end"], runs[1]["end"])            # a third waits for a card
     assert {e["cuda"] for e in runs[:2]} == {"0", "1"} and {e["order"] for e in runs} == {"PCI_BUS_ID"}
     assert {t["node_id"]: str(t["gpu"]) for t in coord._tasks(run_id).values()} == {e["node"]: e["cuda"] for e in runs}
-    assert sorted(p.name for p in (tmp_path / "home" / ".cache" / "hyperstudy-perception-gpus").iterdir()) == ["0", "1"]
+    machine = os.uname().nodename                                # a lease per machine and card (an NFS home is shared)
+    assert sorted(p.name for p in (tmp_path / "home" / ".cache" / "hyperstudy-perception-gpus").iterdir()) == [f"{machine}-0", f"{machine}-1"]
+
+
+SMI = """#!/bin/sh
+# nvidia-smi --query-gpu=index,memory.total,name ..., as liquidswords2 answers it (it ignores CUDA_VISIBLE_DEVICES)
+echo "0, 24576, NVIDIA GeForce RTX 3090"
+echo "1, 97887, NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+"""
+
+
+@pytest.mark.parametrize("order, cards, seen", [
+    ("PCI_BUS_ID", [1], {"1"}),          # nvidia-smi's index 1: that card alone, as the node's card
+    (None, [], {"1"}),                   # CUDA's own order (fastest first): not nvidia-smi's, so no card is chosen and
+])                                       # every node keeps the operator's setting
+def test_cards_the_operator_hid_with_cuda_visible_devices_are_never_given_to_a_node(tmp_path, rec, monkeypatch, order, cards, seen):
+    """A coordinator started with CUDA_VISIBLE_DEVICES (to keep off a colleague's card) gives no node a card outside it."""
+    smi = tmp_path / "bin" / "nvidia-smi"
+    smi.parent.mkdir()
+    smi.write_text(SMI)
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{smi.parent}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    if order:
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
+    else:
+        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+    from perception.backends.probe import probe
+    assert [g.index for g in probe().gpus] == cards
+    coord = coordinator(tmp_path, SelfBackend())
+    doc = graph_doc(tmp_path, [work(f"g{i}", uses="test.gpu@1.0.0", record_dir=rec, sleep=0.3, add=i) for i in range(2)])
+    _, status = run(coord, doc)
+    assert status == "succeeded"
+    assert {e["cuda"] for e in executions(Path(rec))} == seen
 
 
 def test_gpu_nodes_are_given_cards_one_exclusive_node_per_card_shared_ones_within_its_memory():

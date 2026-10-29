@@ -70,16 +70,20 @@ class Capabilities:
 # A card is leased on its machine for as long as a node runs on it, through a lock file every coordinator there honours
 # (one on this Mac and one on the lab server, or two runs started side by side): the scheduler's own count covers only
 # its run. Under the home of the user the nodes run as, outside any store or host root, so every store and root of that
-# user shares them. Not shared with other users of the machine (their homes are their own).
+# user shares them; named for the machine (uname -n) as well as the card, since lab servers often share one home over
+# NFS, and a card is only another machine's card of the same index there. Not shared with other users of the machine
+# (their homes are their own).
 GPU_LEASES = ".cache/hyperstudy-perception-gpus"
 
-# perl (on every Linux server and Mac, which flock(1) is not): flock the lease, shared for a `gpu: shared` node and
-# exclusive for a `gpu: exclusive` one, then exec the node with the lock's descriptor left open ($^F: not closed on
-# exec), so the node's process holds the lease until it ends, however it ends. A lease another run holds is waited for,
-# and the node's log says so.
+# perl (on every Linux server and Mac, which flock(1) is not): flock the lease <dir>/<machine>-<index>, shared for a
+# `gpu: shared` node and exclusive for a `gpu: exclusive` one, then exec the node with the lock's descriptor left open
+# ($^F: not closed on exec), so the node's process holds the lease until it ends, however it ends. Opened for reading
+# and writing: on NFS, flock is an fcntl lock, and a shared one needs a descriptor that can read. A lease another run
+# holds is waited for, and the node's log says so.
 LEASE = r"""$^F = 1023;
-my ($path, $use) = splice(@ARGV, 0, 2);
-open(my $lease, ">>", $path) or die "perception: cannot open the GPU lease $path: $!\n";
+my ($dir, $index, $use) = splice(@ARGV, 0, 3);
+my $path = "$dir/" . (POSIX::uname())[1] . "-$index";
+open(my $lease, "+>>", $path) or die "perception: cannot open the GPU lease $path: $!\n";
 my $how = $use eq "exclusive" ? LOCK_EX : LOCK_SH;
 if (!flock($lease, $how | LOCK_NB)) {
   print STDERR "perception: waiting for $path ($use): another run on this machine has that GPU\n";
@@ -88,14 +92,13 @@ if (!flock($lease, $how | LOCK_NB)) {
 }
 exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
 """
+LEASE_PERL = ["perl", "-MFcntl=:flock", "-MPOSIX", "-e", LEASE]
 
 
-LEASE_PERL = ["perl", "-MFcntl=:flock", "-e", LEASE]
-
-
-def lease_command(path: str, use: str) -> list[str]:
-    """What goes before a node's command to run it holding the lease at `path` (LEASE), as `use` (shared, exclusive)."""
-    return [*LEASE_PERL, path, use]
+def lease_command(leases: str, index: int, use: str) -> list[str]:
+    """What goes before a node's command to run it holding card `index`'s lease in the folder `leases` (LEASE), as
+    `use` (shared, exclusive)."""
+    return [*LEASE_PERL, leases, str(int(index)), use]
 
 
 def gpu_env(index: int | None) -> dict[str, str]:

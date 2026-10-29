@@ -87,7 +87,7 @@ class NativeBackend(Backend):
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
             leases = Path.home() / GPU_LEASES
             leases.mkdir(mode=0o700, parents=True, exist_ok=True)
-            command = [*lease_command(str(leases / str(int(gpu))), manifest.resources.gpu), *command]
+            command = [*lease_command(str(leases), gpu, manifest.resources.gpu), *command]
         proc = subprocess.Popen(command, cwd=manifest.directory, env=env,
                                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 start_new_session=True)   # its own process group: cancel stops the whole tree

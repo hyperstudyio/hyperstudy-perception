@@ -42,13 +42,29 @@ def parse_gpus(text: str) -> list[Gpu]:
     return sorted(gpus, key=lambda g: g.index)
 
 
+def visible_gpus(gpus: list[Gpu], cuda_visible: str | None, order: str | None) -> list[Gpu]:
+    """The cards nodes may be given, when the machine's environment already narrows what CUDA sees (an operator keeping
+    off a colleague's card with CUDA_VISIBLE_DEVICES): nvidia-smi lists every card whatever it says. Only an exact
+    match is kept: indices in nvidia-smi's own order (CUDA_DEVICE_ORDER=PCI_BUS_ID). Any other form (CUDA's default
+    order, fastest first, which nvidia-smi's index is not; UUIDs; MIG devices) gives no cards, so no node is given one,
+    and every node keeps the operator's setting and counts the machine's GPU as one, as before cards were recorded."""
+    if cuda_visible is None:
+        return gpus
+    wanted = [x.strip() for x in cuda_visible.split(",") if x.strip()]
+    if order != "PCI_BUS_ID" or not all(x.isdigit() for x in wanted):
+        return []
+    return [g for g in gpus if str(g.index) in wanted]
+
+
 def probe() -> Capabilities:
     plat = this_platform()
     memory = _memory_gb()
     accelerators = {"cpu"}
-    gpus = _cuda_gpus()
-    vram = max((g.memory_gb for g in gpus), default=0.0)   # what a runner's minimum is checked against: the largest card
-    if gpus:
+    found = _cuda_gpus()
+    gpus = visible_gpus(found, os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
+    # what a runner's minimum is checked against: the largest card it could be given
+    vram = max((g.memory_gb for g in gpus or found), default=0.0)
+    if found:
         accelerators.add("cuda")
     if plat == "darwin/arm64":
         accelerators.add("mps")

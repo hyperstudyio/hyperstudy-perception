@@ -19,6 +19,8 @@ by others:
                          and the outputs of the nodes that ran there (face embeddings, transcripts: whatever a node
                          wrote), kept under the same hashes so a node after it there is not sent them again. Like the
                          inputs, they stay between runs until `perception hosts clean`
+    gpus/<machine>-<index>   a card's lease (backends/base.LEASE): a lock its nodes hold while they run, which every
+                         coordinator's nodes there honour, and who holds it
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
                          or by the host's watchdog when no driver has asked about it for a while (a finished node's
                          results wait a day for its driver)
@@ -40,7 +42,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .backends.base import Capabilities
-from .backends.probe import GPU_QUERY, parse_gpus
+from .backends.probe import GPU_QUERY, parse_gpus, visible_gpus
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 # an ssh destination: user@host, a host, or a ~/.ssh/config alias; never an option
@@ -53,7 +55,8 @@ USER = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$")
 
 # What the host has, as key=value lines. POSIX sh: Linux servers and Macs, no Python needed. Tools are looked for on the
 # PATH a login shell would add too (~/.local/bin is where uv installs itself), since ssh commands get a minimal PATH.
-# Each NVIDIA card is a line of its own (gpu=index, MiB, name), in nvidia-smi's order.
+# Each NVIDIA card is a line of its own (gpu=index, MiB, name), in nvidia-smi's order; then what the host's own
+# environment says CUDA may see (visible_gpus).
 PROBE = r"""
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 echo "home=$HOME"
@@ -66,6 +69,8 @@ for t in uv ffmpeg ffprobe; do echo "tool_$t=$(command -v $t || true)"; done
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=%s --format=csv,noheader,nounits 2>/dev/null | sed 's/^/gpu=/'
 fi
+[ -n "${CUDA_VISIBLE_DEVICES+set}" ] && echo "cuda_visible=$CUDA_VISIBLE_DEVICES"
+echo "cuda_order=${CUDA_DEVICE_ORDER-}"
 """ % GPU_QUERY
 
 
@@ -191,7 +196,9 @@ def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None, mak
     if out.returncode:
         raise HostError(f"could not reach {dest} (ssh exit {out.returncode}): {out.stderr.strip()[-500:]}")
     facts = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
-    gpus = parse_gpus("\n".join(line.removeprefix("gpu=") for line in out.stdout.splitlines() if line.startswith("gpu=")))
+    found = parse_gpus("\n".join(line.removeprefix("gpu=") for line in out.stdout.splitlines() if line.startswith("gpu=")))
+    # the cards a node there may be given, if the host's own environment narrows what CUDA sees (visible_gpus)
+    gpus = visible_gpus(found, facts.get("cuda_visible"), facts.get("cuda_order") or None)
     try:
         system = {"Linux": "linux", "Darwin": "darwin"}[facts["system"]]
         arch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}[facts["machine"]]
@@ -200,9 +207,9 @@ def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None, mak
     except (KeyError, ValueError) as e:
         raise HostError(f"{dest} answered, but not as expected ({e}): {out.stdout[-500:]}")
     accelerators, vram = {"cpu"}, 0.0
-    if gpus:
+    if found:
         accelerators.add("cuda")
-        vram = max(g.memory_gb for g in gpus)   # what a runner's minimum is checked against: the largest card
+        vram = max(g.memory_gb for g in gpus or found)   # what a runner's minimum is checked against: the largest card
     if (system, arch) == ("darwin", "arm64"):
         accelerators.add("mps")
         vram = vram or memory   # unified memory

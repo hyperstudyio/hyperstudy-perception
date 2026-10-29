@@ -345,7 +345,7 @@ class Driver:
             # coordinator's node has is waited for, in the node's log
             from .backends.base import GPU_LEASES, LEASE_PERL
             # as lease_command, with the lease's path under the host's $HOME (expanded there)
-            node = " ".join(q(x) for x in LEASE_PERL) + f' "$HOME"/{q(GPU_LEASES)}/{int(s["gpu"])} {q(s["gpu_use"])} ' + node
+            node = " ".join(q(x) for x in LEASE_PERL) + f' "$HOME"/{q(GPU_LEASES)} {int(s["gpu"])} {q(s["gpu_use"])} ' + node
             leases = f'(umask 077 && mkdir -p "$HOME"/{q(GPU_LEASES)})'
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
