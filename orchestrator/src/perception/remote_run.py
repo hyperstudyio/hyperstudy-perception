@@ -320,7 +320,12 @@ class Remote:
     def use_copy_of(self, run: str | None = None):
         """Call the host from the copy a run started with (its record here; without a run, the latest one this machine
         started there), if it is still there: reading a run sends nothing, whatever was edited here since (code review
-        of #46). Otherwise this machine's own copy is sent first, as for a start."""
+        of #46). Only in a root that still passes the private-root check (private_root, as every other path to the
+        host), and with the recorded interpreter only if it is one of that root's orchestrator environments
+        (envs/orchestrator-<key>/bin/python, reached through no link) or the configured one: the record is this
+        machine's file, but what runs there must be what perception made there (security review of #46). Otherwise
+        this machine's own copy is sent first, as for a start."""
+        import re as _re
         records = [record(run)] if run else sorted((home() / "remote").glob("*.json"), reverse=True)
         q = shlex.quote
         for path in records:
@@ -330,12 +335,21 @@ class Remote:
                 continue
             if mine.get("host") != self.host.name or not isinstance(mine.get("copy"), str):
                 continue
-            copy = mine["copy"]
-            if not copy.startswith(f"{self.root}/pipelines/") or \
-                    self.sh(f"test -e {q(copy)}/.complete && test -x {q(mine.get('interpreter') or '')}", check=False).returncode:
-                return   # gone there (hosts clean): this machine's copy then
+            root = self.private_root   # the check, first (a refusal is the command's error)
+            copy, interpreter = mine["copy"], mine.get("interpreter")
+            if not _re.fullmatch(_re.escape(root) + r"/pipelines/[0-9a-f]{20}", copy):
+                return
+            env = _re.fullmatch(_re.escape(root) + r"/envs/orchestrator-[0-9a-f]{20}/bin/python", interpreter or "")
+            if interpreter != self.python and not env:
+                return
+            folder = interpreter.rsplit("/", 1)[0]
+            # the copy there and complete, and the environment's folders no link (its python may be one, as uv makes it)
+            check = (f"test -e {q(copy)}/.complete && [ ! -L {q(copy)} ] && test -x {q(interpreter)}"
+                     + (f' && [ "$(cd {q(folder)} && pwd -P)" = {q(folder)} ]' if env else ""))
+            if self.sh(check, check=False).returncode:
+                return   # gone there (hosts clean), or not what perception made: this machine's copy then
             self.__dict__["copy"] = copy
-            self.__dict__["interpreter"] = mine["interpreter"]
+            self.__dict__["interpreter"] = interpreter
             return
 
     def send_input(self, path: Path, sha: str, run: str, name: str):

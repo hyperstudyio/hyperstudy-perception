@@ -62,6 +62,9 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.setenv("TEST_API_KEY", KEY)
     # the host's Python: this interpreter (it has the orchestrator's dependencies), not an environment made there
     monkeypatch.setattr(remote_run.Remote, "interpreter", property(lambda self: sys.executable))
+    real_init = remote_run.Remote.__init__
+    monkeypatch.setattr(remote_run.Remote, "__init__",
+                        lambda self, host, nodes=None, python=sys.executable: real_init(self, host, nodes, python))
     caps = Capabilities(platform=this_platform(), cpu_cores=8, memory_gb=32, accelerators={"cpu"}, vram_gb=0,
                         tools={"uv": None, "ffmpeg": None, "ffprobe": None})
     host = Host("lab", "lab", str(fake / "home" / ".cache" / "hp"), caps, time.time())
@@ -1086,3 +1089,34 @@ def test_text_output_shows_no_control_characters_a_host_sent(tmp_path, lab, caps
     code = cli.main(["--nodes", str(NODES), "remote", "attach", "lab", run_id])
     printed = capsys.readouterr().out
     assert code == 0 and "\x1b" not in printed and "\x07" not in printed
+
+
+def test_a_recorded_copy_is_used_only_in_a_root_that_is_still_private(tmp_path, lab, capsys):
+    """Security review of use_copy_of: the copy a run started with is run again only after the host's root passes the
+    private-root check (hosts.PRIVATE_ROOT), as every other path to the host does."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    (host_root(lab) / ".hyperstudy-perception").unlink()              # no longer marked as perception's: refused
+    code, out = perception(capsys, "remote", "status", "lab", run_id)
+    assert code == 1 and "already holds other files" in of(out, "error")[0]["problems"][0], out
+
+
+def test_a_recorded_interpreter_is_used_only_from_the_roots_own_environments(tmp_path, lab, capsys):
+    """Security review of use_copy_of: the interpreter is taken from this machine's record only if it is one of the
+    root's orchestrator environments (envs/orchestrator-<key>/bin/python, reached through no link)."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    mine = json.loads(remote_run.record(run_id).read_text())
+    remote = remote_run.Remote(Hosts(tmp_path / "mac").load()["lab"], nodes=[str(NODES)])
+    for interpreter in ("/usr/bin/python3", f"{host_root(lab)}/envs/../../../../bin/python",
+                        f"{host_root(lab)}/pipelines/x/bin/python"):
+        remote_run.record(run_id).write_text(json.dumps({**mine, "interpreter": interpreter}))
+        r = remote_run.Remote(Hosts(tmp_path / "mac").load()["lab"], nodes=[str(NODES)])
+        r.use_copy_of(run_id)
+        assert "interpreter" not in r.__dict__ and "copy" not in r.__dict__, interpreter
+    envs = host_root(lab) / "envs" / ("orchestrator-" + "a" * 20) / "bin"
+    envs.mkdir(parents=True)
+    os.symlink(sys.executable, envs / "python")
+    remote_run.record(run_id).write_text(json.dumps({**mine, "interpreter": str(envs / "python")}))
+    remote.use_copy_of(run_id)
+    assert remote.__dict__.get("interpreter") == str(envs / "python") and remote.__dict__.get("copy") == mine["copy"]
