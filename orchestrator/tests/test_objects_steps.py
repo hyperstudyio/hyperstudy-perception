@@ -122,3 +122,20 @@ def test_object_tracks_hold_their_named_files_and_nothing_else(tmp_path):
     assert check(tmp_path / "good" / "tracks.json") == ["not a directory"]
     # crops of the people on screen, and DINOv3 vectors of them
     assert artifacts.get("object_tracks.v1").kinds == ("frames", "faces", "embeddings")
+
+
+def test_the_track_step_takes_a_card_of_its_own_and_the_api_steps_none(registry):
+    """scheduler.card_for (#42) with the steps' own resources and runners: on a host with two cards the track step takes
+    the larger free card at least its CUDA runner's minimum, waits while another GPU node is on every card that fits, and
+    the names and link steps hold no card at all."""
+    from perception.backends.base import Gpu
+    from perception.scheduler import card_for
+    names, track, link = (registry.get(ref) for ref in STEPS)
+    cuda = next(r for r in track.runners if r.accelerator == "cuda")
+    cards = [Gpu(0, "small", 12.0), Gpu(1, "large", 48.0)]
+    assert (track.resources.gpu, cuda.minimum_vram_gb) == ("exclusive", 16)
+    assert card_for(track.resources.gpu, cuda.minimum_vram_gb, cards, []) == (True, cards[1])
+    assert card_for(track.resources.gpu, cuda.minimum_vram_gb, cards, [("shared", 1, 4.0)]) == (False, None)   # 12 GB is too small
+    assert card_for(track.resources.gpu, cuda.minimum_vram_gb, [Gpu(None, "Apple GPU", 0.0)], []) == (True, Gpu(None, "Apple GPU", 0.0))
+    for m in (names, link):
+        assert card_for(m.resources.gpu, 0, cards, [("exclusive", 1, 16.0)]) == (True, None)
