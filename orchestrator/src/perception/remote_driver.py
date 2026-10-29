@@ -146,7 +146,8 @@ used() {   # when an object was last used (CLEANUP), beside it: never in its fol
 
 # Hold the objects $5... for the attempt whose folder is $2 ($3 relative to the root $1; $4 its tag), making that folder
 # first; say which of them are there already ("there <sha256>"). Not 0 if a hold could not be written (a full disk):
-# the attempt then fails as a crash, after the cleanup has had its chance to free space.
+# Driver.hold then runs the cleanup at once, whatever its interval, and holds them again; if that fails too, the
+# attempt fails as a crash.
 HOLD = r"""hold() {
   r=$1 w=$2 rel=$3 tag=$4
   shift 4
@@ -341,6 +342,7 @@ class Driver:
         self.uploading = False   # an upload to the host began: discard_incoming has something to look for
         self.holding = False     # the attempt's folder was made on the host, holding its inputs (hold)
         self.starting = False    # its node was started, or may have been: its folder is fetch's or its watchdog's now
+        self.stopped = False     # stop() asked the host to stop it (a stop mark in its folder)
         self.fetching = False    # the node finished and its results are coming back: within the deadline's margin
         self.unreachable_since: float | None = None
         self.started = time.monotonic()
@@ -475,9 +477,14 @@ class Driver:
         self.holding = True
         rel = f"work/{r['run']}/{r['node']}/{r['attempt']}"
         from .hosts import KEEP_DAYS
-        clean = cleanup_sh(self.root, self.spec.get("keep_s", KEEP_DAYS * 86400), self.spec.get("min_free_gb"), CLEAN_EVERY_S)
-        script = (f"{HOLD}\nhold {q(self.root)} {q(self.attempt)} {q(rel)} {q(self.tag)} {' '.join(shas)}\nheld=$?\n"
-                  f"{heartbeat_sh(self.attempt)}\n{clean}\n"
+        keep, free = self.spec.get("keep_s", KEEP_DAYS * 86400), self.spec.get("min_free_gb")
+        hold = f"out=$(hold {q(self.root)} {q(self.attempt)} {q(rel)} {q(self.tag)} {' '.join(shas)}); held=$?"
+        # a hold the disk had no room for: the cleanup now, even if a driver ran it a moment ago, then the holds again,
+        # and only the second's word on what is there (the cleanup may have removed what the first found)
+        now = cleanup_sh(self.root, keep, free, 0).rsplit("\n", 1)[1]
+        script = (f"{HOLD}\n{hold}\n{heartbeat_sh(self.attempt)}\n{cleanup_sh(self.root, keep, free, CLEAN_EVERY_S)}\n"
+                  f"if [ $held != 0 ]; then\n{now}\n{hold}\nfi\n"
+                  'printf \'%s\\n\' "$out"\n'
                   '[ $held = 0 ] || { echo "could not hold the inputs on the host (is its disk full?)" >&2; exit 1; }')
         said = self.sh(locked(self.root, script)).stdout.decode(errors="replace")
         for line in removed(said, self.spec["host"]):   # sent again when a node there reads it
@@ -486,12 +493,15 @@ class Driver:
 
     def discard_holds(self):
         """The attempt's folder on the host, if its node never started there (a failed prepare, a refused input, a cancel
-        before the start): removed, which releases its holds. A started node's folder is fetch's or its watchdog's."""
-        if not self.holding or self.starting:
-            return
+        before the start, a start that failed before it wrote the node's pid: no watchdog was started then either):
+        removed, which releases its holds. A started node's folder (it has a pid) is fetch's or its watchdog's."""
+        if not self.holding or (self.starting and self.stopped):
+            return   # a cancel during the start: the start may still be running there, and must find the stop mark
         q = shlex.quote
+        # once start has been sent, only if it never wrote the pid, which it does before it starts the watchdog
+        only = f"[ -e {q(self.attempt)}/pid ] && exit 0; " if self.starting else ""
         try:
-            self.sh(f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true",
+            self.sh(f"{only}rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true",
                     check=False)
         except (Unreachable, subprocess.TimeoutExpired) as e:
             say(f"could not remove this attempt's folder on {self.spec['host']} ({e}): its inputs stay held there until "
@@ -790,6 +800,7 @@ echo $pid
         """Stop this attempt's node on the host, if it started (by its pid file: the driver may have been canceled
         between starting it and reading its pid)."""
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a second cancel must not interrupt the stopping
+        self.stopped = True
         q = shlex.quote
         req, pidfile = f"{self.attempt}/request.json", f"{self.attempt}/pid"
         say(f"stopping it on {self.spec['host']}")

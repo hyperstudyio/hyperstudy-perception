@@ -1686,3 +1686,36 @@ def test_a_hosts_retention_goes_with_its_nodes_and_hosts_clean_expired_removes_o
     assert objects_on(root) == {mine} and (root / "code").exists()      # only what retention removes: not the code
     said = capsys.readouterr().out
     assert "removed 2 objects kept on lab" in said and said.count("unused for 0 hours") == 2
+
+
+def test_a_start_that_failed_before_its_node_started_releases_the_attempts_holds(tmp_path, host):
+    """start raised on the host before it wrote the node's pid (here its folder is missing; a full disk, a lease folder
+    refused): no watchdog was started, so the folder, and its holds, are the driver's to remove."""
+    video = an_input(tmp_path, "clip.mp4", b"frames")
+    driver = attempt(tmp_path, host, {"video": video}, runner_kind="self", python=sys.executable, entry="node.py",
+                     node_dir="nowhere", path=[])
+    inputs = driver.send_inputs()
+    with pytest.raises(RuntimeError):
+        driver.start(inputs)
+    driver.discard_holds()
+    assert not Path(driver.attempt).exists()
+    clean(hp(host), keep_days=0)
+    assert objects_on(hp(host)) == set()
+
+
+def test_a_hold_the_disk_had_no_room_for_is_taken_again_after_a_cleanup_that_runs_then(tmp_path, host, monkeypatch):
+    """Another user filled the host's disk and a driver cleaned there a moment ago: the hold cannot be written, so the
+    cleanup runs at once, whatever its interval, and the hold is taken again; never the first hold's word on what is
+    there (that cleanup may have removed it)."""
+    import perception.remote_driver as rd
+    root = hp(host)
+    old = stored(root, b"years old", used_days_ago=400)
+    video = an_input(tmp_path, "clip.mp4", b"frames")
+    stored(root, b"frames", used_days_ago=400)                    # there, but unheld and as old: the cleanup removes it
+    monkeypatch.setenv("FULL_WHILE", str(root / "objects" / old))  # no room for a hold while the old object is there
+    monkeypatch.setattr(rd, "HOLD", rd.HOLD.replace("  ok=0\n", '  ok=0\n  [ -e "$FULL_WHILE" ] && return 1\n', 1))
+    (root / "holds" / ".cleaned").write_text(str(int(time.time())))
+    driver = attempt(tmp_path, host, {"video": video})
+    sent = driver.send_inputs()
+    assert old not in objects_on(root)
+    assert Path(sent["video"]["object"]).read_bytes() == b"frames"  # sent again: the cleanup had removed it
