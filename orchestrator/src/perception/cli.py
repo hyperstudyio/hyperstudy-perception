@@ -12,7 +12,8 @@
     perception cancel RUN_ID
     perception artifacts RUN_ID
     perception export RUN_ID --format bundle --output DIR
-    perception hosts add NAME USER@HOST [--root DIR] | list | check NAME | remove NAME | clean NAME
+    perception hosts add NAME USER@HOST [--root DIR] [--keep-days N] | list | check NAME | remove NAME | clean NAME [--expired]
+    perception hosts set NAME [--keep-days N] [--min-free-gb N]
     perception cloud on | off | status [aws | runpod]
     perception keys set NAME | list | remove NAME | check NAME
     perception setup [GRAPH.yaml] [--only NODE[,NODE]] [--place NODE=PLACE]
@@ -41,7 +42,7 @@ from .backends.native import NativeBackend, SelfBackend
 from .backends.probe import probe
 from .backends.cloud import Cloud, CloudBackend, RunPodBackend
 from .backends.remote import SshBackend
-from .hosts import HostError, Hosts, probe_dest
+from .hosts import KEEP_DAYS, MIN_FREE_GB, HostError, Hosts, probe_dest
 from .keys import load_secrets
 from .ir import GraphError, compile_graph
 from .manifests import Registry
@@ -507,7 +508,7 @@ def cmd_hosts(args):
         if args.action == "add":
             if not args.dest:
                 raise HostError("hosts add NAME USER@HOST")
-            hosts.add(args.name, args.dest, args.root, args.user, args.port, args.identity)
+            hosts.add(args.name, args.dest, args.root, args.user, args.port, args.identity, args.keep_days, args.min_free_gb)
         elif args.action == "probe":   # a connection test: nothing is added, nothing changes on the host
             dest = args.dest or args.name
             if not dest:
@@ -520,10 +521,12 @@ def cmd_hosts(args):
             else:
                 print(f"{dest}: {caps.platform}, {caps.cpu_cores} cores, {caps.memory_gb} GB, {'/'.join(sorted(caps.accelerators))}")
             return 0
-        elif args.action in ("check", "remove", "clean") and not args.name:
+        elif args.action in ("check", "remove", "clean", "set") and not args.name:
             raise HostError(f"hosts {args.action} NAME")
         elif args.action == "check":
             hosts.check(args.name)
+        elif args.action == "set":
+            hosts.set(args.name, args.keep_days, args.min_free_gb)
         elif args.action == "remove":
             # a node running there could no longer be stopped (cancel finds its place by the host's name)
             busy = Store(home()).db.execute("SELECT run_id, node_id FROM tasks WHERE state IN ('running', 'leased') AND runner LIKE ?",
@@ -538,19 +541,30 @@ def cmd_hosts(args):
                 raise HostError(f"no host {args.name!r}")
             import shlex
             import subprocess
+            from .remote_driver import cleanup_sh, locked, removed
             q = shlex.quote
             root = q(host.root)
-            # not while a node runs there (an attempt's pid that is still that attempt's node); folders a cancel, a lost
-            # connection or a stop mark left are removed with the inputs and code. Only perception's own root
-            # (hosts.MARKER), and inputs are read-only there (made writable to be removed).
-            script = (f'[ -e {root}/.hyperstudy-perception ] || {{ echo "{host.root} is not marked as perception\'s" >&2; exit 4; }}\n'
-                      f'for f in {root}/work/*/*/*/pid; do [ -f "$f" ] || continue; p=$(cat "$f"); '
-                      f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then '
-                      f'echo "a node is running there" >&2; exit 4; fi; done\n'
-                      f"chmod -R u+w {root}/objects 2>/dev/null; rm -rf {root}/objects {root}/code {root}/envs {root}/work")
+            # only perception's own root (hosts.MARKER)
+            script = f'[ -e {root}/.hyperstudy-perception ] || {{ echo "{host.root} is not marked as perception\'s" >&2; exit 4; }}\n'
+            if args.expired:
+                # what the drivers' cleanup removes, now: objects no step holds that are unused for the host's keep_days,
+                # or the unused longest while its disk is short; never the code or environments. A node may be running.
+                script += locked(host.root, cleanup_sh(host.root, host.keep_s, host.min_free_gb, 0))
+            else:
+                # not while a node runs there (an attempt's pid that is still that attempt's node); folders a cancel, a
+                # lost connection or a stop mark left are removed with the inputs and code. Inputs are read-only there
+                # (made writable to be removed); under the objects' lock, so no driver is holding one meanwhile.
+                script += (f'for f in {root}/work/*/*/*/pid; do [ -f "$f" ] || continue; p=$(cat "$f"); '
+                           f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then '
+                           f'echo "a node is running there" >&2; exit 4; fi; done\n'
+                           + locked(host.root, f"chmod -R u+w {root}/objects 2>/dev/null; "
+                                               f"rm -rf {root}/objects {root}/holds {root}/code {root}/envs {root}/work"))
             out = subprocess.run([*host.ssh(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
             if out.returncode:
                 raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")
+            if args.expired and not args.json:
+                print("\n".join(removed(out.stdout, host.name) or [f"nothing kept on {host.name} is past its {host.keep_s / 86400:g} days, "
+                                                                     "and its disk is not short"]))
     except HostError as e:
         if args.json:
             emit("error", problems=[str(e)])
@@ -565,7 +579,8 @@ def cmd_hosts(args):
         c = h["caps"]
         tools = ", ".join(f"{t} {'yes' if p else 'missing'}" for t, p in c["tools"].items())
         print(f"{h['name']:12s} {h['dest']:28s} {c['platform']}, {c['cpu_cores']} cores, {c['memory_gb']} GB, "
-              f"{'/'.join(c['accelerators'])}" + (f" ({gpu_summary(c, h['gpus'])})" if "cuda" in c["accelerators"] else "") + f"; {tools}")
+              f"{'/'.join(c['accelerators'])}" + (f" ({gpu_summary(c, h['gpus'])})" if "cuda" in c["accelerators"] else "") + f"; {tools}"
+              f"; objects kept {h.get('keep_days') if h.get('keep_days') is not None else KEEP_DAYS:g} days")
     return 0
 
 
@@ -814,14 +829,22 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
     rr.set_defaults(fn=cmd_rerun)
     h = sub.add_parser("hosts", help="lab servers nodes can run on, over SSH")
-    h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe"],
-                   help="clean: remove the inputs, the outputs of nodes that ran there and the code kept on a host")
+    h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe", "set"],
+                   help="clean: remove the inputs, the outputs of nodes that ran there and the code kept on a host "
+                        "(--expired: only what has gone unused for the host's keep days, or the oldest while its disk "
+                        "is short; never what a node is using). set: change --keep-days or --min-free-gb")
     h.add_argument("name", nargs="?", help="probe: the ssh destination")
     h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias)")
     h.add_argument("--root", default=".cache/hyperstudy-perception", help="add: where on the host its files go (under its home if relative)")
     h.add_argument("--user", help="add, probe: the user to log in as, over what ~/.ssh/config says")
     h.add_argument("--port", type=int, help="add, probe: the ssh port, over what ~/.ssh/config says")
     h.add_argument("--identity", help="add, probe: a private key file on this machine, over what ~/.ssh/config says")
+    h.add_argument("--keep-days", type=float, help=f"add, set: how long inputs and outputs kept on the host stay there "
+                                                  f"unused (default {KEEP_DAYS})")
+    h.add_argument("--min-free-gb", type=float, help=f"add, set: the free space on the host's disk below which its cleanup "
+                                                    f"removes what is unused, oldest first (default {MIN_FREE_GB}, or a "
+                                                    "tenth of the disk if that is less)")
+    h.add_argument("--expired", action="store_true", help="clean: only what retention removes (see above)")
     h.set_defaults(fn=cmd_hosts)
     c = sub.add_parser("cloud", help="offer a cloud GPU machine to nodes that can use one")
     c.add_argument("action", choices=["on", "off", "status", "check"])

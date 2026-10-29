@@ -1439,3 +1439,250 @@ def test_a_node_caught_between_two_execs_is_still_running(tmp_path):
         other.kill()
         other.wait()
     assert subprocess.run(["sh", "-c", running_sh(other.pid, "/w/r/b/1/request.json")]).returncode == 1        # gone
+
+
+# --- what stays on a host, and for how long -----------------------------------------------------------------------
+
+DF = r"""#!/bin/sh
+# df -Pk PATH: a disk of $FAKE_DISK_KB, less what the host's objects take (du), so removing one frees its space
+used=$(du -sk "$FAKE_ROOT/objects" | cut -f1)
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fake $FAKE_DISK_KB $used $((FAKE_DISK_KB - used)) 50% /"
+"""
+
+
+def hp(host: Path) -> Path:
+    root = host / "home" / ".cache" / "hp"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def stored(root: Path, data: bytes, used_days_ago: float = 0) -> str:
+    """An object on the host as send_inputs or keep files one (read-only, with .complete), last used `used_days_ago`."""
+    import hashlib
+    sha = hashlib.sha256(data).hexdigest()
+    o = root / "objects" / sha
+    o.mkdir(parents=True)
+    (o / "data").write_bytes(data)
+    (o / ".complete").touch()
+    (root / "holds" / sha).mkdir(parents=True, exist_ok=True)
+    (root / "holds" / sha / ".used").touch()
+    then = time.time() - used_days_ago * 86400
+    for p in (o / ".complete", root / "holds" / sha / ".used"):
+        os.utime(p, (then, then))
+    subprocess.run(["chmod", "-R", "a-w", str(o)], check=True)
+    return sha
+
+
+def held(root: Path, sha: str, attempt: str = "work/r0/x/1") -> Path:
+    """A hold on `sha` by an attempt whose folder exists (as send_inputs takes one): its folder."""
+    (root / attempt).mkdir(parents=True, exist_ok=True)
+    (root / "holds" / sha).mkdir(parents=True, exist_ok=True)
+    (root / "holds" / sha / attempt.replace("work/", "").replace("/", "-")).write_text(attempt + "\n")
+    return root / attempt
+
+
+def clean(root: Path, keep_days: float = 7, min_free_gb: float | None = None, every_s: float = 0, env: dict | None = None) -> str:
+    """The host's cleanup, as a driver or `hosts clean --expired` runs it (under the objects' lock); what it said."""
+    from perception.remote_driver import cleanup_sh, locked
+    out = subprocess.run(["sh", "-c", locked(str(root), cleanup_sh(str(root), keep_days * 86400, min_free_gb, every_s))],
+                         capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def objects_on(root: Path) -> set[str]:
+    return {p.name for p in (root / "objects").iterdir() if not p.name.startswith(".")}
+
+
+def attempt(tmp_path, host, inputs: dict, node="n", **spec):
+    """A driver for an attempt about to send its inputs to the fake host (none of its folder there yet)."""
+    from perception.remote_driver import Driver
+    local = tmp_path / f"attempt-{node}"
+    local.mkdir()
+    (local / "request.json").write_text(json.dumps({"run": "r1", "node": node, "attempt": 1, "inputs": inputs}))
+    s = {"dest": "lab", "root": str(hp(host)), "host": "lab", "ssh": lab(host).ssh(), "code": "c", "lost_after_s": 600, **spec}
+    return Driver(local / "request.json", s)
+
+
+def an_input(tmp_path, name: str, data: bytes) -> dict:
+    import hashlib
+    path = tmp_path / name
+    path.write_bytes(data)
+    return {"type": "video.v1", "sha256": hashlib.sha256(data).hexdigest(), "path": str(path)}
+
+
+def test_unheld_objects_unused_for_the_retention_period_are_removed_and_younger_ones_stay(tmp_path, host):
+    root = hp(host)
+    old, young = stored(root, b"old", used_days_ago=8), stored(root, b"young", used_days_ago=6)
+    said = clean(root, keep_days=7)
+    assert objects_on(root) == {young}
+    assert not (root / "holds" / old).exists() and (root / "holds" / young / ".used").exists()
+    assert f"removed {old}" in said and "unused" in said
+    assert clean(root, keep_days=0) and objects_on(root) == set()     # --keep-days 0: whatever no step holds
+
+
+def test_an_object_kept_before_holds_existed_is_aged_by_when_it_was_kept(tmp_path, host):
+    root = hp(host)
+    sha = stored(root, b"from before", used_days_ago=10)
+    subprocess.run(["rm", "-rf", str(root / "holds")], check=True)   # no .used: when it was published (.complete) counts
+    clean(root, keep_days=7)
+    assert objects_on(root) == set()
+
+
+def test_a_held_object_survives_cleanup_until_its_attempts_folder_is_removed(tmp_path, host):
+    root = hp(host)
+    sha = stored(root, b"the video", used_days_ago=30)
+    folder = held(root, sha)
+    clean(root, keep_days=0)
+    assert objects_on(root) == {sha}
+    subprocess.run(["rm", "-rf", str(folder)], check=True)           # fetch, the watchdog or a discard removed it
+    clean(root, keep_days=0)
+    assert objects_on(root) == set() and not (root / "holds" / sha).exists()
+
+
+def test_a_hold_whose_attempt_folder_is_gone_is_stale_and_ignored(tmp_path, host):
+    root = hp(host)
+    sha = stored(root, b"x", used_days_ago=30)
+    held(root, sha)
+    subprocess.run(["rm", "-rf", str(root / "work")], check=True)
+    clean(root, keep_days=7)
+    assert objects_on(root) == set()
+
+
+def test_an_attempt_no_watchdog_will_remove_releases_its_holds_after_a_day(tmp_path, host):
+    """A host that restarted (its watchdogs gone) or a driver lost before it started its node: no node runs there and
+    no driver has written the heartbeat for longer than a finished node's results wait (KEEP_S): the cleanup removes the
+    folder, as its watchdog would have, and the holds go with it. A younger one, or one whose node runs, stays."""
+    root = hp(host)
+    gone, fresh, busy = (stored(root, x, used_days_ago=30) for x in (b"a", b"b", b"c"))
+    old = held(root, gone, "work/r0/x/1")
+    (old / "alive").write_text(str(int(time.time()) - 26 * 3600))
+    (held(root, fresh, "work/r0/y/1") / "alive").write_text(str(int(time.time()) - 3600))
+    running = held(root, busy, "work/r0/z/1")
+    (running / "alive").write_text(str(int(time.time()) - 30 * 3600))
+    node = subprocess.Popen(["sh", "-c", "sleep 30; :", str(running / "request.json")])
+    (running / "pid").write_text(str(node.pid))
+    try:
+        clean(root, keep_days=0)
+    finally:
+        node.kill()
+        node.wait()
+    assert objects_on(root) == {fresh, busy} and not old.exists()
+
+
+def test_when_the_disk_is_short_unheld_objects_go_oldest_used_first_until_it_is_not(tmp_path, host):
+    root = hp(host)
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "df").write_text(DF)
+    (bin_ / "df").chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "FAKE_ROOT": str(root), "FAKE_DISK_KB": "20000"}
+    mb = lambda c: c * (2 << 20)                                      # noqa: E731
+    oldest, older, old, new = (stored(root, mb(c), used_days_ago=d) for c, d in ((b"a", 4), (b"b", 3), (b"c", 2), (b"d", 1)))
+    held(root, oldest)
+    assert clean(root, keep_days=7, env=env) == ""                     # 20 GB or a tenth of the disk: 2000 KB, and ~11800 free
+    assert objects_on(root) == {oldest, older, old, new}
+    said = clean(root, keep_days=7, min_free_gb=15000 / 2**20, env=env)  # ~11800 KB free, 15000 wanted: two must go
+    assert objects_on(root) == {oldest, new}                           # the held one stays, however old
+    assert said.index(older) < said.index(old) and "disk" in said
+
+
+def test_the_drivers_cleanup_runs_at_most_once_an_interval_on_a_host(tmp_path, host):
+    from perception.remote_driver import CLEAN_EVERY_S
+    root = hp(host)
+    sha = stored(root, b"old", used_days_ago=30)
+    (root / "holds" / ".cleaned").write_text(str(int(time.time()) - CLEAN_EVERY_S + 60))   # a driver cleaned a moment ago
+    attempt(tmp_path, host, {}, node="a", keep_s=0).send_inputs()
+    assert objects_on(root) == {sha}
+    (root / "holds" / ".cleaned").write_text(str(int(time.time()) - CLEAN_EVERY_S - 60))
+    attempt(tmp_path, host, {}, node="b", keep_s=0).send_inputs()
+    assert objects_on(root) == set()
+
+
+def test_the_attempts_folder_and_its_holds_exist_before_any_input_is_sent(tmp_path, host):
+    video = an_input(tmp_path, "clip.mp4", b"frames")
+    driver = attempt(tmp_path, host, {"video": video})
+    seen = {}
+    rsync = driver.rsync
+
+    def watching(*args):
+        seen["folder"] = Path(driver.attempt).is_dir()
+        seen["holds"] = [p.read_text().strip() for p in (hp(host) / "holds" / video["sha256"]).iterdir() if not p.name.startswith(".")]
+        rsync(*args)
+    driver.rsync = watching
+    sent = driver.send_inputs()
+    assert seen == {"folder": True, "holds": ["work/r1/n/1"]}
+    assert Path(sent["video"]["object"]).read_bytes() == b"frames"
+    clean(hp(host), keep_days=0)                                       # between the hold and in/: still there
+    assert objects_on(hp(host)) == {video["sha256"]}
+
+
+def test_a_hold_and_a_removal_by_two_drivers_on_one_host_never_interleave(tmp_path, host, monkeypatch, capsys):
+    """Driver a's cleanup has chosen the video for removal (unused for long, held by no one) and is about to remove it,
+    when driver b, on the same host, holds it and looks for it. Under the objects' lock b waits for the removal, finds
+    the video gone and sends it again; without the lock b would find it there, skip it, and link its node to an object
+    removed a moment later. And once b holds it, a's next cleanup leaves it."""
+    import threading
+    import perception.remote_driver as rd
+    root = hp(host)
+    video = an_input(tmp_path, "clip.mp4", b"frames")
+    sha = stored(root, b"frames", used_days_ago=30)
+    choosing = root / "choosing"
+    monkeypatch.setattr(rd, "CLEANUP", rd.CLEANUP.replace('chmod u+w "$r/objects/$s"', f'touch {choosing}; sleep 3; chmod u+w "$r/objects/$s"', 1))
+    a = attempt(tmp_path, host, {}, node="a", keep_s=0)
+    removing = threading.Thread(target=a.send_inputs)
+    removing.start()
+    deadline = time.time() + 20
+    while not choosing.exists():
+        assert time.time() < deadline, "a's cleanup never chose the video"
+        time.sleep(0.02)
+    b = attempt(tmp_path, host, {"video": video}, node="b", keep_s=0)
+    sent = b.send_inputs()
+    removing.join()
+    assert "copying video" in capsys.readouterr().out                    # found gone, so sent again
+    assert Path(sent["video"]["object"]).read_bytes() == b"frames"      # and there for b's node
+    (root / "holds" / ".cleaned").unlink()
+    attempt(tmp_path, host, {}, node="c", keep_s=0).send_inputs()        # another cleanup, while b holds it
+    assert objects_on(root) == {sha}
+
+
+def test_an_attempt_that_never_started_its_node_removes_its_folder_and_so_its_holds(tmp_path, host, rec):
+    coord = coordinator(tmp_path, host)
+    run_id = start(coord, work_graph(tmp_path, rec, fail="prepare"))
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    root = host / "home" / ".cache" / "hp"
+    assert not (root / "work" / run_id).exists()
+    [sha] = [p.name for p in (root / "holds").iterdir() if not p.name.startswith(".")]
+    clean(root, keep_days=0)
+    assert sha not in objects_on(root)                                   # its hold was released with the folder
+
+
+def test_a_hosts_retention_goes_with_its_nodes_and_hosts_clean_expired_removes_only_what_it_says(tmp_path, host, monkeypatch, capsys, rec):
+    from perception.cli import main
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    assert main(["hosts", "add", "lab", "lab", "--keep-days", "3", "--min-free-gb", "50"]) == 0
+    saved = Hosts(tmp_path / "home").load()["lab"]
+    assert (saved.keep_days, saved.min_free_gb) == (3, 50)
+    assert main(["hosts", "set", "lab", "--keep-days", "0"]) == 0
+    assert Hosts(tmp_path / "home").load()["lab"].keep_days == 0
+    assert "objects kept 0 days" in capsys.readouterr().out
+    assert main(["hosts", "check", "lab"]) == 0                         # probed again: its settings stay
+    assert Hosts(tmp_path / "home").load()["lab"].keep_days == 0
+    coord = Coordinator(Store(tmp_path / "home"), Registry.load(NODES),
+                        [SelfBackend(), SshBackend(Hosts(tmp_path / "home").load()["lab"], runner_kind="self", python=sys.executable)],
+                        tick_s=0.02, backoff_s=0.01)
+    run_id = start(coord, work_graph(tmp_path, rec))
+    assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "a")
+    spec = json.loads((coord.store.root / "work" / run_id / "a" / "1" / "remote.json").read_text())
+    assert spec["keep_s"] == 0 and spec["min_free_gb"] == 50
+    root = host / "home" / ".cache" / "hyperstudy-perception"
+    kept = objects_on(root)
+    assert len(kept) == 2                                                # the seed and a's output, held by no one now
+    mine = stored(root, b"in use", used_days_ago=30)
+    held(root, mine)
+    capsys.readouterr()
+    assert main(["hosts", "clean", "lab", "--expired"]) == 0
+    assert objects_on(root) == {mine} and (root / "code").exists()      # only what retention removes: not the code
+    said = capsys.readouterr().out
+    assert "removed 2 objects kept on lab" in said and said.count("unused for 0 hours") == 2

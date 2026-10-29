@@ -3,7 +3,9 @@
     python -m perception.remote_driver --request ATTEMPT/request.json      (with ATTEMPT/remote.json beside it)
 
 1. Copies the node's code (by content: once per version) and its inputs (by sha256: once per host) to the host, and
-   makes its environment's folder there (envs/<env_key>: its uv project, once per lock), which prepare syncs.
+   makes its environment's folder there (envs/<env_key>: its uv project, once per lock), which prepare syncs. The
+   attempt's folder there is made first and holds each input (hold), so the host's cleanup, run then too (CLEANUP:
+   what no step has used for the host's keep_days, or the unused longest while its disk is short), leaves them.
 2. Writes the request there, with the host's paths, and starts the node in its own session (setsid), detached,
    so a dropped connection does not end it, with a watchdog beside it (WATCHDOG) that stops it and removes its folder
    if no driver asks about it for a while. A previous attempt of the same node still running there is stopped first.
@@ -12,7 +14,7 @@
    coordinator treats as a crash (retried within the run's policy), and the host's watchdog ends the node.
 4. Brings out/ and response.json back into this attempt's folder, files each output the node wrote on the host as an
    input is (objects/<sha256>, under the hash this machine's store gives it: keep_outputs), so a node after it there is
-   not sent it again, then removes the attempt's folder on the host.
+   not sent it again, then removes the attempt's folder on the host, which releases its holds.
 
 SIGTERM (the coordinator's cancel) stops the node on the host before the driver exits. Its output (stdout) is the
 attempt's log.txt.
@@ -104,13 +106,13 @@ PUBLISH = r"""publish() {
 # driver that lost touch with the host removes the attempt's uploads (discard_incoming) while this may still run, and
 # part of a tree removed then would otherwise be filed whole, with .complete. Never through a link: out/ and the entry
 # are refused if they are one, and cp -P copies a link as a link (then refused). Read-only once published, as inputs
-# are. A keep that never finished (the host restarted during it) is removed by the next one a day later, or by
-# `perception hosts clean`. 0: kept; 8: there already (an input, or another output with the same content); 7: nothing
-# to keep; 6: the copy is not what was hashed (written to since it came back): removed, and sent when a node there
-# reads it.
+# are, and its last use recorded beside it (used: CLEANUP removes it once unused for long). A keep that never finished
+# (the host restarted during it) is removed by the next one, or a cleanup, a day later, or by `perception hosts clean`.
+# 0: kept; 8: there already (an input, or another output with the same content); 7: nothing to keep; 6: the copy is not
+# what was hashed (written to since it came back): removed, and sent when a node there reads it.
 KEEP = r"""keep() {
   find "$3" -maxdepth 1 -name '.keeping-*' -mmin +1440 -exec chmod -R u+w {} \; -exec rm -rf {} \; 2>/dev/null
-  [ -e "$3/$4/.complete" ] && return 8
+  [ -e "$3/$4/.complete" ] && { used "$3/$4"; return 8; }
   [ -d "$1" ] && [ ! -L "$1" ] && [ -e "$1/$2" ] && [ ! -L "$1/$2" ] || return 7
   k=$(mktemp -d "$3/.keeping-XXXXXX") || return 1
   mkdir "$k/obj" && cat > "$k/sums" && cp -RP "$1/$2" "$k/obj/data" || { chmod -R u+w "$k"; rm -rf "$k"; return 1; }
@@ -124,8 +126,156 @@ KEEP = r"""keep() {
   touch "$k/obj/.complete" && publish "$k/obj" "$3/$4" && chmod -R a-w "$3/$4"
   done=$?
   rm -rf "$k"
+  [ $done = 0 ] && used "$3/$4"
   return $done
+}
+used() {   # when an object was last used (CLEANUP), beside it: never in its folder, which is read-only once published
+  h="${1%/objects/*}/holds/${1##*/}"
+  mkdir -p "$h" && touch "$h/.used"
 }"""
+
+# Retention of what is kept on a host (objects/<sha256>: the inputs sent there and the outputs kept there). An object is
+# removed only when no step holds it: a hold is a file holds/<sha256>/<run>-<node>-<attempt> naming that attempt's
+# folder (work/<run>/<node>/<attempt>), beside objects/ and never inside an object's folder (publish renames those into
+# place and makes them read-only). send_inputs takes its holds before it looks for each object's .complete, after making
+# the attempt's folder, so a hold always names a folder that exists; it is released when that folder is removed (fetch,
+# the watchdog, discard_holds), and a hold whose folder is gone is stale, ignored and removed. When an object was last
+# used is holds/<sha256>/.used, touched by each hold and each keep (for one from before holds existed, its .complete).
+# Holds and removals take the root's objects.lock (LOCKED), so a cleanup that has chosen an object cannot remove it
+# between another driver's hold and its look for .complete: that driver waits, then finds it gone and sends it again.
+
+# Hold the objects $5... for the attempt whose folder is $2 ($3 relative to the root $1; $4 its tag), making that folder
+# first; say which of them are there already ("there <sha256>"). Not 0 if a hold could not be written (a full disk):
+# the attempt then fails as a crash, after the cleanup has had its chance to free space.
+HOLD = r"""hold() {
+  r=$1 w=$2 rel=$3 tag=$4
+  shift 4
+  mkdir -p "$w" || return 1
+  ok=0
+  for s in "$@"; do
+    { mkdir -p "$r/holds/$s" && printf '%s\n' "$rel" > "$r/holds/$s/$tag" && touch "$r/holds/$s/.used"; } || ok=1
+    [ -e "$r/objects/$s/.complete" ] && echo "there $s"
+  done
+  return $ok
+}"""
+
+# Remove what is kept on the host ($1, its root) that no step holds: each object unused for $2 seconds or more, and,
+# while the disk's free space is under $3 KB (-1: hosts.MIN_FREE_GB, or a tenth of the disk if that is less), the unused longest
+# first, until it is not. Not if it last ran less than $4 seconds ago (holds/.cleaned: the drivers run it on every
+# attempt, so a run's many attempts scan the host a few times at most). Also what a step never finished: uploads
+# (.incoming-*) and keeps (.keeping-*) a day old, as KEEP's own sweep, and removals (.evicting-*) a cleanup was stopped
+# in; and an attempt's folder no watchdog will remove, which would hold its objects for ever: no node of it running and
+# no heartbeat for $5 seconds (longer than the watchdog keeps a finished node's results: the host restarted, or the
+# driver was lost before it started the node). Each removal is said ("removed <sha256> <KB> <why>"). Run under LOCKED.
+CLEANUP = r"""cleanup() {
+  r=$1 keep=$2 minfree=$3 every=$4 abandoned=$5
+  mkdir -p "$r/holds" || return 0
+  now=$(date +%s)
+  last=$(cat "$r/holds/.cleaned" 2>/dev/null)
+  case "$last" in ''|*[!0-9]*) last=0;; esac
+  [ $((now - last)) -lt "$every" ] && return 0
+  echo "$now" > "$r/holds/.cleaned"
+  mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+  for d in "$r"/objects/.evicting-*; do [ -e "$d" ] && { chmod -R u+w "$d"; rm -rf "$d"; }; done
+  for d in "$r"/objects/.incoming-* "$r"/objects/.keeping-* "$r"/code/.incoming-* "$r"/envs/.incoming-*; do
+    [ -e "$d" ] || continue
+    t=$(mtime "$d")
+    [ -n "$t" ] && [ $((now - t)) -gt 86400 ] && { chmod -R u+w "$d"; rm -rf "$d"; }
+  done
+  for w in "$r"/work/*/*/*; do
+    [ -d "$w" ] || continue
+    if [ -f "$w/pid" ]; then
+      p=$(cat "$w/pid")
+      c=$(ps -ww -p "$p" -o command= 2>/dev/null)
+      printf '%s' "$c" | grep -qF -- "$w/request.json" && continue
+      kill -0 "$p" 2>/dev/null && case "$c" in '['*|'') continue;; esac   # between two execs (running_sh)
+    fi
+    t=$(cat "$w/alive" 2>/dev/null)
+    case "$t" in ''|*[!0-9]*) t=$(mtime "$w");; esac
+    [ -n "$t" ] && [ $((now - t)) -gt "$abandoned" ] || continue
+    chmod -R u+w "$w" 2>/dev/null; rm -rf "$w"
+    rmdir "${w%/*}" "${w%/*/*}" 2>/dev/null
+  done
+  live() {   # whether an attempt whose folder exists holds $1 (stale holds are removed)
+    found=1
+    for h in "$r/holds/$1"/*; do
+      [ -f "$h" ] || continue
+      a=$(cat "$h" 2>/dev/null)
+      if [ -n "$a" ] && [ -d "$r/$a" ]; then found=0; else rm -f "$h"; fi
+    done
+    return $found
+  }
+  list=$(mktemp "$r/holds/.list-XXXXXX") || return 1
+  for o in "$r"/objects/*; do
+    s=${o##*/}
+    case "$s" in *[!0-9a-f]*) continue;; esac
+    [ ${#s} -eq 64 ] && [ -e "$o/.complete" ] || continue
+    live "$s" && continue
+    t=$(mtime "$r/holds/$s/.used")
+    [ -n "$t" ] || t=$(mtime "$o/.complete")
+    echo "${t:-0} $s" >> "$list"
+  done
+  for d in "$r"/holds/*; do   # holds of objects that are not there (an upload that failed): once no one holds them
+    [ -d "$d" ] && [ ! -e "$r/objects/${d##*/}" ] && ! live "${d##*/}" && rm -rf "$d"
+  done
+  free() { df -Pk "$r" | awk 'NR == 2 {print $4}'; }
+  if [ "$minfree" -lt 0 ]; then
+    minfree=$(( $(df -Pk "$r" | awk 'NR == 2 {print $2}') / 10 ))
+    [ "$minfree" -gt DEFAULT_KB ] && minfree=DEFAULT_KB
+  fi
+  left=$(free)
+  sort -n "$list" | while read -r t s; do
+    age=$((now - t))
+    if [ "$age" -ge "$keep" ]; then
+      if [ "$age" -ge 86400 ]; then why="unused for $((age / 86400)) days"; else why="unused for $((age / 3600)) hours"; fi
+    elif [ "${left:-0}" -lt "$minfree" ]; then why="the disk had $((left / 1024)) MB free"
+    else break; fi
+    kb=$(du -sk "$r/objects/$s" | cut -f1)
+    chmod u+w "$r/objects/$s" && mv "$r/objects/$s" "$r/objects/.evicting-$s" || continue
+    chmod -R u+w "$r/objects/.evicting-$s"; rm -rf "$r/objects/.evicting-$s" "$r/holds/$s"
+    echo "removed $s $kb $why"
+    left=$(free)
+  done
+  rm -f "$list"
+}"""
+
+# perl (as LEASE: flock(1) is not on a Mac): run a command ($2...) holding an exclusive lock on the file $1, the lock's
+# descriptor left open across exec ($^F), so the command holds it until it ends, however its ssh session ends.
+LOCK = r"""$^F = 1023;
+open(my $lock, ">>", shift) or die "perception: cannot open the objects' lock: $!\n";
+flock($lock, LOCK_EX) or die "perception: objects' lock: $!\n";
+exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
+"""
+CLEAN_EVERY_S = 600   # how often a driver's attempt runs the cleanup on its host, at most
+
+
+def locked(root: str, script: str) -> str:
+    """sh that runs the sh `script` holding the host's objects.lock (in `root`): every hold, and every cleanup's choice
+    and removal, so neither falls between the other's steps."""
+    q = shlex.quote
+    return f"perl -MFcntl=:flock -e {q(LOCK)} {q(root)}/objects.lock sh -c {q(script)}"
+
+
+def cleanup_sh(root: str, keep_s: float, min_free_gb: float | None, every_s: float) -> str:
+    """sh for the host's cleanup (CLEANUP), to run under `locked`: objects unused for `keep_s`, and the unused longest
+    while the disk has less than `min_free_gb` free (None: 20 GB or a tenth of the disk, whichever is less); not if it
+    ran less than `every_s` ago."""
+    from .hosts import MIN_FREE_GB
+    free = -1 if min_free_gb is None else round(min_free_gb * 2**20)
+    script = CLEANUP.replace("DEFAULT_KB", str(MIN_FREE_GB << 20))
+    return f"{script}\ncleanup {shlex.quote(root)} {int(keep_s)} {free} {int(every_s)} {KEEP_S + 3600}"
+
+
+def removed(said: str, host: str) -> list[str]:
+    """What a cleanup on `host` removed (its "removed <sha256> <KB> <why>" lines, in the order it removed them), as lines
+    to show: one per object, then their number and size. None if it removed nothing."""
+    gone = [x.split(" ", 3) for x in said.splitlines() if x.startswith("removed ") and x.count(" ") >= 3]
+    gone = [(sha, int(kb) if kb.isdigit() else 0, why) for _, sha, kb, why in gone]
+    if not gone:
+        return []
+    total = sum(kb for _, kb, _ in gone) / 2**20
+    return [*(f"removed {sha[:12]} ({kb / 1024:.1f} MB): {why}" for sha, kb, why in gone),
+            f"removed {len(gone)} object{'s' * (len(gone) != 1)} kept on {host} ({total:.2f} GB) that no step held"]
 
 # The host's backstop for a node its driver lost (the laptop gone, a cancel that could not reach the host): every
 # `every` seconds, while the attempt's folder exists, if no driver has written the heartbeat (alive) for `lost` seconds
@@ -189,6 +339,8 @@ class Driver:
         self.request = json.loads(request_path.read_text())
         self.pid: int | None = None
         self.uploading = False   # an upload to the host began: discard_incoming has something to look for
+        self.holding = False     # the attempt's folder was made on the host, holding its inputs (hold)
+        self.starting = False    # its node was started, or may have been: its folder is fetch's or its watchdog's now
         self.fetching = False    # the node finished and its results are coming back: within the deadline's margin
         self.unreachable_since: float | None = None
         self.started = time.monotonic()
@@ -311,12 +463,48 @@ class Driver:
         # through env(1): the node's command follows nohup and setsid in start, where an assignment would be a command
         return ("env " + "".join(f"{k}={q(v)} " for k, v in env.items()) if env else "") + python
 
+    def hold(self) -> set[str]:
+        """Make the attempt's folder on the host, hold each of its inputs there (HOLD) and say which are there already,
+        in one command under the objects' lock, then run the host's cleanup (CLEANUP, at most every CLEAN_EVERY_S) in
+        the same command: after the holds, so it never removes what this attempt is about to use. The holds last until
+        the folder is removed (fetch, the watchdog, or discard_holds for a node that never started)."""
+        q, r = shlex.quote, self.request
+        shas = [e["sha256"] for e in r["inputs"].values()]
+        if any(not re.fullmatch(r"[0-9a-f]{64}", s) for s in shas):
+            raise RuntimeError(f"an input's sha256 is not one: {shas}")
+        self.holding = True
+        rel = f"work/{r['run']}/{r['node']}/{r['attempt']}"
+        from .hosts import KEEP_DAYS
+        clean = cleanup_sh(self.root, self.spec.get("keep_s", KEEP_DAYS * 86400), self.spec.get("min_free_gb"), CLEAN_EVERY_S)
+        script = (f"{HOLD}\nhold {q(self.root)} {q(self.attempt)} {q(rel)} {q(self.tag)} {' '.join(shas)}\nheld=$?\n"
+                  f"{heartbeat_sh(self.attempt)}\n{clean}\n"
+                  '[ $held = 0 ] || { echo "could not hold the inputs on the host (is its disk full?)" >&2; exit 1; }')
+        said = self.sh(locked(self.root, script)).stdout.decode(errors="replace")
+        for line in removed(said, self.spec["host"]):   # sent again when a node there reads it
+            say(line)
+        return {x.split()[1] for x in said.splitlines() if x.startswith("there ")}
+
+    def discard_holds(self):
+        """The attempt's folder on the host, if its node never started there (a failed prepare, a refused input, a cancel
+        before the start): removed, which releases its holds. A started node's folder is fetch's or its watchdog's."""
+        if not self.holding or self.starting:
+            return
+        q = shlex.quote
+        try:
+            self.sh(f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true",
+                    check=False)
+        except (Unreachable, subprocess.TimeoutExpired) as e:
+            say(f"could not remove this attempt's folder on {self.spec['host']} ({e}): its inputs stay held there until "
+                "the host's cleanup finds it abandoned, a day on")
+
     def send_inputs(self) -> dict[str, dict]:
         """Each input as objects/<sha256>/data on the host, published in one step (PUBLISH): nodes on the host at the
-        same time may send the same input. The node gets it under its own name, a link in its attempt's in/ (the same
-        bytes can arrive under another name: the video renamed)."""
+        same time may send the same input. Each is held first (hold), so no cleanup removes it before the node is done
+        with it; one that is not there is sent. The node gets it under its own name, a link in its attempt's in/ (the
+        same bytes can arrive under another name: the video renamed)."""
         q = shlex.quote
         out = {}
+        there = self.hold()
         for name, entry in self.request["inputs"].items():
             # the content, not a link to it: a graph input is often a link (to a video on an external drive), which rsync
             # would send as a link pointing nowhere there (or somewhere else). The node gets it under the name it has
@@ -325,7 +513,7 @@ class Driver:
             local = given.resolve()
             folder = f"{self.root}/objects/{entry['sha256']}"
             out[name] = {**entry, "path": f"{self.attempt}/in/{name}/{given.name}", "object": f"{folder}/data"}
-            if self.sh(f"test -e {q(folder)}/.complete", check=False).returncode == 0:
+            if entry["sha256"] in there:
                 continue
             size = sum(p.stat().st_size for p in local.rglob("*") if p.is_file()) if local.is_dir() else local.stat().st_size
             say(f"copying {name} ({size / 1e6:.1f} MB) to {self.spec['host']}")
@@ -346,6 +534,7 @@ class Driver:
 
     def start(self, inputs: dict[str, dict]):
         q, s = shlex.quote, self.spec
+        self.starting = True
         request = {**self.request, "inputs": {k: {x: y for x, y in v.items() if x != "object"} for k, v in inputs.items()},
                    "out_dir": f"{self.attempt}/out"}
         node = f"{self.node_python()} {q(s['entry'])}"
@@ -379,6 +568,9 @@ for f in {q(self.node_runs)}/*/pid; do
     kill -s KILL -- "-$old" 2>/dev/null || true
   fi
 done
+# the folder send_inputs made, which holds its inputs (hold): gone only if the host's cleanup took the attempt for one
+# abandoned, and then its inputs may be gone too
+[ -d {q(self.attempt)} ] || {{ echo "this attempt's folder on the host was removed: its inputs are no longer held" >&2; exit 1; }}
 mkdir -p {q(self.attempt)}/out
 {leases}
 {links}
@@ -1102,6 +1294,7 @@ echo $pid
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a cancel now must not skip deleting the machine or charging it
             self.discard_incoming()
+            self.discard_holds()
             if cloud:
                 with self.phase("teardown"):
                     if cloud.get("provider") == "runpod":
