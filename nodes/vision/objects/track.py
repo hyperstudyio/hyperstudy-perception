@@ -1,7 +1,8 @@
 """vision.objects-track: the named things and every posed person's clothing, outlined and tracked within shots by SAM 3
 and embedded by DINOv3, as an object_tracks artifact (object_tracks.py) for the link step. The objects steps' GPU work:
 it calls no API and sends nothing off the machine, so it waits on nothing but its inputs and can run on any machine
-with a GPU (once the Hugging Face token is needed only to download the weights: RUN_ANYWHERE_PLAN.md phase 5).
+with a GPU. It has no Hugging Face token: its prepare downloads the gated weights with one (download_secrets), and the
+step reads them from the cache, offline.
 
 Ported from the bake-off's objects/objects.py (its interactive segment_server.py is not part of this), with clothing
 found on every posed person and no people inside object masks; steps 0, 2 and 3 of the objects node 1.1.0, unchanged.
@@ -163,7 +164,7 @@ with Node() as node:
         raise NodeError("input", str(e)) from None
     classes.update(garments.classes())   # the body nouns' classes are fixed
     device = device_for(node.accelerator)
-    hf_token = node.secret("HF_TOKEN")
+    hf_token = None   # from the cache its prepare filled, offline: the step is given no token (download_secrets)
     timings = {}
 
     # 0. before the GPU work: the gated models are ours to use, every shot fits in memory, and every body's shot is in

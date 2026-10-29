@@ -28,7 +28,8 @@ class NodePlan:
     cached: bool = False
     downloads: list[ModelRef] = field(default_factory=list)
     secrets: list[str] = field(default_factory=list)          # the keys it is given where it runs (its manifest's), and no other
-    missing_secrets: list[str] = field(default_factory=list)
+    download_secrets: list[str] = field(default_factory=list) # the keys its prepare downloads with, when it downloads
+    missing_secrets: list[str] = field(default_factory=list)  # a download secret only when it would download
     cost_usd: float = 0.0
     cost_note: str = ""
     uploads: list[str] = field(default_factory=list)   # data kinds that leave the machine where it would run: to its API, or its inputs to another machine
@@ -95,8 +96,41 @@ def fetched(model) -> bool:
     return bool(model.source) and (model.source.startswith("hf://") or (model.source.startswith("https://") and bool(model.sha256)))
 
 
-def model_cached(model) -> bool:
-    return hf_cached(model.source) if model.source.startswith("hf://") else weights_cached(model.sha256)
+def model_cached(model, downloads_with_secrets: bool = False) -> bool:
+    """In the cache its node reads. For a node with download secrets, which reads it offline: GATED_HF_HOME's when set
+    (its account's, on a host: every Hugging Face weight that node loads is read there, node_env), and only once its
+    prepare finished (prepared_mark): a download cut short leaves a snapshot folder the node could not complete."""
+    if not model.source.startswith("hf://"):
+        return weights_cached(model.sha256)
+    if not downloads_with_secrets:
+        return hf_cached(model.source)
+    hub = hub_read(True)
+    return hf_cached(model.source, hub) and prepared_mark(model.source, hub).is_file()
+
+
+def hub_read(downloads_with_secrets: bool) -> Path:
+    """The Hugging Face cache a node reads here: for a node with download secrets, its account's when GATED_HF_HOME
+    names one (backends/base.hf_cache_env), else this machine's (HF_HUB_CACHE, else HF_HOME's hub/)."""
+    from .backends.base import GATED_HF_HOME
+    if downloads_with_secrets and os.environ.get(GATED_HF_HOME):
+        return Path(os.environ[GATED_HF_HOME]) / "hub"
+    return Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
+
+
+def prepared_mark(source: str, hub: Path) -> Path:
+    """The file that says a node's prepare finished downloading hf://`source` into `hub`: beside the cache, not in
+    huggingface_hub's own folders, and named by the cache too (one machine may have several)."""
+    import hashlib
+    name = source.removeprefix("hf://").replace("/", "--")
+    return hub.parent / "perception-prepared" / f"{name}-{hashlib.sha256(str(hub).encode()).hexdigest()[:8]}"
+
+
+def prepared_marks(manifest, runner) -> list[Path]:
+    """The marks a successful prepare of a node with download secrets makes (prepare_first, perception setup)."""
+    if not manifest.download_secrets:
+        return []
+    hub = hub_read(True)
+    return [prepared_mark(x.source, hub) for x in manifest.models_for(runner) if fetched(x) and x.source.startswith("hf://")]
 
 
 def weights_cached(sha256: str) -> bool:
@@ -106,7 +140,7 @@ def weights_cached(sha256: str) -> bool:
     return folder.is_dir() and sum(1 for p in folder.iterdir() if p.is_file()) == 1
 
 
-def hf_cached(source: str) -> bool:
+def hf_cached(source: str, hub: Path | None = None) -> bool:
     """Is hf://org/name[@revision][/file] in the local Hugging Face cache? With a revision, at that revision: its
     snapshot (snapshots/<commit>, a branch or tag named in refs/), not any other one the cache holds, which the node
     would download the pinned one beside."""
@@ -114,7 +148,7 @@ def hf_cached(source: str) -> bool:
     parts = repo.split("/")
     if len(parts) < 2:
         return False
-    hub = Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
+    hub = hub or hub_read(False)
     folder = hub / f"models--{parts[0]}--{parts[1]}"
     if not pinned:
         return folder.is_dir()
@@ -171,9 +205,8 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         # there (a run never downloads silently: --allow-downloads). Only the ones the chosen runner loads, which are also
         # the models the plan says the node uses
         loaded = m.models_for(placement.runner) if placement else m.models
-        np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
-        np.secrets = list(m.secrets)
-        np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
+        np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x, bool(m.download_secrets)))]
+        np.secrets, np.download_secrets = list(m.secrets), list(m.download_secrets)
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(loaded)
         np.settings = settings(m, node.config)
@@ -204,6 +237,8 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
             sent, to = coord.uploads(m, p)
             np.estimates[p.label] = {"estimate_s": seconds, "estimate_basis": basis,
                                      "cost_usd": p.backend.estimate(m, p.runner, {}, video_s).cost_usd, "uploads": sent, "upload_to": to}
+        # a download secret is needed only for a download: weights already in the cache are read without it
+        np.missing_secrets = [s for s in (*m.secrets, *(m.download_secrets if np.downloads else ())) if s not in coord.secrets]
         if placement and not np.cached:
             chosen = np.estimates[placement.label]
             np.estimate_s, np.estimate_basis = chosen["estimate_s"], chosen["estimate_basis"]

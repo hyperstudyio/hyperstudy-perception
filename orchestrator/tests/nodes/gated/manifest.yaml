@@ -1,0 +1,15 @@
+id: test.gated
+version: 1.0.0
+description: Adds 1 to its input, as a node with gated weights would; its prepare downloads the weights with HF_TOKEN, and both record what they were given (the token's hash, never the token)
+inputs: {a: json.v1}
+outputs: {out: json.v1}
+config:
+  record_dir: {type: string}
+  fail_prepare: {type: boolean, default: false}
+runners:
+  - {kind: self, entry: node.py}
+download_secrets: [HF_TOKEN]
+prepare: prepare.py
+models:
+  - {id: test-gated-weights, source: "https://example.invalid/weights.bin",
+     sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08, licence_mode: commercial-ok, gated: true}

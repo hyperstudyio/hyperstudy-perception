@@ -32,9 +32,10 @@ def test_the_three_steps_declare_together_what_the_unsplit_node_did(registry):
     names, track, link = (registry.get(ref) for ref in STEPS)
     steps = (names, track, link)
     assert set().union(*(m.privacy.external_upload for m in steps)) == UNSPLIT["external_upload"]
-    assert set().union(*(m.secrets for m in steps)) == UNSPLIT["secrets"]
-    # the track step sends nothing and holds no API key; its HF_TOKEN keeps it on this machine until phase 5
-    assert track.privacy.external_upload == [] and track.secrets == ["HF_TOKEN"] and track.cost is None
+    assert set().union(*(m.secrets for m in steps), *(m.download_secrets for m in steps)) == UNSPLIT["secrets"]
+    # the track step sends nothing and holds no key: its HF_TOKEN is its prepare's (phase 5), so it can run on a host
+    assert track.privacy.external_upload == [] and track.secrets == [] and track.download_secrets == ["HF_TOKEN"]
+    assert track.cost is None
     assert names.secrets == link.secrets == ["ANTHROPIC_API_KEY"]
     assert names.privacy.external_upload == link.privacy.external_upload == ["frames", "faces"]
     # the two that spend reserve at least what 1.1.0 did, per minute of the video

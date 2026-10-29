@@ -284,7 +284,7 @@ def run_split(tmp_path, monkeypatch, given) -> dict[str, Path]:
     vocabulary = tmp_path / "names" / "out" / "vocabulary.json"
     run(HERE / "track.py", tmp_path / "track",
         {"vocabulary": vocabulary, **{k: given[k] for k in ("video", "media", "shots", "faces", "bodies")}},
-        {k: CONFIG[k] for k in TRACK_KEYS}, ["HF_TOKEN"], monkeypatch)
+        {k: CONFIG[k] for k in TRACK_KEYS}, [], monkeypatch)   # its token is its prepare's (download_secrets)
     tracks = tmp_path / "track" / "out" / "tracks"
     run(HERE / "link.py", tmp_path / "link", {"tracks": tracks, **{k: given[k] for k in ("shots", "faces", "bodies", "media")}},
         {k: v for k, v in CONFIG.items() if k not in TRACK_KEYS}, ["ANTHROPIC_API_KEY"], monkeypatch, PRODUCER)
@@ -377,7 +377,7 @@ def test_a_track_step_given_a_vocabulary_of_other_shots_fails_on_its_input(tmp_p
     with pytest.raises(AssertionError, match="'code': 'input'.*missing \\['shot:1'\\]"):
         run(HERE / "track.py", tmp_path / "track",
             {"vocabulary": tmp_path / "vocabulary.json", **{k: given[k] for k in ("video", "media", "shots", "faces", "bodies")}},
-            {k: CONFIG[k] for k in TRACK_KEYS}, ["HF_TOKEN"], monkeypatch)
+            {k: CONFIG[k] for k in TRACK_KEYS}, [], monkeypatch)
 
 
 def test_the_tracks_keep_their_embeddings_and_crops_exactly(tmp_path):

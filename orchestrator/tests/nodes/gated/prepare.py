@@ -1,0 +1,15 @@
+"""test.gated's prepare: records what it was given, then puts its weights in the shared weights cache (as
+perception_node.weights does), unless told to fail."""
+
+import json
+import sys
+
+from record import record, weights
+
+config = json.loads(sys.argv[1])
+record(config["record_dir"], "prepare")
+if config.get("fail_prepare"):
+    sys.exit("Hugging Face refused this token")
+weights().parent.mkdir(parents=True, exist_ok=True)
+weights().write_text("test")
+print("test-gated-weights is in the cache")

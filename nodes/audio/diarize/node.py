@@ -26,7 +26,7 @@ with Node() as node:
     waveform = read_waveform(node.input("audio"))
 
     t0 = time.time()
-    pipeline, device = load(node.secret("HF_TOKEN"), node.accelerator)
+    pipeline, device = load(None, node.accelerator)   # from the cache its prepare filled, offline (download_secrets)
     load_s = round(time.time() - t0, 1)
     t0 = time.time()
     found = run(pipeline, waveform)

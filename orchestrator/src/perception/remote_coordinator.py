@@ -21,7 +21,9 @@ on with the laptop closed. A run whose coordinator is gone (the host restarted) 
 Keys. The keys the run's steps declare come in the spec on stdin, and only those are kept (any other is dropped here as
 well). `start` hands them to `serve` through a pipe, its stdin: they are in no file, no command line, no log and no
 environment variable on the host, only in the coordinator's memory, and from it, as on any machine (child_env), in the
-environment of the steps that declare them and no other. While the run lasts, root and the same user's processes can
+environment of the steps that declare them and no other; a download secret (a gated model's token) only in their
+prepare's, while it runs (prepare_first), and the steps then read that Hugging Face account's cache here offline (the
+spec names the account: hosts.hf_home, GATED_HF_HOME). While the run lasts, root and the same user's processes can
 read a step's environment there (/proc/<pid>/environ): what `perception hosts keys HOST on` agrees to. The host's own
 keys (its environment, keychain, ~/.config/hyperstudy) are never read: a run here has the keys its starter sent.
 
@@ -52,8 +54,11 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from . import artifacts
+from .backends.base import GATED_HF_HOME
 from .backends.native import NativeBackend, SelfBackend
+from .hosts import hf_home
 from .ir import GraphError, compile_graph
+from .keycheck import ACCOUNT_NAME
 from .manifests import Registry
 from .release import REPO, home
 from .scheduler import RUN_ID, Coordinator, LeaseHeld
@@ -138,6 +143,16 @@ class HostBackend(NativeBackend):
 
     def project_env(self, runner) -> dict[str, str]:
         return {"PYTHONPATH": str(REPO / "sdk" / "src")} if runner.env else {}
+
+    def sync_command(self, manifest, runner) -> list[str] | None:
+        """Its environment by its lock, without the SDK, as command() syncs it (prepare_first: before a prepare)."""
+        from .backends.remote import SDK_PACKAGE
+        return [shutil.which("uv") or "uv", "sync", "--quiet", "--project", str(self.env_project(manifest, runner)), "--frozen",
+                "--no-dev", "--no-install-package", SDK_PACKAGE]
+
+    def prepare_command(self, manifest, runner, config: dict) -> list[str]:
+        return [shutil.which("uv") or "uv", "run", "--project", str(self.env_project(manifest, runner)), "--frozen", "--no-dev",
+                "--no-sync", "python", str(manifest.directory / manifest.prepare), json.dumps(config)]
 
 
 def backends() -> list:
@@ -264,7 +279,8 @@ def with_inputs(doc: dict, inputs: dict, run: str, make: bool = True) -> dict:
 
 
 def declared(graph) -> set[str]:
-    return {s for n in graph.nodes.values() for s in n.manifest.secrets}
+    """The keys the run's steps declare: at run time, or for their prepare alone (download_secrets)."""
+    return {s for n in graph.nodes.values() for s in (*n.manifest.secrets, *n.manifest.download_secrets)}
 
 
 def spawn(run: str, nodes: list[str], keys: dict[str, str], retention: list[str] = ()) -> subprocess.Popen:
@@ -424,6 +440,12 @@ def cmd_start(args) -> int:
     run, nodes = spec.get("run", ""), spec.get("nodes", [])
     folder = run_folder(run)
     folder.mkdir(parents=True, exist_ok=True)
+    # the gated weights its steps read are its Hugging Face account's (hosts.hf_home): for its plan here, and for serve,
+    # which inherits it, and gives it to the steps with download secrets alone as their HF_HOME (backends/base.node_env)
+    if (account := spec.get("hf_account")) is not None:
+        if not isinstance(account, str) or not ACCOUNT_NAME.fullmatch(account):
+            raise Refusal(f"hf_account: not an account's name: {account!r}")
+        os.environ[GATED_HF_HOME] = hf_home(str(root()), account)
     # under the run's lock, which its coordinator takes too for its last step (releasing the holds, then its pid): so a
     # start either sees it running (and it releases them after) or sees it ended
     from .hosts import KEEP_DAYS

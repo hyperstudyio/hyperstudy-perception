@@ -1786,3 +1786,152 @@ def test_a_bundle_names_the_pipeline_version_that_made_it(tmp_path):
     assert status == "succeeded", coord._tasks(run_id)
     manifest = json.loads((export.bundle(coord, run_id, tmp_path / "bundle") / "manifest.json").read_text())
     assert manifest["pipeline"]["version"] == version("hyperstudy-perception")
+
+
+# --- download secrets: a gated model's token for its prepare alone (RUN_ANYWHERE_PLAN.md phase 5) ---------------
+
+TOKEN = "hf_" + "test" * 8   # made up
+
+
+def records(folder: str, who: str) -> list[dict]:
+    return [json.loads(p.read_text()) for p in sorted(Path(folder).glob(f"{who}-*"))]
+
+
+def gated(root: Path, rec: str, **config) -> dict:
+    return graph_doc(root, [{"id": "g", "uses": "test.gated@1.0.0", "inputs": {"a": "$inputs.seed"},
+                             "config": {"record_dir": rec, **config}}])
+
+
+def test_a_node_with_download_secrets_gets_none_and_runs_offline_after_its_prepare_downloads_with_them(tmp_path, rec, monkeypatch):
+    import hashlib
+    monkeypatch.setenv("PERCEPTION_WEIGHTS", str(tmp_path / "weights"))
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [OneGpu()], {"HF_TOKEN": TOKEN},
+                        tick_s=0.02, backoff_s=0.01)
+    run_id, status = run(coord, gated(tmp_path, rec))
+    assert status == "succeeded", coord._tasks(run_id)
+    [prepare], [node] = records(rec, "prepare"), records(rec, "node-1")
+    assert prepare["sha256"] == hashlib.sha256(TOKEN.encode()).hexdigest() and prepare["offline"] is None
+    # the node: started by execve from the process that ran its prepare, with neither the token nor any other key, and
+    # loading no token stored on the machine either
+    assert node == {"keys": [], "sha256": None, "hf_home": None, "hub_cache": None, "offline": "1", "implicit_token": False,
+                    "weights": True}
+    assert TOKEN not in (coord.store.root / "work" / run_id / "g" / "1" / "request.json").read_text()
+
+    # in the cache now: the next run's node starts at once, offline, and its prepare is not run again
+    doc = gated(tmp_path, rec)
+    (tmp_path / "seed.json").write_text('{"value": 1}')   # another input: not a cache hit
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    assert len(records(rec, "prepare")) == 1 and len(records(rec, "node-1")) == 2
+
+
+def test_a_prepare_that_fails_fails_the_attempt_for_good_and_the_node_never_starts(tmp_path, rec, monkeypatch):
+    monkeypatch.setenv("PERCEPTION_WEIGHTS", str(tmp_path / "weights"))
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [OneGpu()], {"HF_TOKEN": TOKEN},
+                        tick_s=0.02, backoff_s=0.01)
+    run_id, status = run(coord, gated(tmp_path, rec, fail_prepare=True))
+    t = coord._tasks(run_id)["g"]
+    assert status == "failed" and t["error_code"] == "internal" and "preparing the node failed" in t["error"]
+    assert t["attempt"] == 1 and records(rec, "node-1") == []   # not retried (retries: 2), and never started
+    assert "Hugging Face refused this token" in (coord.store.root / "work" / run_id / "g" / "1" / "log.txt").read_text()
+
+
+def test_a_download_secret_is_missing_only_when_the_node_would_download(tmp_path, rec, monkeypatch):
+    from perception.plan import plan as make_plan
+    monkeypatch.setenv("PERCEPTION_WEIGHTS", str(tmp_path / "weights"))
+    coord = coordinator(tmp_path)   # no HF_TOKEN
+    graph = compile_graph(gated(tmp_path, rec), coord.registry)
+    [n] = make_plan(coord, graph, allow_downloads=True).nodes
+    assert (n.secrets, n.download_secrets, n.missing_secrets) == ([], ["HF_TOKEN"], ["HF_TOKEN"])
+    weights = tmp_path / "weights" / "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    weights.mkdir(parents=True)
+    (weights / "weights.bin").write_text("test")
+    planned = make_plan(coord, graph)
+    assert planned.nodes[0].missing_secrets == [] and planned.ok   # read from the cache, without it
+    run_id, status = run(coord, gated(tmp_path, rec))
+    assert status == "succeeded" and records(rec, "prepare") == []
+
+
+@pytest.mark.parametrize("fields, problem", [
+    ({"download_secrets": ["HF_TOKEN"]}, "go only to a prepare script, and the node has none"),
+    ({"download_secrets": ["HF_TOKEN"], "secrets": ["HF_TOKEN"], "prepare": "prepare.py"}, "in secrets and download_secrets"),
+])
+def test_a_download_secret_needs_a_prepare_and_is_not_a_run_time_secret_too(fields, problem):
+    from perception.manifests import Manifest
+    with pytest.raises(ValueError, match=problem):
+        Manifest(id="test.x", version="1.0.0", outputs={"out": "json.v1"},
+                 runners=[{"kind": "self", "entry": "node.py"}], **fields)
+
+
+def test_only_a_node_with_download_secrets_reads_the_accounts_cache_and_plan_looks_for_its_weights_there(tmp_path, monkeypatch):
+    from perception.backends.base import GATED_HF_HOME, node_env
+    from perception.manifests import ModelRef
+    from perception.plan import model_cached, prepared_mark
+    registry = Registry.load(NODES)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "machine"))
+    monkeypatch.setenv(GATED_HF_HOME, str(tmp_path / "account"))
+    assert node_env(registry.get("test.gated@1.0.0"), {})["HF_HOME"] == str(tmp_path / "account")
+    assert node_env(registry.get("test.work@1.0.0"), {})["HF_HOME"] == str(tmp_path / "machine")   # public weights: the machine's
+    (tmp_path / "account" / "hub" / "models--org--m" / "snapshots" / "abc123").mkdir(parents=True)
+    m = ModelRef(id="org/m", source="hf://org/m@abc123", licence_mode="commercial-ok")
+    # where a node with download secrets reads it, and only once its prepare finished: a snapshot folder alone may be a
+    # download cut short, which the node, offline, could not complete
+    assert not model_cached(m, downloads_with_secrets=True)
+    mark = prepared_mark(m.source, tmp_path / "account" / "hub")
+    mark.parent.mkdir(parents=True)
+    mark.touch()
+    assert model_cached(m, downloads_with_secrets=True)
+    assert node_env(registry.get("test.gated@1.0.0"), {})["HF_HUB_CACHE"] == str(tmp_path / "account" / "hub")
+    assert not model_cached(m)                            # not in the machine's cache, which every other node reads
+    (tmp_path / "machine" / "hub" / "models--org--m" / "snapshots" / "abc123").mkdir(parents=True)
+    assert model_cached(m)
+
+
+def test_the_launcher_syncs_without_the_secrets_prepares_with_them_marks_and_starts_what_follows_without_them(tmp_path):
+    """prepare_first: each command records the key-like names it had; the node's command is a wrapper (as the GPU lease
+    is) that records it started only after the prepare."""
+    request = tmp_path / "attempt" / "request.json"
+    request.parent.mkdir()
+    request.write_text("{}")
+    say = "import json, os, sys, time; open(sys.argv[1], 'w').write(json.dumps({'keys': sorted(k for k in os.environ if 'HF' in k), 't': time.time()}))"
+    step = lambda name: [sys.executable, "-c", say, str(tmp_path / name)]
+    mark = tmp_path / "hf" / "perception-prepared" / "org--m@abc-1234"
+    env = {**{k: v for k, v in os.environ.items() if "HF" not in k}, "HF_TOKEN": TOKEN, "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+           "HF_HUB_OFFLINE": "1"}
+    from perception import prepare_first
+    from perception.backends.base import OFFLINE
+    # by its path, in isolated mode, from a folder with no access to this package: as on a host, whose node environment
+    # lacks the coordinator's import path
+    done = subprocess.run([sys.executable, "-I", prepare_first.__file__, "--secrets", "HF_TOKEN", "--offline", json.dumps(OFFLINE),
+                           "--sync", json.dumps(step("sync")),
+                           "--prepare", json.dumps(step("prepare")), "--marks", json.dumps([str(mark)]), "--",
+                           *step("node"), "--request", str(request)], env=env, capture_output=True, text=True, cwd=tmp_path)
+    assert done.returncode == 0, done.stderr
+    sync, prepare, node = (json.loads((tmp_path / n).read_text()) for n in ("sync", "prepare", "node"))
+    assert sync["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN"]                     # no token for a build step
+    assert prepare["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_TOKEN"]      # online, with the token it was given alone
+    assert node["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_OFFLINE"]   # offline, without it
+    assert sync["t"] <= prepare["t"] <= node["t"] and mark.is_file()
+
+
+def native_launcher() -> str:
+    from perception import prepare_first
+    return prepare_first.__file__
+
+
+def test_a_gpu_nodes_lease_is_taken_after_its_prepare_not_while_its_weights_download(tmp_path, monkeypatch):
+    from perception.backends import native
+    started, popen = [], subprocess.Popen
+    monkeypatch.setattr(native.subprocess, "Popen", lambda command, **kw: started.append(command) or popen(["true"]))
+    backend = SelfBackend()
+    monkeypatch.setattr(backend, "lease_folder", lambda: tmp_path / "leases")
+    monkeypatch.setattr(backend, "downloads", lambda m, r: True)
+    m = Registry.load(NODES).get("test.gated@1.0.0")
+    m = m.model_copy(update={"resources": m.resources.model_copy(update={"gpu": "exclusive"})})
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    (attempt / "request.json").write_text(json.dumps({"run": "r", "node": "g", "attempt": 1, "config": {}}))
+    backend.submit(m, m.runners[0], attempt, {}, gpu=0, prepare_secrets={"HF_TOKEN": TOKEN})
+    [command] = started
+    assert command[1:3] == ["-I", native_launcher()]   # the launcher first: the lease is in the node's command
+    assert str(tmp_path / "leases") in command[command.index("--"):]

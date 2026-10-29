@@ -11,8 +11,11 @@ What reaches the other machine: the files git tracks for the node, its uv projec
 inputs. The node's environment is made there from its uv project once per lock (envs/<env_key>), and shared by every
 node and version of the code that has that lock: a change to a node's code reuses it. Those inputs leave this machine, so a remote place is offered only when the graph's policy allows each kind of
 data in them (policy.allow_upload), and runs only with the run's consent (--allow-uploads), as a cloud API's node does.
-Nodes that send data out themselves (to an API) or need secrets are not run remotely: their data would go to two
-places, and secrets stay here.
+Nodes that send data out themselves (to an API) or need secrets at run time are not run remotely: their data would go
+to two places, and those secrets stay here. A node whose only secrets are download secrets (a gated model's token) runs
+on a host whose user agreed to send it keys (`perception hosts keys NAME on`): the token goes over ssh's stdin to its
+prepare alone, which downloads into that Hugging Face account's cache in the host's root (hosts.hf_home), and the node
+then runs from that cache offline, without it (RUN_ANYWHERE_PLAN.md phase 5).
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from pathlib import Path
 from ..hosts import Host
 from ..manifests import Manifest, Runner
 from ..release import files_in, release
-from .base import Capabilities
+from .base import OFFLINE, Capabilities, SubmitRefused
 from .native import REPO, NativeBackend
 
 
@@ -134,9 +137,18 @@ class SshBackend(NativeBackend):
             return f"it sends {', '.join(manifest.privacy.external_upload)} to {manifest.service or 'a service'} itself, so it runs on this machine"
         if manifest.secrets:
             return f"it needs {', '.join(manifest.secrets)}, and secrets are not sent to other machines"
+        if manifest.download_secrets and (why := self.download_refusal(manifest)):
+            return why
         if not manifest.directory.resolve().is_relative_to(REPO):
             return "it is not in the pipeline's repository, and only files the repository tracks are sent to other machines"
         return ""
+
+    def download_refusal(self, manifest: Manifest) -> str:
+        """Why the node's download secrets may not go to this machine's prepare, or ""."""
+        if self.host.keys:
+            return ""
+        return (f"its weights are downloaded with {', '.join(manifest.download_secrets)}, which goes to {self.host.name} "
+                f"only once you agree to it: `perception hosts keys {self.host.name} on`")
 
     def driver_spec(self, attempt_dir: Path) -> dict:
         """What else the driver needs (a cloud machine to start first)."""
@@ -146,7 +158,14 @@ class SshBackend(NativeBackend):
         # the request path on the command line: how a restarted coordinator recognises the driver (native._alive)
         return [sys.executable, "-m", "perception.remote_driver", "--request", str(request)]
 
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
+               prepare_secrets: dict[str, str] | None = None) -> dict:
+        prepare_secrets = prepare_secrets or {}
+        if missing := [k for k in manifest.download_secrets if not prepare_secrets.get(k)]:
+            # refused, not run with whatever the host has (its own login): the plan says so first (missing_secrets),
+            # but a resumed run is not planned again
+            raise SubmitRefused("input", f"its weights are downloaded with {', '.join(missing)}, which is not set here "
+                                         f"(perception keys set {missing[0]})")
         files = code_files(manifest, runner)
         caps = self.host.caps
         spec = {
@@ -162,7 +181,22 @@ class SshBackend(NativeBackend):
             "lost_after_s": self.lost_after_s,
             # how long the host keeps what no step holds, and the free space its cleanup keeps (remote_driver.CLEANUP)
             "keep_s": self.host.keep_s, "min_free_gb": self.host.min_free_gb,
+            # the names of its download secrets, whose values the driver has in its environment and sends to the
+            # host's prepare alone, and the cache of the account they belong to (hosts.hf_home), offline for the node
+            "download_secrets": list(manifest.download_secrets),
+            "hf_home": self.hf_home(prepare_secrets) if manifest.download_secrets else None,
             **self.driver_spec(attempt_dir),
         }
         (attempt_dir / "remote.json").write_text(json.dumps(spec, indent=1))
-        return super().submit(manifest, runner, attempt_dir, env)   # the driver, here: on no card
+        # the driver, here, on no card: with the download secrets it sends, and none of the node's offline setting,
+        # which the host's node is given by the driver itself (remote_driver.node_python)
+        driver_env = {k: v for k, v in env.items() if k not in OFFLINE}
+        return super().submit(manifest, runner, attempt_dir, {**driver_env, **prepare_secrets})
+
+    def hf_home(self, prepare_secrets: dict[str, str]) -> str | None:
+        """The host's cache for the Hugging Face account of the token its prepare is given (None: no token, and the
+        prepare is refused a gated model)."""
+        from ..hosts import hf_home
+        from ..keycheck import hf_account
+        token = prepare_secrets.get("HF_TOKEN")
+        return hf_home(self.host.root, hf_account(token)) if token else None

@@ -117,7 +117,11 @@ class Manifest(Strict):
     # a script in the node's directory, run in its environment with its settings (JSON) before it is first needed, that
     # fetches what the node would otherwise download on first use (its weights): `perception setup`, a remote run
     prepare: str | None = None
-    secrets: list[str] = Field(default_factory=list)
+    secrets: list[str] = Field(default_factory=list)   # given to the step where it runs (an API's key)
+    # given to its prepare only, never to the step, which then runs offline (HF_HUB_OFFLINE): a gated model's token,
+    # needed to download its weights and not to read them from the cache (RUN_ANYWHERE_PLAN.md phase 5). Its prepare
+    # fetches every Hugging Face model its runner loads: a successful one marks them all complete (plan.prepared_marks)
+    download_secrets: list[str] = Field(default_factory=list)
     licence: dict = Field(default_factory=dict)
     cost: Cost | None = None
 
@@ -137,6 +141,14 @@ class Manifest(Strict):
         # the budget counts a billable node's units in its cost.input (plan, the reservation): it must be connected
         if self.cost and self.cost.per != "run" and self.cost.input in self.optional_inputs:
             raise ValueError(f"optional_inputs: {self.cost.input} holds the units cost counts (cost.input), so it cannot be optional")
+        return self
+
+    @model_validator(mode="after")
+    def _download_secrets_need_a_prepare(self):
+        if self.download_secrets and not self.prepare:
+            raise ValueError(f"download_secrets: {', '.join(self.download_secrets)} go only to a prepare script, and the node has none")
+        if both := sorted(set(self.secrets) & set(self.download_secrets)):
+            raise ValueError(f"{', '.join(both)}: in secrets and download_secrets (a step given it at run time downloads with it too)")
         return self
 
     @model_validator(mode="after")

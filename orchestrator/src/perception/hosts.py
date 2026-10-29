@@ -36,8 +36,12 @@ by others:
                          run`, remote_run.py), read-only; envs/orchestrator-<key>/ its orchestrator's environment
     coordinator/         the store of those runs (remote_coordinator.py): their state, results and node environments,
                          and per run (coordinator/remote/<run>/) its inputs' links, its coordinator's pid and log, and the
-                         bundle `remote fetch` exports. Whether such runs may hold the user's keys is per host, in
-                         hosts.json (`perception hosts keys NAME on|off`, off by default)
+                         bundle `remote fetch` exports. Whether such runs may hold the user's keys, and a gated
+                         model's token may go to a step's prepare there, is per host, in hosts.json (`perception hosts
+                         keys NAME on|off`, off by default)
+    hf/<account>/        the Hugging Face cache (HF_HOME) of one account's gated weights (hf_home): downloaded by the
+                         prepare of a step that declares download_secrets, with that account's token, and read offline
+                         by its steps; kept for later runs, removed by `perception hosts clean NAME`
 Outside the root, ~/.cache/hyperstudy-perception-gpus/<machine>-<index> is a card's lease (backends/base.LEASE): a lock
 a GPU node holds while it runs, which every coordinator's nodes there honour (one on the host itself too, whatever root
 the host was added with), and who holds it.
@@ -78,6 +82,15 @@ KEEP_DAYS = 7
 MIN_FREE_GB = 20
 USER = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$")
 
+
+def hf_home(root: str, account: str) -> str:
+    """HF_HOME on a host for one Hugging Face account (keycheck.hf_account): where its token's prepares there download
+    gated weights and its steps there read them, in the host's private root. One cache per account, not per host: access
+    to a gated model is a person's, so weights fetched under one person's approval never serve another's run, even when
+    people share the host's Unix account. Kept for later runs (RUN_ANYWHERE_PLAN.md, gated weights)."""
+    return f"{root}/hf/{account}"
+
+
 # What the host has, as key=value lines. POSIX sh: Linux servers and Macs, no Python needed. Tools are looked for on the
 # PATH a login shell would add too (~/.local/bin is where uv installs itself), since ssh commands get a minimal PATH.
 # Each NVIDIA card is a line of its own (gpu=index, MiB, name), in nvidia-smi's order; then what the host's own
@@ -117,8 +130,9 @@ class Host:
     # how long what a host keeps (objects/) stays there unused, and the free space its cleanup keeps (None: the defaults)
     keep_days: float | None = None
     min_free_gb: float | None = None
-    # whether whole runs coordinated there (`perception remote run`) may be given the keys their steps declare: the
-    # user's explicit yes for this host (`perception hosts keys NAME on`), off until then and again when it is added anew
+    # whether whole runs coordinated there (`perception remote run`) may be given the keys their steps declare, and a
+    # step placed there the token its prepare downloads gated weights with (download_secrets): the user's explicit yes
+    # for this host (`perception hosts keys NAME on`), off until then and again when it is added anew
     keys: bool = False
 
     @property

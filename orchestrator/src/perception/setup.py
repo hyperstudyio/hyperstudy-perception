@@ -15,9 +15,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .backends.base import child_env
+from .backends.base import child_env, download_for
 from .release import REPO, env_vars
 from .manifests import Manifest, Runner
+from .plan import prepared_marks
 
 
 @dataclass
@@ -51,8 +52,9 @@ def setup_node(m: Manifest, runner: Runner, uv: str | None = None, config: dict 
                secrets: dict[str, str] | None = None) -> list[Step]:
     """Sync the node's environment (native runners) and run its prepare script (its weights) with its settings: a graph's
     for the node when there is one (a setting can choose the model), else its defaults. With the environment a run gives
-    the node (child_env): none of this interpreter's settings, and no credential but the secrets it declares (a gated
-    model's token)."""
+    the node (child_env): none of this interpreter's settings, and no credential but the secrets it declares; its
+    download secrets (a gated model's token) only for its prepare, which then marks its weights complete
+    (plan.prepared_marks)."""
     uv = uv or shutil.which("uv") or "uv"
     env = child_env(m.secrets, secrets or {})
     if runner.kind == "native" and runner.env:
@@ -64,9 +66,13 @@ def setup_node(m: Manifest, runner: Runner, uv: str | None = None, config: dict 
         if not ok:
             return steps   # its prepare would only fail the same way
     if m.prepare:
-        python = ([uv, "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev", "python"]
+        python = ([uv, "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev", "--no-sync", "python"]
                   if runner.kind == "native" and runner.env else [sys.executable])
+        env = {**env, **download_for(m, secrets or {})}
         ok, seconds, tail = _run([*python, str(m.directory / m.prepare), json.dumps(m.defaults() if config is None else config)], m.directory, env)
         steps.append(Step(m.ref, "models", ok, seconds, tail))
+        for mark in prepared_marks(m, runner) if ok else []:
+            mark.parent.mkdir(parents=True, exist_ok=True)
+            mark.touch()
     return steps
 

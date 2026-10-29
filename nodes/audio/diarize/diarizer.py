@@ -1,9 +1,10 @@
 """pyannote's speaker-diarization-community-1 pipeline, called through pyannote.audio directly (the bake-off called it
 through WhisperX's DiarizationPipeline, which only wraps it: same pipeline, same in-memory waveform, same output).
 
-The pipeline is gated on Hugging Face: the account whose HF_TOKEN the node is given must have accepted its conditions
-at https://hf.co/pyannote/speaker-diarization-community-1. It is read from the Hugging Face cache at a pinned revision
-(segmentation, embedding and PLDA models, 31 MB in all).
+The pipeline is gated on Hugging Face: the account whose HF_TOKEN the node's prepare downloads it with must have
+accepted its conditions at https://hf.co/pyannote/speaker-diarization-community-1. The node reads it from the Hugging
+Face cache at a pinned revision (segmentation, embedding and PLDA models, 31 MB in all), offline (HF_HUB_OFFLINE), with
+no token.
 
 pyannote.audio 4 sends usage telemetry (pipeline name, audio duration, speaker counts) to otel.pyannote.ai unless
 PYANNOTE_METRICS_ENABLED is false; it is set false here, before pyannote is imported: nothing leaves the machine.
@@ -50,8 +51,20 @@ def load(token: str | None, accelerator: str = "cpu"):
         raise refused from None
     except RepositoryNotFoundError:   # the repository is not visible to this token
         raise NodeError("input", f"Hugging Face did not accept this machine's HF_TOKEN for {REPO}") from None
-    except (HfHubHTTPError, LocalEntryNotFoundError) as e:   # the network, or the hub, failed: not in the cache either
+    except LocalEntryNotFoundError as e:
+        from huggingface_hub import constants
+        if constants.HF_HUB_OFFLINE:   # the node: its prepare downloads, and did not
+            raise NodeError("resources", f"{REPO} is not in this machine's Hugging Face cache, which the node reads alone: "
+                                         "its prepare downloads it (perception setup, or a run with --allow-downloads)") from None
         raise NodeError("transient", f"could not download {REPO} from Hugging Face: {e}") from None
+    except HfHubHTTPError as e:   # the network, or the hub, failed: not in the cache either
+        raise NodeError("transient", f"could not download {REPO} from Hugging Face: {e}") from None
+    except OSError as e:   # a library's own answer, offline, for a file not in the cache (transformers: no LocalEntryNotFoundError)
+        from huggingface_hub import constants
+        if constants.HF_HUB_OFFLINE:
+            raise NodeError("resources", f"{REPO} could not be read from this machine's Hugging Face cache, which the node reads alone: "
+                                         f"its prepare downloads it (perception setup, or a run with --allow-downloads): {e}") from e
+        raise
     if pipeline is None:   # from_pretrained's other answer when it gets no config (pyannote 3 gave it for a gated repo)
         raise refused
     return pipeline.to(torch.device(device)), device

@@ -38,8 +38,10 @@ The checks, before anything is sent:
   `perception hosts keys HOST on` (off by default). Without it a run whose steps need keys is refused, naming them.
   The keys go in the spec on stdin (never a command line, a file or a log, here or there), into the memory of the
   coordinator there, and from it only into the environment of the steps that declare them (child_env), as on this
-  machine. `--dry-run` (the `remote_plan` object) says which keys go to which steps. HF_TOKEN goes to the steps that
-  declare it, as every key does (narrowed to downloads in run-anywhere phase 5).
+  machine. `--dry-run` (the `remote_plan` object) says which keys go to which steps. A download secret (HF_TOKEN) goes
+  with the run the same way, but there only to the prepare of the steps that declare it, which download into that
+  Hugging Face account's cache in the host's root (hosts.hf_home: the spec names the account); the steps read it
+  offline (run-anywhere phase 5).
 
 The run's id is chosen here and said first (`run.created`), so a start whose answer is lost can be asked again with
 `--run-id`: a run already being coordinated there is attached to, not started a second time, and one whose coordinator
@@ -76,6 +78,7 @@ from . import artifacts
 from .artifacts import sha256_file, sha256_tree, special_files
 from .hosts import Host
 from .ir import UPLOAD_KINDS, Graph
+from .keycheck import hf_account
 from .release import REPO, home, release
 from .remote_coordinator import refused_places
 from .remote_driver import PUBLISH, Unreachable
@@ -130,7 +133,7 @@ def remote_plan(host: Host, graph: Graph, doc: dict, secrets: dict[str, str], al
     problems += refused_places(doc)
     keys: dict[str, list[str]] = {}
     for node in graph.nodes.values():
-        for s in node.manifest.secrets:
+        for s in (*node.manifest.secrets, *node.manifest.download_secrets):
             keys.setdefault(s, []).append(node.id)
     if keys and not host.keys:
         problems.append(f"{', '.join(sorted({n for ns in keys.values() for n in ns}))} need {', '.join(sorted(keys))}, and "
@@ -138,7 +141,8 @@ def remote_plan(host: Host, graph: Graph, doc: dict, secrets: dict[str, str], al
                         "(or leave those steps out with --only)")
     if missing := sorted(k for k in keys if k not in secrets):
         problems.append(f"{', '.join(missing)} not set here (perception keys set NAME): {', '.join(sorted({n for k in missing for n in keys[k]}))} need it")
-    nodes = [{"id": n.id, "uses": n.manifest.ref, "secrets": list(n.manifest.secrets), "service": n.manifest.service,
+    nodes = [{"id": n.id, "uses": n.manifest.ref, "secrets": list(n.manifest.secrets),
+              "download_secrets": list(n.manifest.download_secrets), "service": n.manifest.service,
               "uploads": list(n.manifest.privacy.external_upload), "place": n.spec.place} for n in graph.nodes.values()]
     return {"host": host.name, "ok": not problems, "problems": problems, "nodes": nodes, "uploads": list(kinds),
             "upload_to": f"{host.name} (SSH)", "keys": {k: keys[k] for k in sorted(keys)}, "keys_allowed": host.keys,
@@ -395,6 +399,13 @@ def record(run: str) -> Path:
 def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, str], allow_uploads: bool,
           allow_downloads: bool) -> dict:
     """Send what the run needs (module docstring, steps 1-4) and start it there: the host's answer."""
+    declared = {s for n in graph.nodes.values() for s in (*n.manifest.secrets, *n.manifest.download_secrets)}
+    keys = {k: v for k, v in secrets.items() if k in declared} if remote.host.keys else {}
+    # whose cache there its gated weights go in (hosts.hf_home), found before anything is sent
+    try:
+        account = hf_account(keys["HF_TOKEN"]) if keys.get("HF_TOKEN") else None
+    except RuntimeError as e:
+        raise RemoteError(str(e)) from None
     store = Store(home())
     inputs, here = {}, {}
     for name in graph.spec.inputs:
@@ -427,10 +438,8 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
         remote.send_input(Path(here[name]), inputs[name]["sha256"], run, name)
     # nothing of this machine's paths: each input is named by its sha256 and file name (remote_coordinator.with_inputs)
     sent = {**doc, "inputs": {k: {**v, "uri": inputs[k]["filename"]} for k, v in doc["inputs"].items()}}
-    declared = {s for n in graph.nodes.values() for s in n.manifest.secrets}
-    keys = {k: v for k, v in secrets.items() if k in declared} if remote.host.keys else {}
     spec = {"run": run, "graph": sent, "inputs": inputs, "allow_uploads": allow_uploads, "allow_downloads": allow_downloads,
-            "nodes": remote.nodes, "keys": keys,
+            "nodes": remote.nodes, "keys": keys, "hf_account": account,
             # the host's retention, for the runs coordinated there (remote_coordinator.prune)
             "keep_s": remote.host.keep_s, "min_free_gb": remote.host.min_free_gb}
     data = json.dumps(spec).encode()

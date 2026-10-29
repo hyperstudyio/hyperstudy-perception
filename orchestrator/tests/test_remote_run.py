@@ -380,6 +380,31 @@ def test_only_the_keys_the_steps_declare_are_sent(tmp_path, lab, capsys, monkeyp
     assert starts(tmp_path)[1]["keys"] == {}                          # no step declares one: none goes
 
 
+def test_a_download_secret_goes_with_the_run_to_its_steps_prepare_alone_and_the_steps_read_the_accounts_cache(tmp_path, lab, capsys, monkeypatch):
+    rec = str(tmp_path / "rec")
+    token = "hf_" + "7e1d" * 8   # made up
+    monkeypatch.setenv("HF_TOKEN", token)
+    monkeypatch.setattr(remote_run, "hf_account", lambda t: "tester" if t == token else pytest.fail("another token"))
+    graph = graph_file(tmp_path, [work("a", record_dir=rec),
+                                  {"id": "g", "uses": "test.gated@1.0.0", "inputs": {"a": "$nodes.a.out"}, "config": {"record_dir": rec}}])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--allow-downloads", "--dry-run")
+    plan = of(out, "remote_plan")[0]
+    assert code == 1 and plan["keys"] == {"HF_TOKEN": ["g"]} and any("hosts keys lab on" in p for p in plan["problems"])
+    assert [n["download_secrets"] for n in plan["nodes"]] == [[], ["HF_TOKEN"]]
+    keys_on(tmp_path)
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--allow-downloads")
+    assert code == 0 and of(out, "run.finished")[0]["status"] == "succeeded", out
+    assert starts(tmp_path)[0]["keys"] == {"HF_TOKEN": token} and starts(tmp_path)[0]["hf_account"] == "tester"
+    cache = str((host_root(lab) / "hf" / "tester").resolve())
+    (prepare,), (node,) = executions(Path(rec), "prepare"), executions(Path(rec), "node")
+    assert prepare["sha256"] == hashlib.sha256(token.encode()).hexdigest() and prepare["hf_home"] == cache
+    assert prepare["implicit_token"] is False   # the token it was sent, never the host's own login
+    assert node == {"keys": [], "sha256": None, "hf_home": cache, "hub_cache": cache + "/hub", "offline": "1",
+                    "implicit_token": False, "weights": True}
+    assert executions(Path(rec), "a")[0]["keys"] == []
+    assert token not in (lab / "argv.log").read_text() and files_holding(tmp_path, token[3:]) == []
+
+
 # --- import -------------------------------------------------------------------------------------------------------
 
 def test_imported_attempts_get_this_stores_numbers_and_never_replace_its_cache_rows(tmp_path, lab, capsys):
@@ -455,9 +480,10 @@ def test_a_host_is_not_cleaned_while_a_run_is_coordinated_there_and_then_its_cop
     perception(capsys, "remote", "attach", "lab", run_id)
     root = host_root(lab)
     assert (root / "pipelines").exists() and (root / "coordinator").exists()
+    (root / "hf" / "someone" / "hub").mkdir(parents=True)   # an account's gated weights (hosts.hf_home)
     code, out = perception(capsys, "hosts", "clean", "lab")
     assert code == 0, out
-    assert not any((root / d).exists() for d in ("pipelines", "coordinator", "objects", "envs"))
+    assert not any((root / d).exists() for d in ("pipelines", "coordinator", "objects", "envs", "hf"))
 
 
 # --- what a host sends back is not trusted ---------------------------------------------------------------------------
@@ -866,6 +892,40 @@ def test_a_hosts_node_environments_are_kept_by_lock_whatever_copy_runs_them(tmp_
     assert project in " ".join(a) and "--no-install-package" in " ".join(a) and "--no-sync" in " ".join(a)
     assert "UV_PROJECT_ENVIRONMENT" not in env_a and env_a["PYTHONPATH"] == str(release.REPO / "sdk" / "src")
     assert (Path(project) / "uv.lock").read_bytes() == (release.REPO / runner.env / "uv.lock").read_bytes()
+
+
+def test_a_gated_step_on_a_hosts_coordinator_prepares_in_its_lock_kept_environment_then_runs_with_its_request_last(tmp_path, monkeypatch):
+    """Found on liquidswords2: a host's coordinator runs a node through sh, its request the last argument, in an
+    environment kept by lock without the SDK. The launcher's sync and prepare are that environment's, and it finds the
+    request at the end of the node's command."""
+    import perception.backends.native as native
+    import perception.release as release
+    import perception.remote_coordinator as rc
+    from perception import prepare_first
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    m = Registry.load(release.REPO / "nodes").get("audio.diarize@1.1.0")
+    runner = [r for r in m.runners if r.accelerator == "cpu"][0]
+    seen = []
+
+    class Proc:
+        pid = 4242
+
+    popen = native.subprocess.Popen   # git's, for the node's files, runs as it is
+    monkeypatch.setattr(native.subprocess, "Popen",
+                        lambda cmd, **kw: seen.append(cmd) or Proc() if cmd[0] == sys.executable else popen(cmd, **kw))
+    backend = rc.backends()[0]
+    monkeypatch.setattr(backend, "downloads", lambda m, r: True)
+    attempt = tmp_path / "1"
+    attempt.mkdir()
+    (attempt / "request.json").write_text(json.dumps({"run": "r", "node": "diarize", "attempt": 1, "config": {}}))
+    backend.submit(m, runner, attempt, {"PATH": os.environ["PATH"]}, prepare_secrets={"HF_TOKEN": "hf_x"})
+    [cmd] = seen
+    assert cmd[1:3] == ["-I", prepare_first.__file__] and cmd[-1] == str(attempt / "request.json")
+    opts = dict(zip(cmd[3:cmd.index("--"):2], cmd[4:cmd.index("--"):2]))
+    project = str(backend.env_project(m, runner))
+    sync, prepare = json.loads(opts["--sync"]), json.loads(opts["--prepare"])
+    assert project in sync and "--no-install-package" in sync                  # the SDK stays out of the shared environment
+    assert project in prepare and "--no-sync" in prepare
 
 
 def test_an_imported_output_is_checked_against_its_type(tmp_path, lab, capsys):

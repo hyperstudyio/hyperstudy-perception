@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
-from .base import GPU_LEASES, LEASE_FOLDER, Backend, Capabilities, LeaseRefused, gpu_env, holder, lease_command
+from .base import GPU_LEASES, LEASE_FOLDER, OFFLINE, Backend, Capabilities, LeaseRefused, gpu_env, holder, lease_command
 from .probe import probe
 
 from ..release import REPO, env_vars
@@ -78,7 +78,8 @@ class NativeBackend(Backend):
         return [shutil.which("uv") or "uv", "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev",
                 "python", entry, "--request", str(request)]
 
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
+               prepare_secrets: dict[str, str] | None = None) -> dict:
         request = attempt_dir / "request.json"
         env = {**env, **self.project_env(runner)}
         env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
@@ -86,6 +87,19 @@ class NativeBackend(Backend):
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
             command = [*lease_command(str(self.lease_folder()), gpu, manifest.resources.gpu,
                                       holder(json.loads(request.read_text()))), *command]
+        if prepare_secrets is not None and manifest.download_secrets and self.downloads(manifest, runner):
+            # its prepare first, with them, then the node (with its lease: no card is held while weights download)
+            # without them (prepare_first.py)
+            from .. import prepare_first
+            from ..plan import prepared_marks
+            config = json.loads(request.read_text()).get("config", {})
+            sync = self.sync_command(manifest, runner)
+            # by its path, in isolated mode: the node's environment has none of this interpreter's import path
+            command = [sys.executable, "-I", prepare_first.__file__, "--secrets", ",".join(manifest.download_secrets),
+                       "--offline", json.dumps(OFFLINE), *(["--sync", json.dumps(sync)] if sync else []),
+                       "--prepare", json.dumps(self.prepare_command(manifest, runner, config)),
+                       "--marks", json.dumps([str(p) for p in prepared_marks(manifest, runner)]), "--", *command]
+            env = {**env, **prepare_secrets}
         log = open(attempt_dir / "log.txt", "ab")
         proc = subprocess.Popen(command, cwd=manifest.directory, env=env,
                                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -97,6 +111,26 @@ class NativeBackend(Backend):
         tmp.write_text(json.dumps(handle))
         os.replace(tmp, attempt_dir / "handle.json")
         return handle
+
+    def downloads(self, manifest: Manifest, runner: Runner) -> bool:
+        """Whether a weight the runner loads is not in this machine's cache yet (plan.model_cached): its prepare fetches it."""
+        from ..plan import fetched, model_cached
+        return any(fetched(x) and not model_cached(x, bool(manifest.download_secrets)) for x in manifest.models_for(runner))
+
+    def sync_command(self, manifest: Manifest, runner: Runner) -> list[str] | None:
+        """The node's environment synced from its lock, as `uv run` would before its first use (None: `self`)."""
+        if self.kind == "self":
+            return None
+        return [shutil.which("uv") or "uv", "sync", "--project", str(REPO / runner.env), "--frozen", "--no-dev"]
+
+    def prepare_command(self, manifest: Manifest, runner: Runner, config: dict) -> list[str]:
+        """The node's prepare script with its settings, in its environment as sync_command left it, as `perception
+        setup` runs it (setup.py)."""
+        script = str(manifest.directory / manifest.prepare)
+        if self.kind == "self":
+            return [sys.executable, script, json.dumps(config)]
+        return [shutil.which("uv") or "uv", "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev", "--no-sync",
+                "python", script, json.dumps(config)]
 
     def project_env(self, runner: Runner) -> dict[str, str]:
         """What the node's environment needs set: for the package, where uv makes it (in the store)."""

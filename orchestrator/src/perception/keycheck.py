@@ -9,8 +9,10 @@ Access is granted to people, never to organisations, so each user asks for it on
 
 from __future__ import annotations
 
+import functools
 import http.client
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -61,6 +63,26 @@ def whoami(body: bytes) -> dict:
 def account(body: bytes) -> str | None:
     """The account name in Hugging Face's answer, if it says one."""
     return whoami(body).get("name")
+
+
+# what Hugging Face allows in an account's name, and so a folder name on a host (hosts.hf_home)
+ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}")
+
+
+@functools.lru_cache(maxsize=4)
+def hf_account(token: str) -> str:
+    """The Hugging Face account `token` belongs to: what a host's cache of gated weights is named by (hosts.hf_home).
+    RuntimeError when Hugging Face refuses the token, cannot be reached, or names no account fit for a folder."""
+    try:
+        status, body = get(HUGGING_FACE, {"Authorization": f"Bearer {token}"})
+    except NOT_REACHED as e:
+        raise RuntimeError(f"could not reach Hugging Face to find whose HF_TOKEN this is: {e}") from None
+    if status != 200:
+        raise RuntimeError(f"Hugging Face refused this machine's HF_TOKEN (HTTP {status})")
+    name = account(body)
+    if not name or not ACCOUNT_NAME.fullmatch(name):
+        raise RuntimeError(f"Hugging Face named no account for this machine's HF_TOKEN ({name!r})")
+    return name
 
 
 def reads_gated(body: bytes) -> bool:

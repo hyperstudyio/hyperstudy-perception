@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 from . import artifacts
-from .backends.base import Backend, Gpu, LeaseRefused, child_env
+from .backends.base import Backend, Gpu, LeaseRefused, SubmitRefused, download_for, node_env
 from .ir import CompiledNode, Graph, Policy, compile_graph
 from .manifests import Manifest, Registry, Runner
 from .store import Artifact, Store, dumps
@@ -464,8 +464,12 @@ class Coordinator:
         }
         (attempt_dir / "request.json").write_text(json.dumps(request, indent=1))
         try:
-            handle = placement.backend.submit(m, placement.runner, attempt_dir, child_env(m.secrets, self.secrets),
-                                              gpu=card.index if card else None)
+            # the token a gated model is downloaded with goes to its prepare only (download_for), never to the node
+            handle = placement.backend.submit(m, placement.runner, attempt_dir, node_env(m, self.secrets),
+                                              gpu=card.index if card else None, prepare_secrets=download_for(m, self.secrets))
+        except SubmitRefused as e:   # the same every time (a gated step on a host with no token to download with)
+            self._attempt_failed(run_id, graph, node.id, attempt, e.code, f"submit refused: {e}")
+            return
         except LeaseRefused as e:   # the machine's GPU lease folder is not the user's own: the same every time
             self._attempt_failed(run_id, graph, node.id, attempt, "internal", f"submit failed: {e}")
             return

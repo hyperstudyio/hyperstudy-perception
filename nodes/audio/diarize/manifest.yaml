@@ -18,8 +18,9 @@ runners:
   - {kind: native, env: envs/audio, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 2}
   - {kind: native, env: envs/audio, entry: node.py, accelerator: cpu}
 resources: {cpu_cores: 2, memory_gb: 4, gpu: shared}
-# the pipeline is gated on Hugging Face: the token of an account that accepted its conditions
-secrets: [HF_TOKEN]
+# the pipeline is gated on Hugging Face: the token of an account that accepted its conditions, for its prepare alone,
+# which downloads it; the node reads the cache offline (RUN_ANYWHERE_PLAN.md phase 5)
+download_secrets: [HF_TOKEN]
 # fetches the weights ahead of a run (perception setup)
 prepare: prepare.py
 models:

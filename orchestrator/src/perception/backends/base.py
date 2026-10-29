@@ -118,6 +118,14 @@ class LeaseRefused(PermissionError):
     """The machine's lease folder is not the user's own (LEASE_FOLDER): the same every time, so the node fails once."""
 
 
+class SubmitRefused(Exception):
+    """A submit that would be refused again, for the same reason: the node fails once, with this error code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 def lease_command(leases: str, index: int, use: str, who: str) -> list[str]:
     """What goes before a node's command to run it holding card `index`'s lease in the folder `leases` (LEASE), as
     `use` (shared, exclusive); `who` says which attempt holds it (run, node, attempt)."""
@@ -260,9 +268,12 @@ class Backend(ABC):
     def stage_inputs(self, attempt_dir: Path, inputs: dict[str, Artifact]) -> dict[str, dict]: ...
 
     @abstractmethod
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
+               prepare_secrets: dict[str, str] | None = None) -> dict:
         """`gpu`: the card the scheduler gave the node on its machine (Gpu.index), which it is to see alone (gpu_env);
-        None: no card of its own (no GPU, or the machine's GPU as one)."""
+        None: no card of its own (no GPU, or the machine's GPU as one). `env` is the node's (node_env);
+        `prepare_secrets` its download secrets, for its prepare alone (a backend that runs no prepare ignores them, and
+        the node, offline, then finds only what is in the cache)."""
 
     @abstractmethod
     def poll(self, handle: dict) -> str: ...
@@ -313,3 +324,37 @@ def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
         if name in secrets:
             env[name] = secrets[name]
     return env
+
+
+# a node whose downloads are its prepare's (download_secrets) reads only the cache: a missing weight is an error at
+# once, not a download it has no token for. Nor does it load a token stored on the machine (`hf auth login`'s, or
+# HF_TOKEN_PATH's), which huggingface_hub otherwise does even offline
+OFFLINE = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
+# a prepare on another machine: the token it was sent, or none, never the machine's own login (its HF_TOKEN in a
+# profile, its stored token): access to a gated model is a person's. A prepare that prepare_first runs has it from OFFLINE
+SENT_TOKEN_ONLY = {"HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
+
+
+def hf_cache_env(home: str) -> dict[str, str]:
+    """A Hugging Face cache to read and write, whatever the machine sets: HF_HUB_CACHE (which huggingface_hub takes over
+    HF_HOME's hub/, and a lab server may point at a cache every user shares) to the one in `home`."""
+    return {"HF_HOME": home, "HF_HUB_CACHE": f"{home}/hub"}
+# where such a node's gated weights are, when not in the machine's own Hugging Face cache: on a host, its account's
+# (hosts.hf_home), which a coordinator there is told (remote_coordinator). Its HF_HOME, and only its: other nodes keep
+# the machine's cache, so public weights are not kept once per person
+GATED_HF_HOME = "PERCEPTION_GATED_HF_HOME"
+
+
+def node_env(manifest: Manifest, secrets: dict[str, str]) -> dict[str, str]:
+    """What a node runs with: child_env with its run-time secrets, offline when it has download secrets, which only its
+    prepare is given (download_for)."""
+    env = child_env(manifest.secrets, secrets)
+    if not manifest.download_secrets:
+        return env
+    gated = hf_cache_env(env[GATED_HF_HOME]) if env.get(GATED_HF_HOME) else {}
+    return {**env, **gated, **OFFLINE}
+
+
+def download_for(manifest: Manifest, secrets: dict[str, str]) -> dict[str, str]:
+    """The node's download secrets that are set: for its prepare, never for the node."""
+    return {k: secrets[k] for k in manifest.download_secrets if secrets.get(k)}
