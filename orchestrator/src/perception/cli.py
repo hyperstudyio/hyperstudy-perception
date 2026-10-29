@@ -1018,7 +1018,7 @@ def main(argv: list[str] | None = None) -> int:
                         "coordinated there (fetch them first) (--expired: only what has gone unused for the host's keep days, "
                         "or the oldest while its disk is short; never what a node is using). set: change --keep-days or "
                         "--min-free-gb. keys NAME on|off: whether whole runs coordinated there (remote run) may hold the keys "
-                        "their steps declare")
+                        "their steps declare, and a step placed there the token its prepare downloads gated weights with")
     h.add_argument("name", nargs="?", help="probe: the ssh destination")
     h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias); keys: on or off")
     h.add_argument("--root", default=".cache/hyperstudy-perception", help="add: where on the host its files go (under its home if relative)")
