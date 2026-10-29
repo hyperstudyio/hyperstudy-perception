@@ -1146,13 +1146,14 @@ def test_nodes_with_the_same_lock_share_one_environment_on_a_host_and_each_impor
     run_id = start(coord, doc)
     assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "a") + log_of(coord, run_id, "b")
     root = host / "home" / ".cache" / "hp"
-    codes = {}
+    codes, keys = {}, set()
     for id, ref in (("a", "test.native-a@1.0.0"), ("b", "test.native-b@1.0.0")):
         m = coord.registry.get(ref)
         files = code_files(m, m.runners[0])
         codes[id] = code_hash(files)
-        key = env_key(files, "envs/core")
+        keys.add(env_key(files, "envs/core"))
     assert codes["a"] != codes["b"]                         # two versions of the code
+    [key] = keys                                            # one environment's key
     [env] = [p for p in (root / "envs").iterdir()]          # one environment, under its lock's key
     assert env.name == key and sorted(p.name for p in (root / "code").iterdir()) == sorted(codes.values())
     assert sorted(str(p.relative_to(env)) for p in env.rglob("*") if ".venv/" not in str(p)) == [
