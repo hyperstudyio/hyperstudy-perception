@@ -1380,3 +1380,9 @@ def test_a_lease_names_only_the_nodes_holding_it_now(tmp_path):
     first.wait()
     subprocess.run([*lease_command(str(tmp_path), 0, "exclusive", "node x"), "true"], check=True)
     assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["exclusive node x"]
+    held = subprocess.Popen([*lease_command(str(tmp_path), 0, "exclusive", "node y"), "sleep", "1"])
+    time.sleep(0.3)
+    waited = subprocess.run([*lease_command(str(tmp_path), 0, "shared", "node c"), "true"], check=True, capture_output=True, text=True)
+    held.wait()
+    assert "(held by exclusive node y pid " in waited.stderr          # a shared node that waited for an exclusive one
+    assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["shared node c"]   # names it alone

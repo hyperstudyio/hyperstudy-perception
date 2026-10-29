@@ -97,17 +97,25 @@ my ($dir, $index, $use, $who) = splice(@ARGV, 0, 4);
 my $path = "$dir/" . (POSIX::uname())[1] . "-$index";
 open(my $lease, "+>>", $path) or die "perception: cannot open the GPU lease $path: $!\n";
 my $how = $use eq "exclusive" ? LOCK_EX : LOCK_SH;
-if (flock($lease, LOCK_EX | LOCK_NB)) {   # no one holds it: empty it of the lines of nodes that ended
-  truncate($lease, 0);
-  flock($lease, $how) or die "perception: GPU lease $path: $!\n";   # as shared, for a shared node
-} elsif (!flock($lease, $how | LOCK_NB)) {
-  seek($lease, 0, 0);
-  my @held = <$lease>;
-  chomp(my $last = $held[-1] // "");
-  print STDERR "perception: waiting for $path ($use): another run on this machine has that GPU (held by $last)\n";
+sub holders { seek($lease, 0, 0); my @held = <$lease>; chomp(@held); return @held }
+sub take {   # the lease as $how, waited for (and said) if another run holds it
+  return 1 if flock($lease, $how | LOCK_NB);
+  my @held = holders();
+  print STDERR "perception: waiting for $path ($use): another run on this machine has that GPU (held by " . ($held[-1] // "") . ")\n";
   flock($lease, $how) or die "perception: GPU lease $path: $!\n";
   print STDERR "perception: $path is free: starting\n";
-  truncate($lease, 0) if $how == LOCK_EX;   # held alone: the lines left are of nodes that ended
+  return 0;
+}
+if (flock($lease, LOCK_EX | LOCK_NB)) {   # no one holds it: empty it of the lines of nodes that ended
+  truncate($lease, 0);
+  take() if $how == LOCK_SH;   # as shared, for a shared node (not atomic: an exclusive node may come between)
+} elsif (!take()) {   # waited: the nodes that held it then have ended
+  if ($how == LOCK_EX) { truncate($lease, 0) }
+  else {   # an exclusive holder has ended; shared ones may still hold it (a line one of them adds meanwhile may be lost)
+    my @still = grep { !/^exclusive / } holders();
+    truncate($lease, 0);
+    syswrite($lease, join("", map { "$_\n" } @still));
+  }
 }
 syswrite($lease, "$use $who pid $$\n");
 exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
