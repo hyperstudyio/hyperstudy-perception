@@ -1821,3 +1821,15 @@ def test_hosts_set_reaches_the_hosts_sweeper_and_a_full_clean_keeps_its_lock(tmp
     stored(root, b"x")
     assert main(["hosts", "clean", "lab"]) == 0
     assert not (root / "objects").exists() and [p.name for p in (root / "holds").iterdir()] == [".sweeper"]
+
+
+def test_a_fetched_attempt_has_no_holds_left_to_release(tmp_path, host):
+    """fetch removed the attempt's folder, and with it its holds: no further call to the host for them (a host that
+    hangs then would hold the response back, and the warning would say they stay held, which they do not)."""
+    driver, root, there = finished(tmp_path, host, lambda out: (out / "layer.json").write_bytes(b"{}"))
+    driver.holding = driver.starting = True
+    driver.fetch()
+    calls = []
+    driver.sh = lambda *a, **k: calls.append(a)
+    driver.discard_holds()
+    assert calls == []

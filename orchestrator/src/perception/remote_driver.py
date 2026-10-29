@@ -748,6 +748,7 @@ echo $pid
                 self.keep_outputs()
         # the run's folders too once empty (another node of the run may still be using them)
         self.patiently(self.sh, f"rm -rf {q(self.attempt)}; rmdir {q(self.node_runs)} {q(self.node_runs.rsplit('/', 1)[0])} 2>/dev/null || true")
+        self.holding = False   # its holds went with the folder: nothing for discard_holds
 
     def keep_outputs(self):
         """Each output of a node that succeeded, filed on the host as an input is (objects/<sha256>/data, published in
