@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
-from .base import GPU_LEASES, LEASE_FOLDER, Backend, Capabilities, LeaseRefused, gpu_env, holder, lease_command
+from .base import GPU_LEASES, LEASE_FOLDER, OFFLINE, Backend, Capabilities, LeaseRefused, gpu_env, holder, lease_command
 from .probe import probe
 
 from ..release import REPO, env_vars
@@ -90,11 +90,13 @@ class NativeBackend(Backend):
         if prepare_secrets is not None and manifest.download_secrets and self.downloads(manifest, runner):
             # its prepare first, with them, then the node (with its lease: no card is held while weights download)
             # without them (prepare_first.py)
+            from .. import prepare_first
             from ..plan import prepared_marks
             config = json.loads(request.read_text()).get("config", {})
             sync = self.sync_command(runner)
-            command = [sys.executable, "-m", "perception.prepare_first", "--secrets", ",".join(manifest.download_secrets),
-                       *(["--sync", json.dumps(sync)] if sync else []),
+            # by its path, in isolated mode: the node's environment has none of this interpreter's import path
+            command = [sys.executable, "-I", prepare_first.__file__, "--secrets", ",".join(manifest.download_secrets),
+                       "--offline", json.dumps(OFFLINE), *(["--sync", json.dumps(sync)] if sync else []),
                        "--prepare", json.dumps(self.prepare_command(manifest, runner, config)),
                        "--marks", json.dumps([str(p) for p in prepared_marks(manifest, runner)]), "--", *command]
             env = {**env, **prepare_secrets}

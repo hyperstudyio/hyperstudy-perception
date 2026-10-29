@@ -1898,15 +1898,25 @@ def test_the_launcher_syncs_without_the_secrets_prepares_with_them_marks_and_sta
     mark = tmp_path / "hf" / "perception-prepared" / "org--m@abc-1234"
     env = {**{k: v for k, v in os.environ.items() if "HF" not in k}, "HF_TOKEN": TOKEN, "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
            "HF_HUB_OFFLINE": "1"}
-    done = subprocess.run([sys.executable, "-m", "perception.prepare_first", "--secrets", "HF_TOKEN", "--sync", json.dumps(step("sync")),
+    from perception import prepare_first
+    from perception.backends.base import OFFLINE
+    # by its path, in isolated mode, from a folder with no access to this package: as on a host, whose node environment
+    # lacks the coordinator's import path
+    done = subprocess.run([sys.executable, "-I", prepare_first.__file__, "--secrets", "HF_TOKEN", "--offline", json.dumps(OFFLINE),
+                           "--sync", json.dumps(step("sync")),
                            "--prepare", json.dumps(step("prepare")), "--marks", json.dumps([str(mark)]), "--",
-                           *step("node"), "--request", str(request)], env=env, capture_output=True, text=True)
+                           *step("node"), "--request", str(request)], env=env, capture_output=True, text=True, cwd=tmp_path)
     assert done.returncode == 0, done.stderr
     sync, prepare, node = (json.loads((tmp_path / n).read_text()) for n in ("sync", "prepare", "node"))
     assert sync["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN"]                     # no token for a build step
     assert prepare["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_TOKEN"]      # online, with the token it was given alone
     assert node["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_OFFLINE"]   # offline, without it
     assert sync["t"] <= prepare["t"] <= node["t"] and mark.is_file()
+
+
+def native_launcher() -> str:
+    from perception import prepare_first
+    return prepare_first.__file__
 
 
 def test_a_gpu_nodes_lease_is_taken_after_its_prepare_not_while_its_weights_download(tmp_path, monkeypatch):
@@ -1923,5 +1933,5 @@ def test_a_gpu_nodes_lease_is_taken_after_its_prepare_not_while_its_weights_down
     (attempt / "request.json").write_text(json.dumps({"run": "r", "node": "g", "attempt": 1, "config": {}}))
     backend.submit(m, m.runners[0], attempt, {}, gpu=0, prepare_secrets={"HF_TOKEN": TOKEN})
     [command] = started
-    assert command[1:3] == ["-m", "perception.prepare_first"]   # the launcher first: the lease is in the node's command
+    assert command[1:3] == ["-I", native_launcher()]   # the launcher first: the lease is in the node's command
     assert str(tmp_path / "leases") in command[command.index("--"):]
