@@ -54,7 +54,7 @@ from .backends.native import NativeBackend, SelfBackend
 from .ir import GraphError, compile_graph
 from .manifests import Registry
 from .release import REPO, home
-from .scheduler import DONE, RUN_ID, Coordinator, LeaseHeld
+from .scheduler import RUN_ID, Coordinator, LeaseHeld
 from .store import Store
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -330,9 +330,10 @@ def cmd_events(args) -> int:
 
 
 def cmd_dump(args) -> int:
-    """Everything `remote fetch` imports, once the run has ended: its run, task and event rows, the cache rows of its
-    results, the artifact rows and store folders of every object they name (relative to the store: the other machine
-    copies them, then checks each against its hash), each final attempt's log, and the bundle exported here."""
+    """What `remote fetch` reads, once the run has ended: its run, task and event rows, each final attempt's log and the
+    bundle exported here (paths relative to the store). The other machine trusts none of it but what it checks: it
+    copies the objects the tasks' outputs name from their places in the store (Store.object_dir) and checks each against
+    its hash, and makes cache rows only from tasks whose keys it computes itself (remote_run, fetch and import)."""
     from . import export as export_mod
     store = Store(home())
     run = args.run
@@ -344,15 +345,6 @@ def cmd_dump(args) -> int:
         raise Refusal(f"run {run} is still running here" if state == "running" else
                       f"run {run}'s coordinator is gone: `perception remote run` with --run-id {run} resumes it")
     tasks = [dict(t) for t in store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run,))]
-    keys = [t["cache_key"] for t in tasks if t["state"] in DONE and t["cache_key"]]
-    cache = [dict(c) for k in keys for c in store.db.execute("SELECT * FROM cache WHERE key=?", (k,))]
-    named = {}
-    for doc in [t["outputs"] for t in tasks] + [c["outputs"] for c in cache]:
-        for a in json.loads(doc or "{}").values():
-            if a["shape"] in ("file", "tree"):
-                named[a["hash"]] = a["shape"]
-    artifacts = [dict(a) for h in named for a in store.db.execute("SELECT * FROM artifacts WHERE hash=?", (h,))]
-    objects = [store.object_dir(shape, h).relative_to(store.root).as_posix() for h, shape in sorted(named.items())]
     logs = []
     for t in tasks:
         log = store.root / "work" / run / t["node_id"] / str(t["attempt"]) / "log.txt"
@@ -370,8 +362,7 @@ def cmd_dump(args) -> int:
         if (out / "manifest.json").exists():
             bundle = out.relative_to(store.root).as_posix()
     events = [dict(e) for e in store.events(run)]
-    answer(run=dict(row), tasks=tasks, cache=cache, artifacts=artifacts, objects=objects, logs=logs, bundle=bundle,
-           bundle_problem=problem, events=events)
+    answer(run=dict(row), tasks=tasks, logs=logs, bundle=bundle, bundle_problem=problem, events=events)
     return 0
 
 

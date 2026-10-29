@@ -46,16 +46,22 @@ The run's id is chosen here and said first (`run.created`), so a start whose ans
 is gone (the host restarted) is resumed.
 
 `fetch` exports the run's bundle there and brings it back, and imports the run into this machine's store: its run,
-task and event rows, its results' cache rows and every object they name (copied, then checked against its hash here,
-as the store publishes). Imported tasks get attempt numbers of this store's own (one past the last it has for that
-node), their attempt logs beside them, and where they ran says HOST (`ran_on`); a cache row this store already has is
-never replaced. After a fetch, planning the same steps placed on HOST here finds them cached.
+task and event rows and every object its results name (copied, then checked against its hash here, as the store
+publishes), and a cache row for each result whose key this machine computes itself for that step (its node's identity
+on HOST, its config, its inputs' hashes). Nothing the host answers is trusted beyond what is checked (the host is
+shared: root or another of the user's processes there could rewrite its store): the graph, nodes and inputs are this
+machine's own record of the run (only runs it started are imported), every name must be a node of that graph and every
+path one of the store's own layouts, and nothing comes back as a link. Imported tasks get attempt numbers of this
+store's own (one past the last it has for that node), their attempt logs beside them, and where they ran says HOST
+(`ran_on`); a cache row this store already has is never replaced. After a fetch, planning the same steps placed on HOST
+here finds them cached.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 import shutil
@@ -172,9 +178,12 @@ class Remote:
             raise RemoteError(f"on {self.host.name}: exit {out.returncode}: {out.stderr.decode(errors='replace').strip()[-500:]}")
         return out
 
-    def rsync(self, *args: str):
+    def rsync(self, *args: str, links: bool = True):
+        """`links`: copy links as links (what this machine sends: the copy's files, never followed). Bringing anything
+        back, none: a link there is skipped, never made here, where it could point at a file of this machine's."""
         shell = " ".join(shlex.quote(a) for a in self.ssh)
-        out = subprocess.run(["rsync", "-rlt", "-e", shell, *args], capture_output=True, text=True, timeout=24 * 3600)
+        out = subprocess.run(["rsync", "-rlt" if links else "-rt", "-e", shell, *args], capture_output=True, text=True,
+                             timeout=24 * 3600)
         if out.returncode:
             raise RemoteError(f"rsync {' '.join(args[-2:])} failed ({out.returncode}): {out.stderr.strip()[-500:]}")
 
@@ -359,7 +368,9 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
         inputs[name] = {"sha256": sha, "filename": path.name}
         here[name] = str(path)
     record(run).parent.mkdir(parents=True, exist_ok=True)
-    record(run).write_text(json.dumps({"host": remote.host.name, "inputs": here, "graph": str(graph.source or "")}))
+    # the graph as this machine ran it (its inputs at their paths here): what an import trusts, never the host's copy
+    record(run).write_text(json.dumps({"host": remote.host.name, "inputs": here, "graph": str(graph.source or ""),
+                                       "graph_doc": doc}))
     remote.copy, remote.interpreter   # the copy and its environment before the video: a host that cannot run it gets no clip
     for name in graph.spec.inputs:
         remote.send_input(Path(here[name]), inputs[name]["sha256"], run, name)
@@ -389,8 +400,13 @@ def follow(remote: Remote, run: str, on_event, after: int = 0) -> str:
             time.sleep(POLL_S * 5)
             continue
         waiting = False
-        for e in got["events"]:
-            on_event(e)
+        if got.get("status") not in RUN_STATES | {"running"} or not isinstance(got.get("events"), list):
+            raise RemoteError(f"{remote.host.name} did not answer as a run's events")
+        for e in got["events"]:   # data from the host, said as it is (JSON-escaped under --json), never a path here
+            if not isinstance(e, dict) or type(e.get("id")) is not int or e["id"] <= after:
+                raise RemoteError(f"{remote.host.name} answered with an event that is not one")
+            on_event({"node": _text(e.get("node"), "event node", 64), "kind": _text(e.get("kind"), "event kind", 64) or "",
+                      "message": _text(e.get("message"), "event") or "", "at": _text(e.get("at"), "event time", 32)})
             after = e["id"]
         if got["status"] != "running":
             return got["status"]
@@ -401,172 +417,337 @@ def follow(remote: Remote, run: str, on_event, after: int = 0) -> str:
 
 
 # --- fetch and import --------------------------------------------------------------------------------------------------
+#
+# Everything a host sends back is data that root or another process of the user's there could have rewritten (the host is
+# shared). So an import trusts nothing of it but bytes it checks: the run's graph, its nodes and its inputs come from this
+# machine's own record of the run it started (record); every name the dump gives is checked against them before it
+# names a path here; each object is checked against its hash here; and a cache row is added only for a task of this run
+# whose key this machine computes itself (cache_key: its node's identity on the host's platform and accelerator, its
+# config, its inputs' hashes), so no host can plant a result under a key another step or other inputs would look up.
+
+NODE_ID = re.compile(r"^[A-Za-z0-9_-]+$")           # as ir.NodeSpec.id
+PLACE = re.compile(r"^[a-z][a-z0-9-]*:[a-z]+$")      # as ir.NodeSpec.place
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+KIND = re.compile(r"^[a-z][a-z._-]{0,40}$")
+TASK_STATES = {"succeeded", "cached", "failed", "canceled"}
+RUN_STATES = {"succeeded", "failed", "canceled"}
+ERROR_CODES = {"transient", "input", "schema", "privacy", "licence", "resources", "internal", "budget", "upstream", "policy"}
+
+
+def _number(x, what: str, none: bool = True) -> float | None:
+    if x is None and none:
+        return None
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        raise RemoteError(f"the host's {what} is not a number")
+    return x
+
+
+def _text(x, what: str, limit: int = 4000) -> str | None:
+    if x is None:
+        return None
+    if not isinstance(x, str):
+        raise RemoteError(f"the host's {what} is not text")
+    return x[:limit]
+
+
+def _usage(x) -> dict:
+    try:
+        u = json.loads(x) if isinstance(x, str) else {}
+    except ValueError:
+        u = {}
+    return u if isinstance(u, dict) else {}
+
+
+def _within(got: Path, rel: str) -> Path:
+    """A path the dump named, as it lies under what was brought back: never outside it (after links are resolved)."""
+    path = (got / rel).resolve()
+    if not path.is_relative_to(got.resolve()):
+        raise RemoteError(f"{rel} is not where the host's store keeps it")
+    return path
+
+
+def checked(dump: dict, run: str, graph: Graph) -> dict:
+    """The dump, checked against this machine's own record of the run (module comment above): the run it names, one task
+    per node of the graph, each name and number of the kind it must be, each output a store object of the type its node
+    makes, and every path one of the layouts the host's store has. A RemoteError names the first thing that is not."""
+    if not isinstance(dump, dict) or not isinstance(dump.get("run"), dict) or dump["run"].get("id") != run:
+        raise RemoteError(f"the host answered for another run than {run}: nothing imported")
+    r = dump["run"]
+    if r.get("status") not in RUN_STATES:
+        raise RemoteError(f"run {run} has not ended there")
+    nodes = graph.nodes
+    tasks = {}
+    for t in dump.get("tasks") or []:
+        node = t.get("node_id") if isinstance(t, dict) else None
+        if not isinstance(node, str) or not NODE_ID.match(node) or node not in nodes or node in tasks:
+            raise RemoteError(f"the host's dump names {node!r}, not a node of the run (or twice)")
+        attempt = t.get("attempt")
+        if type(attempt) is not int or not 0 <= attempt < 10_000:
+            raise RemoteError(f"{node}: the host's attempt {attempt!r} is not a number of one")
+        if t.get("state") not in TASK_STATES:
+            raise RemoteError(f"{node}: the host's state {t.get('state')!r} is not an ended task's")
+        runner = t.get("runner")
+        if runner is not None and not (isinstance(runner, str) and PLACE.match(runner)):
+            raise RemoteError(f"{node}: the host's place {runner!r} is not one")
+        key = t.get("cache_key")
+        if key is not None and not (isinstance(key, str) and HEX64.match(key)):
+            raise RemoteError(f"{node}: the host's cache key is not one")
+        code = t.get("error_code")
+        if code is not None and code not in ERROR_CODES:
+            raise RemoteError(f"{node}: the host's error code {code!r} is not one")
+        outputs = {}
+        if t["state"] in ("succeeded", "cached"):
+            m = nodes[node].manifest
+            try:
+                claimed = json.loads(t.get("outputs") or "")
+            except ValueError:
+                claimed = None
+            if not isinstance(claimed, dict) or set(claimed) != set(m.outputs):
+                raise RemoteError(f"{node}: the host's outputs are not what {m.ref} makes")
+            for name, a in claimed.items():
+                want = m.outputs[name]
+                if not isinstance(a, dict) or a.get("type") != want or a.get("shape") != artifacts.get(want).shape:
+                    if isinstance(a, dict) and a.get("shape") not in ("file", "tree"):
+                        raise RemoteError(f"{node}.{name}: not a store object (a {a.get('shape')!r})")
+                    raise RemoteError(f"{node}.{name}: not what {m.ref} makes ({want})")
+                if a["shape"] not in ("file", "tree"):
+                    raise RemoteError(f"{node}.{name}: not a store object (a {a['shape']!r})")
+                if not isinstance(a.get("hash"), str) or not HEX64.match(a["hash"]):
+                    raise RemoteError(f"{node}.{name}: its hash is not one")
+                outputs[name] = {"hash": a["hash"], "shape": a["shape"], "type": want}
+        gpu = t.get("gpu")
+        if gpu is not None and type(gpu) is not int:
+            raise RemoteError(f"{node}: the host's card is not a number")
+        tasks[node] = {"node_id": node, "attempt": attempt, "state": t["state"], "runner": runner, "cache_key": key,
+                       "outputs": outputs, "usage": _usage(t.get("usage")), "error_code": code,
+                       "error": _text(t.get("error"), "error"), "gpu": gpu,
+                       **{f: _number(t.get(f), f, none=f in ("started_at", "finished_at"))
+                          for f in ("started_at", "finished_at", "cost_usd", "gpu_vram_gb")}}
+    if set(tasks) != set(nodes):
+        raise RemoteError(f"the host's dump does not have the run's nodes ({', '.join(sorted(nodes))})")
+    logs = {}
+    for entry in dump.get("logs") or []:
+        node, attempt = entry.get("node") if isinstance(entry, dict) else None, entry.get("attempt") if isinstance(entry, dict) else None
+        if node not in tasks or type(attempt) is not int or attempt != tasks[node]["attempt"] or attempt == 0 \
+                or entry.get("path") != f"work/{run}/{node}/{attempt}/log.txt":
+            raise RemoteError(f"a log the host named ({entry.get('path') if isinstance(entry, dict) else entry!r}) is not where its "
+                              "store keeps an attempt's")
+        logs[node] = entry["path"]
+    bundle = dump.get("bundle")
+    if bundle is not None and bundle != f"remote/{run}/bundle":
+        raise RemoteError(f"the bundle the host named ({bundle!r}) is not where its store keeps one")
+    events = []
+    for e in dump.get("events") or []:
+        node = e.get("node_id") if isinstance(e, dict) else "?"
+        if node is not None and node not in nodes:
+            raise RemoteError(f"an event names {node!r}, not a node of the run")
+        if type(e.get("id")) is not int or not (isinstance(e.get("kind"), str) and KIND.match(e["kind"])):
+            raise RemoteError("an event of the host's is not one")
+        events.append({"id": e["id"], "node_id": node, "kind": e["kind"], "message": _text(e.get("message"), "event") or "",
+                       "at": _number(e.get("at"), "event time", none=False)})
+    run_row = {f: _number(r.get(f), f, none=f == "finished_at") for f in ("created_at", "finished_at", "max_cost_usd", "spent_usd")}
+    return {"run": {**run_row, "status": r["status"]}, "tasks": tasks, "logs": logs, "bundle": bundle, "events": events,
+            "bundle_problem": _text(dump.get("bundle_problem"), "bundle problem", 500)}
+
 
 def fetch(remote: Remote, run: str, output: Path) -> dict:
     """The run's bundle, exported there, into `output`, and the run imported into this machine's store (module
-    docstring). What was imported."""
-    dump = remote.call("dump", run, timeout=3600)
+    docstring). What was imported. Only a run this machine started there: its record holds the graph and inputs that the
+    host's answer is checked against."""
+    from .manifests import Registry
+    from .ir import GraphError, compile_graph
+    mine = json.loads(record(run).read_text()) if record(run).exists() else {}
+    if mine.get("host") != remote.host.name or not isinstance(mine.get("graph_doc"), dict):
+        raise RemoteError(f"this machine did not start run {run} on {remote.host.name}: only runs it started there are "
+                          "imported (their graph and inputs are its own record)")
+    registry = Registry.load(*[r for r in [REPO / "nodes", *(REPO / n for n in remote.nodes)] if r.exists()])
+    try:
+        graph = compile_graph(mine["graph_doc"], registry)
+    except GraphError as e:
+        raise RemoteError(f"run {run}'s graph no longer compiles here: {'; '.join(e.problems)}")
+    dump = checked(remote.call("dump", run, timeout=3600), run, graph)
     store = Store(home())
     stage = store.root / "tmp" / f"{os.getpid()}-fetch-{uuid.uuid4().hex}"   # named for this process (Store.__init__)
     stage.mkdir(parents=True)
+    got = stage / "got"
     try:
-        wanted = [o for o in dump["objects"] if not (store.root / o).exists()] + [l["path"] for l in dump["logs"]]
+        objects = sorted({store.object_dir(a["shape"], a["hash"]).relative_to(store.root).as_posix()
+                          for t in dump["tasks"].values() for a in t["outputs"].values()})
+        wanted = [o for o in objects if not (store.root / o).exists()] + list(dump["logs"].values())
         if dump["bundle"]:
             wanted.append(dump["bundle"])
+        got.mkdir()
         if wanted:
             listing = stage / "files.txt"
             listing.write_text("".join(f"{w}\n" for w in wanted))
-            remote.rsync("--files-from", str(listing), f"{remote.host.dest}:{remote.home}/", f"{stage}/got/")
-            for d in [stage / "got", *(p for p in (stage / "got").rglob("*") if p.is_dir() and not p.is_symlink())]:
+            remote.rsync("--files-from", str(listing), f"{remote.host.dest}:{remote.home}/", f"{got}/", links=False)
+            for d in [got, *(p for p in got.rglob("*") if p.is_dir() and not p.is_symlink())]:
                 d.chmod(0o700)   # rsync keeps the host's read-only folders so: they are checked, moved and removed here
         bundle = None
         if dump["bundle"]:
+            src = _within(got, dump["bundle"])
+            if not src.is_dir() or special_files(src) or not (src / "manifest.json").is_file():
+                raise RemoteError("the bundle there is missing, or holds a link or a special file: not brought back")
             if (output / "manifest.json").exists():
                 raise RemoteError(f"{output} already holds a bundle")
+        imported = import_run(store, remote.host, run, graph, mine, dump, got, objects)
+        if dump["bundle"]:
             output.parent.mkdir(parents=True, exist_ok=True)
-            got = stage / "got" / dump["bundle"]
-            if special_files(got):
-                raise RemoteError("the bundle there holds a link or a special file: not brought back")
-            shutil.copytree(got, output, dirs_exist_ok=True)
+            shutil.copytree(src, output, dirs_exist_ok=True)
             for f in output.rglob("*"):
                 if f.is_file():
                     f.chmod(0o644)   # as export writes a bundle
             bundle = str(output)
-        imported = import_run(store, remote.host, dump, stage / "got")
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-    return {"run": run, "host": remote.host.name, "path": bundle, "bundle_problem": dump.get("bundle_problem"), **imported}
+    return {"run": run, "host": remote.host.name, "path": bundle, "bundle_problem": dump["bundle_problem"], **imported}
 
 
-def _objects(store: Store, dump: dict, got: Path) -> int:
-    """Each object the run names, checked against its hash here (as Store.publish would compute it) and moved into the
-    store unless it is there already. A folder that does not hash to its name is refused, and nothing is imported."""
-    types = {a["hash"]: a for a in dump["artifacts"]}
+def _objects(store: Store, objects: list[str], got: Path) -> int:
+    """Each object the run's outputs name, checked against its hash here (as Store.publish computes it) and moved into
+    the store unless it is there already. One that is missing or does not hash to its name refuses the import."""
     brought = 0
-    for rel in dump["objects"]:
-        parts = Path(rel).parts
-        if len(parts) != 3 or parts[0] not in ("objects", "trees") or parts[1] != parts[2][:2] or not artifacts_hash(parts[2]):
-            raise RemoteError(f"{rel}: not a store object's folder")
+    for rel in objects:
         final = store.root / rel
         if final.exists():
             continue
-        src = got / rel
-        if special_files(src) or not src.is_dir():
-            raise RemoteError(f"{rel}: missing, or holds a link or a special file")
-        if parts[0] == "objects":
+        src = _within(got, rel)
+        shape, h = ("tree" if rel.startswith("trees/") else "file"), Path(rel).name
+        if not src.is_dir() or special_files(src):
+            raise RemoteError(f"{rel}: missing there, or holds a link or a special file")
+        if shape == "file":
             files = list(src.iterdir())
-            if len(files) != 1 or not files[0].is_file() or sha256_file(files[0]) != parts[2]:
+            if len(files) != 1 or not files[0].is_file() or sha256_file(files[0]) != h:
                 raise RemoteError(f"{rel} is not the file its hash names")
-        elif sha256_tree(src) != parts[2]:
+        elif sha256_tree(src) != h:
             raise RemoteError(f"{rel} is not the folder its hash names")
+    for rel in objects:   # only once every one has been checked: a refused import leaves this store as it was
+        final = store.root / rel
+        if final.exists():
+            continue
+        src = _within(got, rel)
         final.parent.mkdir(parents=True, exist_ok=True)
         _read_only(src)
         os.replace(src, final)
         brought += 1
-        a = types.get(parts[2])
-        if a:
-            artifacts.get(a["type"])   # a type this store knows
-            store.db.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?,?)", (a["hash"], a["shape"], a["type"], a["bytes"], a["created_at"]))
     return brought
 
 
-def artifacts_hash(name: str) -> bool:
-    return len(name) == 64 and all(c in "0123456789abcdef" for c in name)
-
-
-def _local(store: Store, a: dict) -> dict:
-    """An artifact as the host's store named it, as this store names it: objects and trees by hash; a source (the video)
-    at its path here, when this machine started the run."""
-    if a["shape"] == "source":
-        return a
+def _artifact(store: Store, a: dict) -> Artifact:
     folder = store.object_dir(a["shape"], a["hash"])
-    path = folder if a["shape"] == "tree" else next(folder.iterdir())
-    return {**a, "path": str(path)}
+    return Artifact(a["hash"], a["shape"], a["type"], folder if a["shape"] == "tree" else next(folder.iterdir()))
 
 
-def _here(usage: str | None, host: Host) -> str | None:
+def _here(usage: dict, host: Host) -> str:
     """Where a result was made, as this machine names it: a step the coordinator there ran on its own machine (native,
     self) ran on HOST, which is `ssh-HOST:...` here; the run says it was coordinated there too."""
-    if not usage:
-        return usage
-    u = json.loads(usage)
-    ran = u.get("ran_on")
-    if isinstance(ran, dict) and str(ran.get("place", "")).split(":")[0] in ("native", "self"):
-        u["ran_on"] = {**ran, "place": f"ssh-{host.name}:{ran['place'].split(':', 1)[1]}", "title": f"{host.name} (SSH)",
-                       "coordinator": host.name}
-    return dumps(u)
+    ran = usage.get("ran_on")
+    if isinstance(ran, dict) and isinstance(ran.get("place"), str) and PLACE.match(ran["place"]) \
+            and ran["place"].split(":")[0] in ("native", "self"):
+        usage = {**usage, "ran_on": {**ran, "place": f"ssh-{host.name}:{ran['place'].split(':', 1)[1]}",
+                                     "title": f"{host.name} (SSH)", "coordinator": host.name}}
+    return dumps(usage)
 
 
-def _outputs(store: Store, outputs: str | None) -> str | None:
-    if not outputs:
-        return outputs
-    return dumps({k: _local(store, a) for k, a in json.loads(outputs).items()})
+def expected_keys(coord, host: Host, node, inputs: dict[str, Artifact]) -> set[str]:
+    """The cache keys this machine computes for the node run on HOST with these inputs: one per runner of its that the
+    coordinator there could have used (its own machine's: native or self), each with the node's identity on HOST's
+    platform (Backend.identity, as SshBackend gives it: the code this machine sent, never the machine)."""
+    from .backends.remote import SshBackend
+    from .scheduler import Placement
+    keys = set()
+    for r in node.manifest.runners:
+        if r.kind in ("native", "self"):
+            keys.add(coord.cache_key(node, Placement(SshBackend(host, runner_kind=r.kind), r), inputs))
+    return keys
 
 
-def import_run(store: Store, host: Host, dump: dict, got: Path) -> dict:
-    """The run, its tasks, events and cache rows, into this store (module docstring). A run of this id that this store
-    has and did not import from HOST is another run: refused."""
-    run = dump["run"]
-    run_id = run["id"]
-    mine = json.loads(record(run_id).read_text()) if record(run_id).exists() else {}
+def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, dump: dict, got: Path,
+               objects: list[str]) -> dict:
+    """The run, its tasks and events, and the cache rows of the results whose keys this machine computes, into this
+    store (the comment above). A run of this id that this store has and did not import from HOST is another run:
+    refused."""
+    from .scheduler import Coordinator
     local = store.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
     imported_from = store.db.execute("SELECT 1 FROM events WHERE run_id=? AND kind='run.imported' AND message LIKE ?",
                                      (run_id, f"from {host.name}:%")).fetchone()
     if local and not imported_from:
         raise RemoteError(f"this machine's store has another run {run_id}: not imported over it")
-    brought = _objects(store, dump, got)
-    # the graph's inputs where they are here (this machine started the run): its doc and its input rows
-    graph = json.loads(run["graph"])
-    inputs = json.loads(run["inputs"])
-    for name, path in (mine.get("inputs") or {}).items():
-        if name in graph.get("inputs", {}):
-            graph["inputs"][name]["uri"] = Path(path).as_uri()
-        if name in inputs:
-            inputs[name]["path"] = path
+    brought = _objects(store, objects, got)
+    coord = Coordinator(store, graph_registry(graph), [])
+    # the graph's inputs as this machine has them: the run's input rows, and what each node's key is computed from
+    sources = {name: coord._graph_input(graph, name) for name in graph.spec.inputs}
+    made: dict[str, dict[str, Artifact]] = {}
+    verified: dict[str, str] = {}
+    refused = 0
+    for node_id, node in graph.nodes.items():   # in order: a node's inputs are its upstream's outputs, checked first
+        t = dump["tasks"][node_id]
+        if t["state"] not in ("succeeded", "cached"):
+            continue
+        made[node_id] = {k: _artifact(store, a) for k, a in t["outputs"].items()}
+        inputs = {}
+        for name, ref in node.inputs.items():
+            if ref.node is None:
+                inputs[name] = sources[ref.name]
+            elif ref.node in made:
+                inputs[name] = made[ref.node][ref.name]
+        if len(inputs) == len(node.inputs) and t["cache_key"] in expected_keys(coord, host, node, inputs):
+            verified[node_id] = t["cache_key"]
+        else:
+            refused += 1
+    r = dump["run"]
     tasks_in, kept, added = 0, 0, 0
     with store.tx() as db:
         if not local:
             db.execute("INSERT INTO runs (id, pipeline, graph, graph_path, inputs, status, created_at, finished_at, max_cost_usd, spent_usd, allow_uploads) "
                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                       (run_id, run["pipeline"], dumps(graph), mine.get("graph") or None, dumps(inputs), run["status"],
-                        run["created_at"], run["finished_at"], run["max_cost_usd"], run["spent_usd"], run["allow_uploads"]))
+                       (run_id, graph.spec.pipeline, dumps(mine["graph_doc"]), mine.get("graph") or None,
+                        dumps({k: a.to_json() for k, a in sources.items()}), r["status"], r["created_at"], r["finished_at"],
+                        r["max_cost_usd"], r["spent_usd"], 1))
         else:
-            db.execute("UPDATE runs SET status=?, finished_at=?, spent_usd=? WHERE id=?",
-                       (run["status"], run["finished_at"], run["spent_usd"], run_id))
-        logs = {(l["node"], l["attempt"]): l["path"] for l in dump["logs"]}
-        for t in dump["tasks"]:
-            now = db.execute("SELECT * FROM tasks WHERE run_id=? AND node_id=?", (run_id, t["node_id"])).fetchone()
-            outputs = _outputs(store, t["outputs"])
-            if now and (now["state"], now["cache_key"], now["outputs"]) == (t["state"], t["cache_key"], outputs):
+            db.execute("UPDATE runs SET status=?, finished_at=?, spent_usd=? WHERE id=?", (r["status"], r["finished_at"], r["spent_usd"], run_id))
+        for node_id, t in dump["tasks"].items():
+            now = db.execute("SELECT * FROM tasks WHERE run_id=? AND node_id=?", (run_id, node_id)).fetchone()
+            outputs = dumps({k: a.to_json() for k, a in made[node_id].items()}) if node_id in made else None
+            key = verified.get(node_id)
+            if now and (now["state"], now["cache_key"], now["outputs"]) == (t["state"], key, outputs):
                 continue   # imported before, unchanged
             # an attempt number of this store's own: one past the last it has for this node (none: the first)
             attempt = (now["attempt"] if now else 0) + 1 if t["attempt"] else (now["attempt"] if now else 0)
             runner = t["runner"]
             if runner and runner.split(":")[0] in ("native", "self"):
                 runner = f"ssh-{host.name}:{runner.split(':', 1)[1]}"
-            row = (t["state"], attempt, attempt or 1, t["cache_key"], runner, t["started_at"], t["finished_at"], t["error_code"],
+            row = (t["state"], attempt, attempt or 1, key, runner, t["started_at"], t["finished_at"], t["error_code"],
                    t["error"], t["cost_usd"], _here(t["usage"], host), outputs, t["gpu"], t["gpu_vram_gb"])
             if now:
                 db.execute("UPDATE tasks SET state=?, attempt=?, first_attempt=?, cache_key=?, runner=?, started_at=?, finished_at=?, "
                            "error_code=?, error=?, cost_usd=?, usage=?, outputs=?, gpu=?, gpu_vram_gb=?, lease_owner=NULL, "
-                           "lease_expires=NULL, handle=NULL, not_before=NULL WHERE run_id=? AND node_id=?", (*row, run_id, t["node_id"]))
+                           "lease_expires=NULL, handle=NULL, not_before=NULL WHERE run_id=? AND node_id=?", (*row, run_id, node_id))
             else:
                 db.execute("INSERT INTO tasks (state, attempt, first_attempt, cache_key, runner, started_at, finished_at, error_code, "
                            "error, cost_usd, usage, outputs, gpu, gpu_vram_gb, run_id, node_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                           (*row, run_id, t["node_id"]))
+                           (*row, run_id, node_id))
             tasks_in += 1
-            log = logs.get((t["node_id"], t["attempt"]))
-            if attempt and log and (got / log).is_file() and not (got / log).is_symlink():
-                folder = store.root / "work" / run_id / t["node_id"] / str(attempt)
-                folder.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(got / log, folder / "log.txt")
-        for c in dump["cache"]:   # never over this store's own: a key it has keeps its row
-            if db.execute("SELECT 1 FROM cache WHERE key=?", (c["key"],)).fetchone():
+            log = dump["logs"].get(node_id)
+            if attempt and log:
+                src = _within(got, log)
+                if src.is_file() and not src.is_symlink():
+                    folder = store.root / "work" / run_id / node_id / str(attempt)
+                    folder.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(src, folder / "log.txt")
+        # a cache row for each result whose key this machine computed, never over this store's own
+        for node_id, key in verified.items():
+            if db.execute("SELECT 1 FROM cache WHERE key=?", (key,)).fetchone():
                 kept += 1
                 continue
-            db.execute("INSERT INTO cache VALUES (?,?,?,?,?)", (c["key"], c["node"], _outputs(store, c["outputs"]),
-                                                                 _here(c["usage"], host), c["created_at"]))
+            t = dump["tasks"][node_id]
+            db.execute("INSERT INTO cache VALUES (?,?,?,?,?)", (key, graph.nodes[node_id].manifest.ref,
+                                                                 dumps({k: a.to_json() for k, a in made[node_id].items()}),
+                                                                 _here(t["usage"], host), time.time()))
             added += 1
+        for a in (a for outs in made.values() for a in outs.values()):
+            size = sum(p.stat().st_size for p in store.object_dir(a.shape, a.hash).rglob("*") if p.is_file())
+            db.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?,?)", (a.hash, a.shape, a.type, size, time.time()))
         after = mine.get("imported_events", 0)
         for e in dump["events"]:
             if e["id"] > after:
@@ -575,7 +756,15 @@ def import_run(store: Store, host: Host, dump: dict, got: Path) -> dict:
                 after = e["id"]
         db.execute("INSERT INTO events (run_id, node_id, at, kind, message) VALUES (?,?,?,?,?)",
                    (run_id, None, time.time(), "run.imported",
-                    f"from {host.name}: {tasks_in} tasks, {added} cache rows ({kept} this machine had kept), {brought} objects"))
-    record(run_id).parent.mkdir(parents=True, exist_ok=True)
-    record(run_id).write_text(json.dumps({**mine, "host": host.name, "imported_events": after}))
-    return {"tasks": tasks_in, "cache_added": added, "cache_kept": kept, "objects": brought}
+                    f"from {host.name}: {tasks_in} tasks, {added} cache rows ({kept} this machine had kept, {refused} refused: "
+                    f"keys this machine does not compute), {brought} objects"))
+    record(run_id).write_text(json.dumps({**mine, "imported_events": after}))
+    return {"tasks": tasks_in, "cache_added": added, "cache_kept": kept, "cache_refused": refused, "objects": brought}
+
+
+def graph_registry(graph: Graph):
+    """A registry of the graph's own manifests (what cache_key and _graph_input need of one)."""
+    class Of:
+        def get(self, ref):
+            return next(n.manifest for n in graph.nodes.values() if n.manifest.ref == ref)
+    return Of()

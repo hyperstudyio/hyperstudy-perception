@@ -455,3 +455,155 @@ def test_a_host_is_not_cleaned_while_a_run_is_coordinated_there_and_then_its_cop
     code, out = perception(capsys, "hosts", "clean", "lab")
     assert code == 0, out
     assert not any((root / d).exists() for d in ("pipelines", "coordinator", "objects", "envs"))
+
+
+# --- what a host sends back is not trusted ---------------------------------------------------------------------------
+
+def tampered(monkeypatch, change):
+    """The host's dump, changed by `change` before this machine reads it: a host where root or another of the user's
+    processes rewrote the coordinator's store."""
+    real = remote_run.Remote.call
+
+    def call(self, action, *args, **kw):
+        got = real(self, action, *args, **kw)
+        if action == "dump":
+            change(got)
+        return got
+    monkeypatch.setattr(remote_run.Remote, "call", call)
+
+
+def finished_run(tmp_path, capsys, rec) -> str:
+    graph = graph_file(tmp_path, [work("a", record_dir=rec), work("b", "$nodes.a.out", record_dir=rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    return of(out, "run.created")[0]["run"]
+
+
+def nothing_imported(tmp_path, run_id) -> bool:
+    store = Store(tmp_path / "mac")
+    return (not store.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone()
+            and not store.db.execute("SELECT 1 FROM cache").fetchone() and not (store.root / "work" / run_id).exists())
+
+
+@pytest.mark.parametrize("change, why", [
+    (lambda d: d["run"].update(id="20261029-000000-000000"), "another run"),
+    (lambda d: d["tasks"][0].update(node_id="../../../../escaped"), "not a node of the run"),
+    (lambda d: d["tasks"][0].update(node_id="c"), "not a node of the run"),
+    (lambda d: d["tasks"].pop(), "the run's nodes"),
+    (lambda d: d["tasks"][0].update(attempt="1/../../../escaped"), "attempt"),
+    (lambda d: d["events"].append({**d["events"][0], "node_id": "../escaped"}), "not a node of the run"),
+])
+def test_a_dump_naming_another_run_or_nodes_outside_the_run_is_refused(tmp_path, lab, capsys, monkeypatch, change, why):
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    tampered(monkeypatch, change)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and why in of(out, "error")[0]["problems"][0], out
+    assert nothing_imported(tmp_path, run_id)
+    assert not list(tmp_path.parent.rglob("escaped"))
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d.update(bundle="../../../../.."),
+    lambda d: d.update(bundle=f"remote/{d['run']['id']}/../../../.."),
+    lambda d: d.update(bundle="/etc"),
+    lambda d: d["logs"][0].update(path="../../../../../etc/hosts"),
+    lambda d: d["logs"][0].update(path=f"work/{d['run']['id']}/a/1/../../../../../escaped"),
+])
+def test_bundle_and_log_paths_outside_their_layouts_are_refused(tmp_path, lab, capsys, monkeypatch, change):
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    tampered(monkeypatch, change)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id, "--output", str(tmp_path / "bundle"))
+    assert code == 1 and "not where" in of(out, "error")[0]["problems"][0], out
+    assert nothing_imported(tmp_path, run_id) and not (tmp_path / "bundle").exists()
+
+
+def test_a_link_the_host_planted_in_what_comes_back_is_not_followed(tmp_path, lab, capsys):
+    """rsync brings back no links: a log or a bundle file replaced there by a link to a file of this machine's comes
+    back as nothing, and is refused."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("this machine's own file")
+    log = host_root(lab) / "coordinator" / "work" / run_id / "a" / "1" / "log.txt"
+    log.unlink()
+    log.symlink_to(secret)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    store = Store(tmp_path / "mac")
+    copied = store.root / "work" / run_id / "a" / "1" / "log.txt"
+    assert not copied.exists() or "this machine's own file" not in copied.read_text()
+
+
+def test_cache_rows_come_only_from_this_runs_tasks_under_keys_this_machine_computes(tmp_path, lab, capsys, monkeypatch):
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    planted = "ab" * 32
+
+    def change(d):
+        # a row for a key no task of the run has (what another step, or other inputs, would look up): an import makes
+        # rows from the run's tasks alone, so a dump's own rows are never read
+        b = next(t for t in d["tasks"] if t["node_id"] == "b")
+        d["cache"] = [{"key": planted, "node": "test.work@1.0.0", "outputs": b["outputs"], "usage": "{}", "created_at": 1.0}]
+        # and b's result under a key that is not the one its node, config and inputs give
+        b["cache_key"] = "cd" * 32
+    tampered(monkeypatch, change)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 0, out
+    fetched = of(out, "fetched")[0]
+    assert (fetched["cache_added"], fetched["cache_refused"]) == (1, 1)
+    store = Store(tmp_path / "mac")
+    keys = {r["key"] for r in store.db.execute("SELECT key FROM cache")}
+    assert planted not in keys and "cd" * 32 not in keys and len(keys) == 1
+    a = store.db.execute("SELECT cache_key FROM tasks WHERE run_id=? AND node_id='a'", (run_id,)).fetchone()["cache_key"]
+    assert keys == {a}
+
+
+@pytest.mark.parametrize("change, why", [
+    # an output claimed to be a source: a path on this machine, never an object brought back
+    (lambda d: next(t for t in d["tasks"] if t["node_id"] == "a").update(
+        outputs=json.dumps({"out": {"hash": "ef" * 32, "shape": "source", "type": "json.v1", "path": "/etc/hosts"}})), "not a store object"),
+    # an output under another type than its node makes, or one it does not make
+    (lambda d: next(t for t in d["tasks"] if t["node_id"] == "a").update(
+        outputs=json.dumps({"out": {**json.loads(next(t for t in d["tasks"] if t["node_id"] == "a")["outputs"])["out"], "type": "media.v1"}})), "not what"),
+    # an object the host does not have
+    (lambda d: next(t for t in d["tasks"] if t["node_id"] == "a").update(
+        outputs=json.dumps({"out": {**json.loads(next(t for t in d["tasks"] if t["node_id"] == "a")["outputs"])["out"], "hash": "ef" * 32}})), "objects/ef/"),
+])
+def test_outputs_are_only_store_objects_of_their_nodes_types_whose_bytes_match(tmp_path, lab, capsys, monkeypatch, change, why):
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    tampered(monkeypatch, change)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and any(why in p for p in of(out, "error")[0]["problems"]), out
+    assert nothing_imported(tmp_path, run_id)
+
+
+def test_an_object_whose_bytes_are_not_its_hash_is_refused(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    host_store = Store(host_root(lab) / "coordinator")
+    a = json.loads(host_store.db.execute("SELECT outputs FROM tasks WHERE run_id=? AND node_id='a'", (run_id,)).fetchone()[0])["out"]
+    obj = Path(a["path"])
+    obj.chmod(0o644)
+    obj.write_text('{"value": 999}')                                 # rewritten there, under its old hash
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and "is not the file its hash names" in of(out, "error")[0]["problems"][0], out
+    assert nothing_imported(tmp_path, run_id)
+
+
+def test_a_run_id_given_here_must_be_one(tmp_path, lab, capsys):
+    for action in ("attach", "fetch", "status"):
+        code, out = perception(capsys, "remote", action, "lab", "../../etc")
+        assert code == 1 and "not a run id" in of(out, "error")[0]["problems"][0]
+    assert not (lab / "argv.log").exists()                             # nothing was asked of the host
+
+
+def test_events_that_are_not_events_end_an_attach(tmp_path, lab, capsys, monkeypatch):
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    real = remote_run.Remote.call
+    monkeypatch.setattr(remote_run.Remote, "call", lambda self, action, *a, **k: (
+        {**real(self, action, *a, **k), "events": [{"id": "x"}]} if action == "events" else real(self, action, *a, **k)))
+    code, out = perception(capsys, "remote", "attach", "lab", run_id)
+    assert code == 1 and "not one" in of(out, "error")[0]["problems"][0]

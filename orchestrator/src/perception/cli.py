@@ -817,6 +817,8 @@ def cmd_remote(args):
         return problem(f"no host {args.host!r} (perception hosts add)")
     remote = remote_run.Remote(host, nodes=args.nodes)
     action = args.remote_action
+    if action != "run" and args.run_id and not RUN_ID.match(args.run_id):   # it names folders here and there
+        return problem(f"not a run id: {args.run_id!r}")
     try:
         if action == "run":
             if args.run_id and not RUN_ID.match(args.run_id):
