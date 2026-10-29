@@ -1797,3 +1797,10 @@ def test_a_cloud_machine_gets_no_sweeper(tmp_path, host):
     attempt(tmp_path, host, {}, cloud={"provider": "runpod"}).send_inputs()
     time.sleep(0.5)
     assert subprocess.run(["pgrep", "-f", f"sweeper {root} "], capture_output=True).returncode == 1
+
+
+def test_two_inputs_with_the_same_content_are_sent_once(tmp_path, host, capsys):
+    a, b = an_input(tmp_path, "a.mp4", b"same"), an_input(tmp_path, "b.mp4", b"same")
+    sent = attempt(tmp_path, host, {"a": a, "b": b}).send_inputs()
+    assert capsys.readouterr().out.count("[remote] copying") == 1
+    assert sent["a"]["object"] == sent["b"]["object"]

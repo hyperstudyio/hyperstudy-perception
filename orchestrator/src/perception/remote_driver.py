@@ -583,6 +583,7 @@ class Driver:
             # read-only once published, as the local store's objects are: a node that wrote to its input (through its
             # link) would change it for every later run on this host, under the same sha256
             self.sh(f"{PUBLISH}\n{verify}touch {q(incoming)}/.complete && publish {q(incoming)} {q(folder)} && chmod -R a-w {q(folder)}")
+            there.add(entry["sha256"])   # another input with the same content: there now, and held
         return out
 
     def start(self, inputs: dict[str, dict]):
@@ -1348,7 +1349,8 @@ echo $pid
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a cancel now must not skip deleting the machine or charging it
             self.discard_incoming()
-            self.discard_holds()
+            if not cloud:   # a cloud machine is deleted next: nothing there to release
+                self.discard_holds()
             if cloud:
                 with self.phase("teardown"):
                     if cloud.get("provider") == "runpod":
