@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
-from .base import GPU_LEASES, LEASE_FOLDER, Backend, Capabilities, gpu_env, holder, lease_command
+from .base import GPU_LEASES, LEASE_FOLDER, Backend, Capabilities, LeaseRefused, gpu_env, holder, lease_command
 from .probe import probe
 
 from ..release import REPO, env_vars
@@ -103,7 +103,7 @@ class NativeBackend(Backend):
         leases them in when it runs nodes here as a host, made the user's own and private (LEASE_FOLDER), or refused."""
         made = subprocess.run(["sh", "-c", LEASE_FOLDER], capture_output=True, text=True)
         if made.returncode:   # the same every time: refused for good (as a host's start refuses it, exit 3: Refused)
-            raise PermissionError(f"cannot lease a GPU here: {made.stderr.strip()[-300:]}")
+            raise LeaseRefused(f"cannot lease a GPU here: {made.stderr.strip()[-300:]}")
         return Path.home() / GPU_LEASES
 
     def recorded_handle(self, attempt_dir: Path) -> dict | None:

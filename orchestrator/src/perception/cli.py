@@ -513,7 +513,8 @@ def cmd_hosts(args):
             if not dest:
                 raise HostError("hosts probe USER@HOST")
             caps, root = probe_dest(dest, args.root, args.user, args.port, args.identity)
-            found = {"dest": dest, "root": root, "caps": caps.to_json()}
+            c = caps.to_json()
+            found = {"dest": dest, "root": root, "caps": {k: v for k, v in c.items() if k != "gpus"}, "gpus": c["gpus"]}   # as `hosts` lists them
             if args.json:
                 emit("host_probe", **found)
             else:
@@ -564,16 +565,16 @@ def cmd_hosts(args):
         c = h["caps"]
         tools = ", ".join(f"{t} {'yes' if p else 'missing'}" for t, p in c["tools"].items())
         print(f"{h['name']:12s} {h['dest']:28s} {c['platform']}, {c['cpu_cores']} cores, {c['memory_gb']} GB, "
-              f"{'/'.join(c['accelerators'])}" + (f" ({gpu_summary(c)})" if "cuda" in c["accelerators"] else "") + f"; {tools}")
+              f"{'/'.join(c['accelerators'])}" + (f" ({gpu_summary(c, h['gpus'])})" if "cuda" in c["accelerators"] else "") + f"; {tools}")
     return 0
 
 
-def gpu_summary(caps: dict) -> str:
+def gpu_summary(caps: dict, gpus: list[dict]) -> str:
     """A host's cards, as `hosts list` shows them: each with its index and memory (or the largest card's memory alone, for a
     host probed before its cards were recorded: `hosts check` records them)."""
-    if not caps.get("gpus"):
+    if not gpus:
         return f"{caps['vram_gb']} GB"
-    return ", ".join(f"GPU {g['index']} {g['name']} {g['memory_gb']:.0f} GB" for g in caps["gpus"])
+    return ", ".join(f"GPU {g['index']} {g['name']} {g['memory_gb']:.0f} GB" for g in gpus)
 
 
 def cmd_cloud(args):

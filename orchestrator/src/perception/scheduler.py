@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 from . import artifacts
-from .backends.base import Backend, Gpu, child_env
+from .backends.base import Backend, Gpu, LeaseRefused, child_env
 from .ir import CompiledNode, Graph, Policy, compile_graph
 from .manifests import Manifest, Registry, Runner
 from .store import Artifact, Store, dumps
@@ -455,8 +455,8 @@ class Coordinator:
         try:
             handle = placement.backend.submit(m, placement.runner, attempt_dir, child_env(m.secrets, self.secrets),
                                               gpu=card.index if card else None)
-        except PermissionError as e:   # refused for good (a GPU lease folder that is not the user's own): not retried
-            self._attempt_failed(run_id, graph, node.id, attempt, "input", f"submit failed: {e}")
+        except LeaseRefused as e:   # the machine's GPU lease folder is not the user's own: the same every time
+            self._attempt_failed(run_id, graph, node.id, attempt, "internal", f"submit failed: {e}")
             return
         except Exception as e:   # could not even start (a missing tool): transient, the retry policy decides
             self._attempt_failed(run_id, graph, node.id, attempt, "transient", f"submit failed: {e}")

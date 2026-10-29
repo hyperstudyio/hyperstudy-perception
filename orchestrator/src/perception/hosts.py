@@ -92,11 +92,16 @@ class Host:
     identity: str | None = None   # a private key on this machine, absolute
 
     def to_json(self) -> dict:
-        return {**asdict(self), "caps": self.caps.to_json()}
+        """As hosts.json holds it. The cards beside `caps`, not in it: a reader from before cards were recorded (the
+        app's own copy of the CLI, reading the same store) passes `caps` whole to Capabilities and would refuse a key it
+        does not know, while it ignores one beside it."""
+        caps = self.caps.to_json()
+        return {**asdict(self), "caps": {k: v for k, v in caps.items() if k != "gpus"}, "gpus": caps["gpus"]}
 
     @classmethod
     def from_json(cls, d: dict) -> "Host":
-        caps = Capabilities.from_json(d["caps"])   # a host saved before its cards were recorded has none: counted as one GPU
+        # a host saved before its cards were recorded has none: counted as one GPU
+        caps = Capabilities.from_json({**d["caps"], "gpus": d.get("gpus", d["caps"].get("gpus", []))})
         return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"))
 
     def ssh(self, fresh: bool = False) -> list[str]:

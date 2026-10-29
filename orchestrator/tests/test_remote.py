@@ -1260,9 +1260,14 @@ def test_a_host_is_probed_for_every_gpu_and_one_saved_before_cards_were_recorded
     assert added.caps.gpus == [Gpu(0, "NVIDIA GeForce RTX 3090", 24.0), Gpu(1, "NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 95.6)]
     assert "cuda" in added.caps.accelerators and added.caps.vram_gb == 95.6   # the largest card: what runners are checked against
     assert hosts.load()["lab"].caps == added.caps
+    saved = json.loads(hosts.path.read_text())["lab"]
+    assert "gpus" not in saved["caps"] and len(saved["gpus"]) == 2      # beside caps: an older reader ignores it there
+    from dataclasses import fields
+    older = {f.name for f in fields(Capabilities)} - {"gpus"}            # what Capabilities took before cards were recorded
+    assert set(saved["caps"]) <= older
     # as hosts.json held it before the cards were recorded: no `gpus`, the largest card's memory alone
     old = json.loads(hosts.path.read_text())
-    old["lab"]["caps"].pop("gpus")
+    old["lab"].pop("gpus")
     hosts.path.write_text(json.dumps(old))
     caps = hosts.load()["lab"].caps
     assert caps.gpus == [] and caps.vram_gb == 95.6 and caps.devices() == [Gpu(None, "", 95.6)]
@@ -1333,7 +1338,7 @@ def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_pa
     end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
     assert second["start"] >= end                                         # never on the card at once
     logs = [log_of(c, r, f"g{i}") for i, (c, r) in enumerate(zip(coords, runs), 1)]
-    waited = [log for log in logs if "another run on this machine has that GPU" in log]
+    waited = [log for log in logs if "another node on this machine has that GPU" in log]
     assert len(waited) == 1, logs
     run_of = {f"g{i}": r for i, r in enumerate(runs, 1)}
     assert f"(held by exclusive run {run_of[first['node']]} node {first['node']} attempt 1 pid " in waited[0]   # and by whom

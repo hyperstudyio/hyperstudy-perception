@@ -250,7 +250,7 @@ def test_a_gpu_lease_folder_that_is_not_the_users_own_fails_the_node_once(tmp_pa
     coord = coordinator(tmp_path, TwoCards())
     run_id, status = run(coord, graph_doc(tmp_path, [work("g", uses="test.gpu@1.0.0", record_dir=rec)]))   # retries: 2
     t = coord._tasks(run_id)["g"]
-    assert (status, t["error_code"], t["attempt"]) == ("failed", "input", 1) and "not your own folder" in t["error"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "internal", 1) and "not your own folder" in t["error"]
 
 
 def test_gpu_nodes_are_given_cards_one_exclusive_node_per_card_shared_ones_within_its_memory():

@@ -88,39 +88,34 @@ chmod 700 "$d" || exit 3"""
 
 # perl (on every Linux server and Mac, which flock(1) is not): flock the lease <dir>/<machine>-<index>, shared for a
 # `gpu: shared` node and exclusive for a `gpu: exclusive` one, write who holds it (the run, node and attempt, and the
-# pid: the file is emptied first whenever no other node holds it, so it names only the nodes holding it now), then exec the node with the lock's descriptor left open ($^F: not closed on exec), so the node's process holds
+# pid), then exec the node with the lock's descriptor left open ($^F: not closed on exec), so the node's process holds
 # the lease until it ends, however it ends: a lost SSH session does not end it. Opened for reading and writing: on NFS,
-# flock is an fcntl lock, and a shared one needs a descriptor that can read. A lease another run holds is waited for,
-# and the node's log says so and who last took it.
+# flock is an fcntl lock, and a shared one needs a descriptor that can read. A lease another node holds is waited for,
+# and the node's log says so and who holds it. The file names only the nodes holding the card now: an exclusive node
+# empties it, and a shared one keeps only the lines of nodes still running (two shared nodes taking it at the same
+# moment may each drop the other's line: the file is what is shown, the lock is what decides).
 LEASE = r"""$^F = 1023;
 my ($dir, $index, $use, $who) = splice(@ARGV, 0, 4);
 my $path = "$dir/" . (POSIX::uname())[1] . "-$index";
 open(my $lease, "+>>", $path) or die "perception: cannot open the GPU lease $path: $!\n";
 my $how = $use eq "exclusive" ? LOCK_EX : LOCK_SH;
-sub holders { seek($lease, 0, 0); my @held = <$lease>; chomp(@held); return @held }
-sub take {   # the lease as $how, waited for (and said) if another run holds it
-  return 1 if flock($lease, $how | LOCK_NB);
-  my @held = holders();
-  print STDERR "perception: waiting for $path ($use): another run on this machine has that GPU (held by " . ($held[-1] // "") . ")\n";
+sub running { seek($lease, 0, 0); my @held = <$lease>; chomp(@held); return grep { /pid (\d+)$/ && kill(0, $1) } @held }
+if (!flock($lease, $how | LOCK_NB)) {
+  my @held = running();
+  print STDERR "perception: waiting for $path ($use): another node on this machine has that GPU (held by " . ($held[-1] // "a node") . ")\n";
   flock($lease, $how) or die "perception: GPU lease $path: $!\n";
   print STDERR "perception: $path is free: starting\n";
-  return 0;
 }
-if (flock($lease, LOCK_EX | LOCK_NB)) {   # no one holds it: empty it of the lines of nodes that ended
-  truncate($lease, 0);
-  take() if $how == LOCK_SH;   # as shared, for a shared node (not atomic: an exclusive node may come between)
-} elsif (!take()) {   # waited: the nodes that held it then have ended
-  if ($how == LOCK_EX) { truncate($lease, 0) }
-  else {   # an exclusive holder has ended; shared ones may still hold it (a line one of them adds meanwhile may be lost)
-    my @still = grep { !/^exclusive / } holders();
-    truncate($lease, 0);
-    syswrite($lease, join("", map { "$_\n" } @still));
-  }
-}
-syswrite($lease, "$use $who pid $$\n");
+my @keep = $how == LOCK_EX ? () : grep { !/^exclusive / } running();
+truncate($lease, 0);
+syswrite($lease, join("", map { "$_\n" } @keep) . "$use $who pid $$\n");
 exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
 """
 LEASE_PERL = ["perl", "-MFcntl=:flock", "-MPOSIX", "-e", LEASE]
+
+
+class LeaseRefused(PermissionError):
+    """The machine's lease folder is not the user's own (LEASE_FOLDER): the same every time, so the node fails once."""
 
 
 def lease_command(leases: str, index: int, use: str, who: str) -> list[str]:
