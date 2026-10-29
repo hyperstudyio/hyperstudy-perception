@@ -343,10 +343,14 @@ class Driver:
         if s.get("gpu") is not None and s.get("gpu_use", "none") != "none":
             # the card held against every other run there for as long as the node runs (GPU_LEASES): a card another
             # coordinator's node has is waited for, in the node's log
-            from .backends.base import GPU_LEASES, holder, lease_command
-            folder = f"{self.root}/{GPU_LEASES}"   # in the host's root (private)
-            node = " ".join(q(x) for x in lease_command(folder, s["gpu"], s["gpu_use"], holder(self.request))) + " " + node
-            leases = f"mkdir -p {q(folder)}"
+            # in the user's default root on the host whatever root this host was added with, as for a coordinator
+            # running there (NativeBackend.lease_folder): both take the same leases. Made private as any root is.
+            from .backends.base import GPU_LEASES, LEASE_PERL, holder
+            from .hosts import DEFAULT_ROOT, private_root_script
+            folder = f'"$HOME"/{q(DEFAULT_ROOT + "/" + GPU_LEASES)}'
+            node = (" ".join(q(x) for x in LEASE_PERL) + f" {folder} {int(s['gpu'])} {q(s['gpu_use'])} {q(holder(self.request))} "
+                    + node)
+            leases = f"( {private_root_script(DEFAULT_ROOT)} )\nmkdir -p {folder}"
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
         links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -sfn {q(v['object'])} {q(v['path'])}"

@@ -20,7 +20,8 @@ by others:
                          wrote), kept under the same hashes so a node after it there is not sent them again. Like the
                          inputs, they stay between runs until `perception hosts clean`
     gpus/<machine>-<index>   a card's lease (backends/base.LEASE): a lock its nodes hold while they run, which every
-                         coordinator's nodes there honour, and who holds it
+                         coordinator's nodes there honour, and who holds it. Always in the default root
+                         (~/.cache/hyperstudy-perception), whatever root a host was added with
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
                          or by the host's watchdog when no driver has asked about it for a while (a finished node's
                          results wait a day for its driver)

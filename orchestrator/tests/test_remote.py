@@ -1319,6 +1319,60 @@ def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_pa
     waited = [log for log in logs if "another run on this machine has that GPU" in log]
     assert len(waited) == 1, logs
     run_of = {f"g{i}": r for i, r in enumerate(runs, 1)}
-    assert f"(last taken by exclusive run {run_of[first['node']]} node {first['node']} attempt 1 pid " in waited[0]   # and by whom
-    lease = host / "home" / ".cache" / "hp" / "gpus" / f"{os.uname().nodename}-1"   # in the host's root
+    assert f"(held by exclusive run {run_of[first['node']]} node {first['node']} attempt 1 pid " in waited[0]   # and by whom
+    # in the user's default root on the host (whatever root it was added with), naming only the node that held it last
+    lease = host / "home" / ".cache" / "hyperstudy-perception" / "gpus" / f"{os.uname().nodename}-1"
     assert lease.read_text().startswith(f"exclusive run {run_of[second['node']]} node {second['node']} attempt 1 pid ")
+    assert lease.read_text().count("\n") == 1
+
+
+def test_a_coordinator_on_the_host_and_one_elsewhere_lease_the_same_card_whatever_root_the_host_was_added_with(tmp_path, host, rec, monkeypatch):
+    """A coordinator on the lab server itself (a native node, on its own cards) and one elsewhere that added the server with
+    a root of its own (`--root`): the leases are in the user's default root either way, so the two exclusive nodes that
+    both choose card 1 never share it."""
+    import dataclasses
+    from perception.backends.base import Gpu
+    cards = [Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)]
+
+    class TheServer(SelfBackend):   # the coordinator on the server: this machine, whose home is the fake host's
+        def probe_capabilities(self):
+            return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=95.6, gpus=cards)
+    monkeypatch.setenv("HOME", str(host / "home"))
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6, gpus=cards), runner_kind="self", python=sys.executable)
+    assert not remote.host.root.endswith("/.cache/hyperstudy-perception")   # added with a root of its own
+    coords, runs = [], []
+    for i, (backend, place) in enumerate(((TheServer(), "self:cpu"), (remote, "ssh-lab:cpu")), 1):
+        coord = Coordinator(Store(tmp_path / f"store{i}"), Registry.load(NODES), [backend], tick_s=0.02, backoff_s=0.01)
+        doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+               "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
+               "nodes": [{"id": f"g{i}", "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": place,
+                          "config": {"record_dir": rec, "sleep": 2, "add": i}}]}
+        coords.append(coord)
+        runs.append(start(coord, doc))
+
+    async def both():
+        return await asyncio.gather(*(c.run(r) for c, r in zip(coords, runs)))
+    assert asyncio.run(both()) == ["succeeded", "succeeded"]
+    assert [c._tasks(r)[f"g{i}"]["gpu"] for i, (c, r) in enumerate(zip(coords, runs), 1)] == [1, 1]
+    first, second = sorted(executions(rec), key=lambda e: e["start"])
+    end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
+    assert second["start"] >= end                                         # never on the card at once
+
+
+def test_a_lease_names_only_the_nodes_holding_it_now(tmp_path):
+    """Shared nodes, one after another and side by side: the lease file never keeps the lines of nodes that ended, so
+    it stays small on a card that only ever has shared nodes, and says who holds the card."""
+    from perception.backends.base import lease_command
+    path = tmp_path / f"{os.uname().nodename}-0"
+    for i in range(3):   # one after another
+        subprocess.run([*lease_command(str(tmp_path), 0, "shared", f"node s{i}"), "true"], check=True)
+    assert path.read_text().splitlines()[0].startswith("shared node s2 pid ") and path.read_text().count("\n") == 1
+    first = subprocess.Popen([*lease_command(str(tmp_path), 0, "shared", "node a"), "sleep", "1"])
+    time.sleep(0.3)
+    subprocess.run([*lease_command(str(tmp_path), 0, "shared", "node b"), "true"], check=True)   # beside a: both named
+    assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["shared node a", "shared node b"]
+    first.wait()
+    subprocess.run([*lease_command(str(tmp_path), 0, "exclusive", "node x"), "true"], check=True)
+    assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["exclusive node x"]
