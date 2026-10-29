@@ -108,11 +108,11 @@ def _from_hub(load, repo: str):
         raise NodeError("transient", f"could not download {repo} from Hugging Face: {e}") from None
     except HfHubHTTPError as e:   # the network or the hub failed, and it is not in the cache
         raise NodeError("transient", f"could not download {repo} from Hugging Face: {e}") from None
-    except OSError:   # transformers' own answer, offline, for a file not in the cache (no LocalEntryNotFoundError)
+    except OSError as e:   # transformers' own answer, offline, for a file not in the cache (no LocalEntryNotFoundError)
         from huggingface_hub import constants
         if constants.HF_HUB_OFFLINE:
-            raise NodeError("resources", f"{repo} is not in this machine's Hugging Face cache, which the step reads alone: "
-                                         "its prepare downloads it (perception setup, or a run with --allow-downloads)") from None
+            raise NodeError("resources", f"{repo} could not be read from this machine's Hugging Face cache, which the step reads alone: "
+                                         f"its prepare downloads it (perception setup, or a run with --allow-downloads): {e}") from e
         raise
 
 

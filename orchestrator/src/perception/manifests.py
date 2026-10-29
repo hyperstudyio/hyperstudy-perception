@@ -119,7 +119,8 @@ class Manifest(Strict):
     prepare: str | None = None
     secrets: list[str] = Field(default_factory=list)   # given to the step where it runs (an API's key)
     # given to its prepare only, never to the step, which then runs offline (HF_HUB_OFFLINE): a gated model's token,
-    # needed to download its weights and not to read them from the cache (RUN_ANYWHERE_PLAN.md phase 5)
+    # needed to download its weights and not to read them from the cache (RUN_ANYWHERE_PLAN.md phase 5). Its prepare
+    # fetches every Hugging Face model its runner loads: a successful one marks them all complete (plan.prepared_marks)
     download_secrets: list[str] = Field(default_factory=list)
     licence: dict = Field(default_factory=dict)
     cost: Cost | None = None

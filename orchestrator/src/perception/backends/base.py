@@ -312,9 +312,6 @@ class Backend(ABC):
 # --- the child's environment: no credentials it did not ask for -------------------------------------------------
 
 SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", re.I)
-# settings named like credentials that are none: kept (a coordinator on a host sets this one so that nothing a run
-# there does uses the host's own Hugging Face login: SENT_TOKEN_ONLY)
-NOT_SECRETS = {"HF_HUB_DISABLE_IMPLICIT_TOKEN"}
 # the coordinator's own interpreter settings: a node runs in its own environment, never the coordinator's
 INTERPRETER_VARS = {"VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIRONMENT", "CONDA_PREFIX"}
 
@@ -322,8 +319,7 @@ INTERPRETER_VARS = {"VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIR
 def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
     """The parent's environment without anything that looks like a credential, plus the secrets the node's manifest
     names. A node never sees a key it did not declare."""
-    env = {k: v for k, v in os.environ.items()
-           if (k in NOT_SECRETS or not SECRET_NAME.search(k)) and k not in INTERPRETER_VARS}
+    env = {k: v for k, v in os.environ.items() if not SECRET_NAME.search(k) and k not in INTERPRETER_VARS}
     for name in requested:
         if name in secrets:
             env[name] = secrets[name]
@@ -335,7 +331,7 @@ def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
 # HF_TOKEN_PATH's), which huggingface_hub otherwise does even offline
 OFFLINE = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
 # a prepare on another machine: the token it was sent, or none, never the machine's own login (its HF_TOKEN in a
-# profile, its stored token): access to a gated model is a person's
+# profile, its stored token): access to a gated model is a person's. A prepare that prepare_first runs has it from OFFLINE
 SENT_TOKEN_ONLY = {"HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
 
 

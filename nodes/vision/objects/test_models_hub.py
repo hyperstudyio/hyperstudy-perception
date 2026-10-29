@@ -55,9 +55,9 @@ def test_transformers_plain_oserror_offline_is_said_so_too_and_otherwise_left_al
     def transformers_miss():   # what from_pretrained raises offline for weights not in the cache (transformers 5.20.2)
         raise OSError("We couldn't connect to 'https://huggingface.co' to load the files")
     constants.HF_HUB_OFFLINE = True
-    with pytest.raises(NodeError, match="not in this machine's Hugging Face cache") as e:
+    with pytest.raises(NodeError, match="could not be read from this machine's Hugging Face cache.*couldn't connect") as e:
         module._from_hub(transformers_miss, "facebook/dinov3-vitl16-pretrain-lvd1689m")
-    assert e.value.code == "resources"
+    assert e.value.code == "resources" and isinstance(e.value.__cause__, OSError)   # what really happened, kept
     constants.HF_HUB_OFFLINE = False
     with pytest.raises(OSError, match="couldn't connect"):
         module._from_hub(transformers_miss, "facebook/dinov3-vitl16-pretrain-lvd1689m")
