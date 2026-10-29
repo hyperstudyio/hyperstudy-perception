@@ -1,19 +1,21 @@
 """The objects layer's raw side file (schema: #/$defs/parquet/objects_masks):
 
-layers/objects_masks.parquet  every mask SAM 3 gave the node, a row each: every sample of every track of the shots'
+layers/objects_masks.parquet  every mask SAM 3 gave the track step, a row each: every sample of every track of the shots'
                               sessions (the vocabulary's names), and every detection scoring at least
                               garments.STORE_SCORE in every body crop (the fixed nouns and "person"), with its scores,
-                              box and outline, what the node made of it (reason) and the layer sample it became.
+                              box and outline, what the step made of it (reason) and the layer sample it became.
 
 So the thresholds can be revisited: SAM 3's detection and tracker scores (the layer keeps only the tracker's, rounded),
 the masks dropped for holding people with their person and enclosed shares (person_masks.py), the outline before a
 trim, the body detections no item took and why (garments.py), and the tracks too short to keep. Scores are SAM 3's
 float32 values, unrounded; boxes and outlines are whole frame pixels, as the layer's.
 
-Rows are in the order the node made them: shot by shot, the body crops' detections (by time, then body, then prompt, then
-SAM 3's query order), then the session's masks (by frame, then SAM 3's order). Deterministic: identical rows give
-identical bytes. Every writer option that shapes the file is fixed below, and the file carries no time; the pyarrow
-version (envs/gaze's lock, part of the node's cache key) names itself in the footer.
+Rows are in the order the track step made them: shot by shot, the body crops' detections (by time, then body, then
+prompt, then SAM 3's query order), then the session's masks (by frame, then SAM 3's order). Deterministic: identical
+rows give identical bytes. Every writer option that shapes the file is fixed below, and the file carries no time; the
+pyarrow version (envs/gaze's lock, part of the steps' cache keys) names itself in the footer. The track step writes the
+rows as they stand if every track passes the crop check (object_tracks.py's masks.parquet); the link step reads them,
+marks the rejected tracks' rows and writes the side file: the same bytes 1.1.0 wrote for the same rows.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ FOUND = ("vocabulary", "body")
 REASONS = ("kept", "trimmed", "covers_person", "encloses_person", "worn",
            "item", "person", "below_keep", "not_this_body", "not_picked")
 # what became of the row's track (vocabulary) or item (body): in the layer's tracks, in its rejected_tracks (the crop
-# check), too_short (fewer than the node's minimum samples were kept), or none (a body detection that is no item)
+# check), too_short (fewer than the track step's minimum samples were kept), or none (a body detection that is no item)
 OUTCOMES = ("tracks", "rejected", "too_short", "none")
 COLUMNS = ("t", "shot", "found", "label", "sam", "body", "score", "tracker_score", "box", "poly", "person_share",
            "enclosed_share", "reason", "outcome", "track", "rejected", "sample")
@@ -41,7 +43,7 @@ COLUMNS = ("t", "shot", "found", "label", "sam", "body", "score", "tracker_score
 
 def row(t, shot, found, label, score, box, poly, reason, sam=-1, body="", tracker_score=-1.0, person_share=-1.0,
         enclosed_share=-1.0) -> dict:
-    """One row before the layer is made; the node fills in outcome, track or rejected, and sample."""
+    """One row before the layer is made; the steps fill in outcome, track or rejected, and sample."""
     return {"t": t, "shot": shot, "found": found, "label": label, "sam": sam, "body": body, "score": score,
             "tracker_score": tracker_score, "box": list(box), "poly": [v for p in poly for v in p],
             "person_share": person_share, "enclosed_share": enclosed_share, "reason": reason,

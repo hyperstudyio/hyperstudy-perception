@@ -108,7 +108,7 @@ wrist the matching gave it and the layer sample it became, so the score threshol
 can be revisited; with the bodies layer and shots the rows give the layer's hands again through the node's own
 matching and tracking, which the node checks; one row per detection, about 36 a frame of which 1 or 2 score at least
 the layer's 0.25: 32,222 rows, 0.58 MB for a two-minute clip, about 18 MB an hour at 8 frames a second).
-The objects layer's: `objects_masks` (its `raw.masks`: every mask SAM 3 gave the objects node, as box and outline: each
+The objects layer's: `objects_masks` (its `raw.masks`: every mask SAM 3 gave the objects steps, as box and outline: each
 sample of each track of the shots' SAM 3 sessions, with SAM 3's detection and tracker scores unrounded and what the
 check against the people's masks made of it (`kept`, `trimmed`, `covers_person`, `encloses_person`, `worn`) with the
 person and enclosed shares it was judged on, and each detection scoring at least 0.3 in each body crop (the garment

@@ -34,10 +34,11 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       # The face node's own environment pulls torch and py-feat (gigabytes); these tests need only numpy, PyAV (the
-      # version the envs lock), Pillow, pyarrow (envs/gaze's, for the heatmaps side file) and the node SDK. They run with
-      # nothing on PATH: no ffmpeg is needed.
+      # version the envs lock), Pillow, pyarrow (envs/gaze's, for the heatmaps side file), OpenCV (envs/gaze's version,
+      # without its GUI: the objects steps' outlines and crops, which their split is checked on) and the node SDK. They
+      # run with nothing on PATH: no ffmpeg is needed.
       - name: pytest
-        run: uv run --no-project --with pytest --with numpy --with av==16.1.0 --with pillow --with pyarrow==26.0.0 --with-editable ./sdk pytest -q nodes
+        run: uv run --no-project --with pytest --with numpy --with av==16.1.0 --with pillow --with pyarrow==26.0.0 --with opencv-python-headless==5.0.0.93 --with-editable ./sdk pytest -q nodes
 
   package:
     name: Package (built, installed as the app installs it, decoding with nothing but uv on PATH)

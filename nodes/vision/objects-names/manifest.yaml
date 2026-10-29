@@ -1,0 +1,25 @@
+# The first of the three objects steps (this, vision.objects-track, vision.objects), which share their code in
+# nodes/vision/objects (names.py here). New in the split of vision.objects 1.1.0, whose vocabulary and name classes it
+# makes, with the same prompts.
+id: vision.objects-names
+version: 1.0.0
+title: Object names
+service: Anthropic API
+description: The things on screen named by Claude Haiku 5.5 from each shot's keyframes (up to 8 a shot, in generic detector nouns), and each name's family, kind and whether it is worn, for the object tracks
+# media: only for the cost, which is per minute of video
+inputs: {shots: bundle.shots@0.1, keyframes: assets.v1, media: media.v1}
+outputs: {vocabulary: vocabulary.v1}
+runners:
+  # envs/gaze, the other objects steps': one environment for the code they share
+  - {kind: native, env: envs/gaze, entry: ../objects/names.py, accelerator: cpu}
+resources: {cpu_cores: 1, memory_gb: 1, gpu: none}
+# Sent to Anthropic: each shot's keyframes (raw frames: they show the people on screen, as the captions' keyframes do)
+# and the names used in earlier shots. No data from the faces or bodies layers is sent.
+privacy: {external_upload: [frames, faces]}
+secrets: [ANTHROPIC_API_KEY]
+# Upper estimate per minute of video: a call per shot and one for the name classes. About $0.006 for a 2-minute clip of
+# 44 shots (RUN_ANYWHERE_PLAN.md 1b, an estimate from 1.1.0's measured total), so $0.003 a minute; this is about three
+# times that, for clips cut faster than OOO. With the objects step's $0.04 it is 1.1.0's $0.05.
+cost: {usd: 0.01, per: minute, input: media}
+models:
+  - {id: claude-haiku-5-5, licence: Anthropic API terms, licence_mode: api-terms}

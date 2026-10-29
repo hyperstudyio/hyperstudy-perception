@@ -1,7 +1,7 @@
 # Everything the pipeline can do: the graph the annotator app runs. The app's feature list picks what runs (--only, with
 # what it needs), settings (--set) and places (--place). Nothing leaves the machine without --allow-uploads, and then
 # only the kinds allow_upload names: frames, faces and transcript for the captions API (frames and faces also for the
-# objects node's naming and crop check), audio and transcript for the delivery captions (per-utterance snippets to
+# objects steps' naming and crop check), audio and transcript for the delivery captions (per-utterance snippets to
 # OpenAI), and video and audio for a step placed on another machine (a lab server, a cloud GPU), which receives its
 # inputs. Embeddings too: the faces layer holds ArcFace identity distances (person_pairs), and
 # every step that reads it (bodies, gaze, hands...) receives it when placed elsewhere; the run's consent still names it
@@ -19,8 +19,8 @@ policy:
   placement: hybrid
   privacy: local-preferred
   allow_upload: [video, audio, frames, faces, transcript, embeddings]
-  # OOO clip 1's estimates: shot captions $0.13, objects $0.10, delivery captions $0.69 (86 utterances; about $0.35 spent
-  # in the bake-off)
+  # OOO clip 1's estimates: shot captions $0.13, objects $0.10 (the names $0.02, the crop check $0.08), delivery captions
+  # $0.69 (86 utterances; about $0.35 spent in the bake-off)
   max_cost_usd: 1.50
   retries: 1
 nodes:
@@ -59,14 +59,23 @@ nodes:
   - id: hands
     uses: vision.hands@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, bodies: $nodes.bodies.bodies}
-  # names objects with Claude Haiku 5.5 from decode's keyframes (frames and faces go to the API: ANTHROPIC_API_KEY),
-  # outlines and tracks them with SAM 3, links them across shots with DINOv3 (both gated: HF_TOKEN), and finds who wears
-  # what (faces, bodies). The naming duplicates the captions' pass over the same keyframes; it is to fold into captions
-  # (PLAN.md §4)
+  # objects in three steps: objects_names names them with Claude Haiku 5.5 from decode's keyframes (frames and faces go
+  # to the API: ANTHROPIC_API_KEY), as soon as decode is done; objects_track outlines and tracks them with SAM 3 and
+  # embeds them with DINOv3 (both gated: HF_TOKEN), on the GPU with no API; objects checks each track's crops with Haiku
+  # (frames and faces again), finds who wears what (faces, bodies) and links them across shots: the objects layer. The
+  # naming duplicates the captions' pass over the same keyframes; whether the captions call should name them instead
+  # is measured (RUN_ANYWHERE_PLAN.md 1b)
+  - id: objects_names
+    uses: vision.objects-names@1.0.0
+    inputs: {shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes, media: $nodes.decode.media}
+  - id: objects_track
+    uses: vision.objects-track@1.0.0
+    inputs: {vocabulary: $nodes.objects_names.vocabulary, video: $inputs.video, media: $nodes.decode.media,
+             shots: $nodes.decode.shots, faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
   - id: objects
-    uses: vision.objects@1.1.0
-    inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes,
-             faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
+    uses: vision.objects@2.0.0
+    inputs: {tracks: $nodes.objects_track.tracks, shots: $nodes.decode.shots, faces: $nodes.faces.faces,
+             bodies: $nodes.bodies.bodies, media: $nodes.decode.media}
   # hand over mouth, self-touch, pointing and raised hands from the hands' keypoints, py-feat's landmarks and the bodies'
   # shoulders. objects is optional: with it, an object can be what a hand points at; leaving objects out (--only)
   # still runs gestures, pointing at faces only

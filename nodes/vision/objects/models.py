@@ -1,11 +1,11 @@
 """SAM 3 (segmentation and tracking with text prompts) and DINOv3 ViT-L/16 (embeddings for cross-shot linking), as the
 bake-off ran them (tools/perception-bakeoff/objects/objects.py): through transformers 5.20.2, from the Hugging Face
-hub at pinned commits. Both are gated: the account whose HF_TOKEN the node is given must have accepted Meta's terms at
+hub at pinned commits. Both are gated: the account whose HF_TOKEN the track step is given must have accepted Meta's terms at
 https://hf.co/facebook/sam3 and https://hf.co/facebook/dinov3-vitl16-pretrain-lvd1689m.
 
 Where it runs (the request's accelerator): mps (the Apple GPU), cuda, or cpu. SAM 3 runs in bfloat16 on a GPU (on MPS
 the bake-off measured it 2.5x faster than float32 with the same objects on every frame of two NES shots, masks at
-median IoU 0.998), float32 on the CPU; DINOv3 in float32 everywhere. A device PyTorch cannot use here fails the node; it
+median IoU 0.998), float32 on the CPU; DINOv3 in float32 everywhere. A device PyTorch cannot use here fails the step; it
 never runs elsewhere instead.
 
 SAM 3's post-processing (NMS, hole filling, sprinkle removal) comes in transformers from a CUDA-only hub kernel
@@ -117,7 +117,7 @@ def load_segmenter(device, token: str | None):
 
 def check_access(token: str | None):
     """Both gated models' config at their pinned revisions, from the Hugging Face cache or the hub: done before the
-    node uploads or spends anything, so a token Hugging Face refuses fails the node first."""
+    step starts its GPU work, so a token Hugging Face refuses fails it first."""
     from huggingface_hub import hf_hub_download
     for repo, revision in ((SEGMENTER, SEGMENTER_REVISION), (EMBEDDER, EMBEDDER_REVISION)):
         _from_hub(lambda: hf_hub_download(repo, "config.json", revision=revision, token=token), repo)

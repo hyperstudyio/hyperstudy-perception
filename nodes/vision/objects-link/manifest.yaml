@@ -1,0 +1,54 @@
+# The objects layer: the last of the three objects steps (vision.objects-names, vision.objects-track, this), which
+# share their code in nodes/vision/objects (link.py here). 2.0.0: 1.1.0 did all three steps' work in one node; its layer,
+# side file and crops are this step's, the same for the same tracks and Haiku answers (nodes/vision/objects/test_split.py),
+# but it takes the track step's tracks, not the video, keyframes and the vocabulary's work.
+id: vision.objects
+version: 2.0.0
+stage: objects
+title: Objects
+service: Anthropic API
+description: Things on screen as the objects layer, from the object tracks; each track checked by Claude Haiku 5.5 on crops of three moments (several calls at once), worn things given their wearer, and tracks linked across shots into objects by their DINOv3 embeddings
+inputs:
+  tracks: object_tracks.v1
+  shots: bundle.shots@0.1
+  faces: bundle.faces@0.1
+  bodies: bundle.bodies@0.1
+  media: media.v1
+# masks: layers/objects_masks.parquet, every mask SAM 3 gave (session samples and body-crop detections) with its scores and
+# what became of it; the layer points at it with raw.masks (object_raw.py)
+outputs: {objects: bundle.objects@0.1, crops: assets.v1, masks: bundle.objects_masks@0.1}
+# The bake-off's settings (objects/objects.py), where it says how each was chosen. All provisional, from two clips. The
+# track step has fps and clothing_fps; the layer's producer.config holds both steps' (link.py).
+config:
+  link_threshold: {type: number, minimum: -1, maximum: 1, default: 0.62, description: "average adjusted cosine for merging tracks into one object"}
+  cross_name_margin: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "subtracted from the cosine of two tracks with different names in one family"}
+  same_wearer_bonus: {type: number, minimum: 0, maximum: 1, default: 0.05, description: "added to the cosine of two worn tracks on the same person"}
+  min_link_px: {type: number, minimum: 0, default: 48, description: "tracks with a smaller median box side link only to tracks on the same wearer"}
+  wearer_share: {type: number, exclusiveMinimum: 0, maximum: 1, default: 0.5, description: "share of a worn track's samples a body must hold to be its wearer"}
+  different_person_distance: {type: number, minimum: 0, maximum: 2, default: 0.8, description: "ArcFace distance at which two wearers are certainly different people"}
+  duplicate_iou: {type: number, minimum: 0, maximum: 1, default: 0.6, description: "mean box IoU at which two tracks at once are one object under two names"}
+runners:
+  # envs/gaze, the track step's: the side file's bytes name the pyarrow that wrote them, and the parity with 1.1.0 holds
+  # on 1.1.0's pyarrow
+  - {kind: native, env: envs/gaze, entry: ../objects/link.py, accelerator: cpu}
+# the tracks' crops and embeddings, the faces and bodies layers: a few hundred MB for a long film's tracks at most
+resources: {cpu_cores: 1, memory_gb: 4, gpu: none}
+# Sent to Anthropic: crops of video frames around each track (the crop check), with the object names. They show the
+# people on screen: a worn item's crop (glasses, earrings, a hat) centres on its wearer's face. No data from the faces
+# or bodies layers is sent.
+privacy: {external_upload: [frames, faces]}
+secrets: [ANTHROPIC_API_KEY]
+# Upper estimate per minute of video: the crop check, a call per 16 tracks of a name, so it grows with the people on
+# screen and their time (every person's garment tracks are checked), not with the cuts. 1.1.0 measured $0.021-0.024 a
+# minute for the vocabulary, name classes and crop check together on OOO clips 1 and 2 and NES; the names are about
+# $0.003 of it (RUN_ANYWHERE_PLAN.md 1b), so the check is about $0.02, and this is about twice that. With the names
+# step's $0.01 it is 1.1.0's $0.05 (orchestrator/tests/test_node_privacy.py checks they add up to at least that).
+cost: {usd: 0.04, per: minute, input: media}
+models:
+  - {id: claude-haiku-5-5, licence: Anthropic API terms, licence_mode: api-terms}
+  # the tracks it links, recorded as the track step records them (no source: this step downloads nothing of them)
+  - {id: facebook/sam3, licence: "SAM License (Meta; gated on Hugging Face): commercial use permitted; acknowledge use in publications; trade-control, no-reverse-engineering and indemnity terms",
+     licence_mode: commercial-ok}
+  - {id: facebook/dinov3-vitl16-pretrain-lvd1689m,
+     licence: "DINOv3 License (Meta; gated on Hugging Face): commercial use permitted; acknowledge use in publications; redistribution only under the same licence with a copy of it; trade-control, no-reverse-engineering and indemnity terms; Meta may amend the terms",
+     licence_mode: commercial-ok}

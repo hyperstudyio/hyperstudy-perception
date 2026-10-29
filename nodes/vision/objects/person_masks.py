@@ -16,7 +16,7 @@ the body pass's times; a 6 fps object sample takes the nearest of them, at most 
 - kept: no person pixels.
 
 Things worn or carried (the name's class says so, and every body garment) are on a person by nature and are not
-checked. A track left with fewer samples than the node's minimum is dropped whole. Every sample's numbers and outcome
+checked. A track left with fewer samples than the track step's minimum is dropped whole. Every sample's numbers and outcome
 are kept in the side file (object_raw.py), so the thresholds can be revisited.
 """
 

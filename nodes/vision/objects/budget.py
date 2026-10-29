@@ -1,11 +1,11 @@
-"""The memory a shot's SAM 3 session needs, checked before the node uploads or spends anything.
+"""The memory a shot's SAM 3 session needs, checked by the track step (track.py) before its GPU work.
 
 SAM 3 video (transformers' Sam3VideoProcessor.init_video_session) takes every frame of a shot at once: the processor
 stacks the RGB frames, resizes them to 1008x1008 in float32, and the session keeps them in its dtype on the CPU for the
 whole pass. A session never spans a cut, as in the bake-off, so the memory grows with the longest shot: a 10-minute
 take at 6 fps is 3600 frames, ~110 GB at 1080p. Windowing a long shot (overlapping sessions, reconciled tracks) would
 bound it but would change the tracks; that is a follow-up, not this port. Until then a shot that cannot fit in this
-machine's memory fails the node at the start, naming the shot, rather than swapping or being killed halfway.
+machine's memory fails the step at the start, naming the shot, rather than swapping or being killed halfway.
 """
 
 from __future__ import annotations
