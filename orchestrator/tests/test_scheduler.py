@@ -1859,3 +1859,21 @@ def test_a_download_secret_needs_a_prepare_and_is_not_a_run_time_secret_too(fiel
     with pytest.raises(ValueError, match=problem):
         Manifest(id="test.x", version="1.0.0", outputs={"out": "json.v1"},
                  runners=[{"kind": "self", "entry": "node.py"}], **fields)
+
+
+def test_only_a_node_with_download_secrets_reads_the_accounts_cache_and_plan_looks_for_gated_weights_there(tmp_path, monkeypatch):
+    from perception.backends.base import GATED_HF_HOME, node_env
+    from perception.manifests import ModelRef
+    from perception.plan import model_cached
+    registry = Registry.load(NODES)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "machine"))
+    monkeypatch.setenv(GATED_HF_HOME, str(tmp_path / "account"))
+    assert node_env(registry.get("test.gated@1.0.0"), {})["HF_HOME"] == str(tmp_path / "account")
+    assert node_env(registry.get("test.work@1.0.0"), {})["HF_HOME"] == str(tmp_path / "machine")   # public weights: the machine's
+    snapshot = tmp_path / "account" / "hub" / "models--org--gated" / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    gated, public = (ModelRef(id=f"org/{n}", source=f"hf://org/{n}@abc123", licence_mode="commercial-ok", gated=n == "gated")
+                     for n in ("gated", "public"))
+    assert model_cached(gated) and not model_cached(public)
+    (tmp_path / "machine" / "hub" / "models--org--public" / "snapshots" / "abc123").mkdir(parents=True)
+    assert model_cached(public)

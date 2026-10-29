@@ -97,7 +97,12 @@ def fetched(model) -> bool:
 
 
 def model_cached(model) -> bool:
-    return hf_cached(model.source) if model.source.startswith("hf://") else weights_cached(model.sha256)
+    """In this machine's cache: a gated model in GATED_HF_HOME's, when set (the account's, on a host), as its node reads it."""
+    if not model.source.startswith("hf://"):
+        return weights_cached(model.sha256)
+    from .backends.base import GATED_HF_HOME
+    home = os.environ.get(GATED_HF_HOME) if model.gated else None
+    return hf_cached(model.source, Path(home) / "hub") if home else hf_cached(model.source)
 
 
 def weights_cached(sha256: str) -> bool:
@@ -107,7 +112,7 @@ def weights_cached(sha256: str) -> bool:
     return folder.is_dir() and sum(1 for p in folder.iterdir() if p.is_file()) == 1
 
 
-def hf_cached(source: str) -> bool:
+def hf_cached(source: str, hub: Path | None = None) -> bool:
     """Is hf://org/name[@revision][/file] in the local Hugging Face cache? With a revision, at that revision: its
     snapshot (snapshots/<commit>, a branch or tag named in refs/), not any other one the cache holds, which the node
     would download the pinned one beside."""
@@ -115,7 +120,7 @@ def hf_cached(source: str) -> bool:
     parts = repo.split("/")
     if len(parts) < 2:
         return False
-    hub = Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
+    hub = hub or Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
     folder = hub / f"models--{parts[0]}--{parts[1]}"
     if not pinned:
         return folder.is_dir()

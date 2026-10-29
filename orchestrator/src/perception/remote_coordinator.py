@@ -23,7 +23,7 @@ well). `start` hands them to `serve` through a pipe, its stdin: they are in no f
 environment variable on the host, only in the coordinator's memory, and from it, as on any machine (child_env), in the
 environment of the steps that declare them and no other; a download secret (a gated model's token) only in their
 prepare's, while it runs (prepare_first), and the steps then read that Hugging Face account's cache here offline (the
-spec names the account: hosts.hf_home). While the run lasts, root and the same user's processes can
+spec names the account: hosts.hf_home, GATED_HF_HOME). While the run lasts, root and the same user's processes can
 read a step's environment there (/proc/<pid>/environ): what `perception hosts keys HOST on` agrees to. The host's own
 keys (its environment, keychain, ~/.config/hyperstudy) are never read: a run here has the keys its starter sent.
 
@@ -54,6 +54,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from . import artifacts
+from .backends.base import GATED_HF_HOME
 from .backends.native import NativeBackend, SelfBackend
 from .hosts import hf_home
 from .ir import GraphError, compile_graph
@@ -429,12 +430,12 @@ def cmd_start(args) -> int:
     run, nodes = spec.get("run", ""), spec.get("nodes", [])
     folder = run_folder(run)
     folder.mkdir(parents=True, exist_ok=True)
-    # the gated weights its steps read are its Hugging Face account's (hosts.hf_home): for its plan here, and for serve
-    # and its steps, which inherit it (child_env)
+    # the gated weights its steps read are its Hugging Face account's (hosts.hf_home): for its plan here, and for serve,
+    # which inherits it, and gives it to the steps with download secrets alone as their HF_HOME (backends/base.node_env)
     if (account := spec.get("hf_account")) is not None:
         if not isinstance(account, str) or not ACCOUNT_NAME.fullmatch(account):
             raise Refusal(f"hf_account: not an account's name: {account!r}")
-        os.environ["HF_HOME"] = hf_home(str(root()), account)
+        os.environ[GATED_HF_HOME] = hf_home(str(root()), account)
     # under the run's lock, which its coordinator takes too for its last step (releasing the holds, then its pid): so a
     # start either sees it running (and it releases them after) or sees it ended
     from .hosts import KEEP_DAYS

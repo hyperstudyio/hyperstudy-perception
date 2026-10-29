@@ -321,13 +321,20 @@ def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
 # a node whose downloads are its prepare's (download_secrets) reads only the cache: a missing weight is an error at
 # once, not a download it has no token for
 OFFLINE = {"HF_HUB_OFFLINE": "1"}
+# where such a node's gated weights are, when not in the machine's own Hugging Face cache: on a host, its account's
+# (hosts.hf_home), which a coordinator there is told (remote_coordinator). Its HF_HOME, and only its: other nodes keep
+# the machine's cache, so public weights are not kept once per person
+GATED_HF_HOME = "PERCEPTION_GATED_HF_HOME"
 
 
 def node_env(manifest: Manifest, secrets: dict[str, str]) -> dict[str, str]:
     """What a node runs with: child_env with its run-time secrets, offline when it has download secrets, which only its
     prepare is given (download_for)."""
     env = child_env(manifest.secrets, secrets)
-    return {**env, **OFFLINE} if manifest.download_secrets else env
+    if not manifest.download_secrets:
+        return env
+    gated = {"HF_HOME": env[GATED_HF_HOME]} if env.get(GATED_HF_HOME) else {}
+    return {**env, **gated, **OFFLINE}
 
 
 def download_for(manifest: Manifest, secrets: dict[str, str]) -> dict[str, str]:
