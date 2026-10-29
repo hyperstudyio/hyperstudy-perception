@@ -482,11 +482,13 @@ def test_an_adopted_node_caught_between_two_execs_is_still_running(tmp_path, mon
     request = str(tmp_path / "work" / "r" / "a" / "1" / "request.json")
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        for shown, alive in [("  4711", True), ("  4711 [perl]", True), ("  4711 [python3] <defunct>", True),
-                             (f"  4711 python node.py --request {request}", True),
-                             ("  4711 python other.py --request /elsewhere/request.json", False),
+        for shown, alive in [("  4711 R", True), ("  4711 S [perl]", True),
+                             (f"  4711 Ss python node.py --request {request}", True),
+                             ("  4711 S python other.py --request /elsewhere/request.json", False),
+                             # a zombie has ended, reaped or not (a coordinator that died in this process leaves one)
+                             ("  4711 Z [python3] <defunct>", False), ("  4711 Z+ (python3.12)", False),
                              # a pid reused by a kernel thread (review of #46): its parent is kthreadd
-                             ("      2 [kworker/3:1-events]", False), ("    0 [kthreadd]", False)]:
+                             ("      2 I [kworker/3:1-events]", False), ("    0 S [kthreadd]", False)]:
             monkeypatch.setattr(native.subprocess, "run", lambda *a, _s=shown, **k: subprocess.CompletedProcess(a, 0, _s + "\n", ""))
             assert native._alive(proc.pid, request) is alive, shown
         # ps finds no such process (it ended between the two checks): gone
@@ -499,17 +501,20 @@ def test_an_adopted_node_caught_between_two_execs_is_still_running(tmp_path, mon
     assert native._alive(proc.pid, request) is False   # really gone
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="procps shows a zombie's command line in brackets")
-def test_a_zombie_counts_as_running_until_it_is_reaped(tmp_path):
+def test_a_zombie_is_gone_whether_or_not_anything_reaps_it(tmp_path):
+    """A node whose coordinator died in this process stays its zombie (nothing waits for it): it has ended, and a
+    coordinator that adopts it must collect it, not wait for it for ever (it did on Linux, where ps shows a zombie in
+    brackets like a process mid-exec)."""
     from perception.backends.native import _alive
-    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    request = str(tmp_path / "request.json")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.2)", request])
+    assert _alive(proc.pid, request)
     deadline = time.time() + 10
     while time.time() < deadline and "Z" not in subprocess.run(["ps", "-o", "stat=", "-p", str(proc.pid)],
                                                                capture_output=True, text=True).stdout:
         time.sleep(0.05)
-    assert _alive(proc.pid, str(tmp_path / "request.json"))   # no command line: not taken for gone yet
+    assert not _alive(proc.pid, request)   # a zombie, not reaped yet
     proc.wait()
-    assert not _alive(proc.pid, str(tmp_path / "request.json"))
 
 
 def test_a_recorded_handle_is_trusted_only_for_its_own_attempt(tmp_path):

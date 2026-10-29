@@ -129,7 +129,8 @@ def locked(path: Path):
 
 def alive(run: str) -> bool:
     """Whether the run's coordinator (`serve RUN`) is running here: the pid it recorded, whose command line still names
-    it (pids are reused), or has none for the moment (a process mid-exec; backends/native._alive)."""
+    it (pids are reused), or has none for the moment (a process mid-exec, not a zombie or a kernel thread;
+    backends/native._shown)."""
     try:
         pid = int((run_folder(run) / "coordinator.pid").read_text().strip())
         os.kill(pid, 0)
@@ -222,55 +223,71 @@ def cmd_start(args) -> int:
     run, nodes = spec.get("run", ""), spec.get("nodes", [])
     folder = run_folder(run)
     folder.mkdir(parents=True, exist_ok=True)
+    # under the run's lock, which its coordinator takes too for its last step (releasing the holds, then its pid): so a
+    # start either sees it running (and it releases them after) or sees it ended
     with locked(folder / ".lock"):
-        store = Store(home())
-        reg = registry(nodes)
-        doc = with_inputs(spec["graph"], spec.get("inputs", {}), run, make=False)
-        if problems := refused_places(doc):
-            raise Refusal(*problems)
-        row = store.db.execute("SELECT status, graph FROM runs WHERE id=?", (run,)).fetchone()
-        if row:
-            if json.loads(row["graph"]) != doc:
-                raise Refusal(f"run {run} is here already, with another graph")
-            if alive(run):   # a start whose answer was lost, asked again: the run goes on as it was
-                answer(run=run, started=False, status="running")
-                return 0
-            if row["status"] != "running":
-                answer(run=run, started=False, status=row["status"])
-                return 0
-            with_inputs(spec["graph"], spec.get("inputs", {}), run)   # its coordinator is gone: resumed below
+        running = False
+        try:
+            code, running = _start(spec, keys, run, nodes, folder)
+            return code
+        finally:
+            # the run's inputs were held for it before they were sent (remote_run.Remote.send_input): a start that ends
+            # with no coordinator for it (refused, its plan refused, the run ended already) releases them, or the host's
+            # retention would never remove them (review of #46)
+            if not running and not alive(run):
+                release(run)
+
+
+def _start(spec: dict, keys: dict, run: str, nodes: list[str], folder: Path) -> tuple[int, bool]:
+    """cmd_start under the run's lock: its exit code, and whether a coordinator is running for the run when it ends."""
+    store = Store(home())
+    reg = registry(nodes)
+    doc = with_inputs(spec["graph"], spec.get("inputs", {}), run, make=False)
+    if problems := refused_places(doc):
+        raise Refusal(*problems)
+    row = store.db.execute("SELECT status, graph FROM runs WHERE id=?", (run,)).fetchone()
+    if row:
+        if json.loads(row["graph"]) != doc:
+            raise Refusal(f"run {run} is here already, with another graph")
+        if alive(run):   # a start whose answer was lost, asked again: the run goes on as it was
+            answer(run=run, started=False, status="running")
+            return 0, True
+        if row["status"] != "running":
+            answer(run=run, started=False, status=row["status"])
+            return 0, False
+        with_inputs(spec["graph"], spec.get("inputs", {}), run)   # its coordinator is gone: resumed below
+        graph = compile_graph(doc, reg)
+    else:
+        with_inputs(spec["graph"], spec.get("inputs", {}), run)
+        try:
             graph = compile_graph(doc, reg)
-        else:
-            with_inputs(spec["graph"], spec.get("inputs", {}), run)
-            try:
-                graph = compile_graph(doc, reg)
-            except GraphError as e:
-                raise Refusal(*e.problems)
-        keys = {k: v for k, v in keys.items() if k in declared(graph)}   # only what its steps declare (module docstring)
-        if not row:
-            from .cli import plan_json
-            from .plan import plan as make_plan
-            coord = Coordinator(store, reg, backends(), keys)
-            p = make_plan(coord, graph, allow_downloads=bool(spec.get("allow_downloads")),
-                          allow_uploads=bool(spec.get("allow_uploads")))
-            if not p.ok:   # it would not run here: the host's own plan says why, and nothing is created
-                print(json.dumps({"ok": False, "plan": plan_json(p),
-                                  "problems": [f"{n.id}: {n.why_not or 'cannot run here (see the plan)'}" for n in p.nodes
-                                               if not n.where or n.missing_secrets or n.downloads]}), flush=True)
-                return 1
-            coord.create_run(graph, doc, allow_uploads=bool(spec.get("allow_uploads")), run_id=run)
-        proc = spawn(run, nodes, keys)
-        del keys
-        try:   # one that cannot even start (a broken copy) says so now; one that runs is left to run
-            code = proc.wait(timeout=1.5)
-        except subprocess.TimeoutExpired:
-            code = None
-        if code:
-            tail = (folder / "coordinator.log").read_text(errors="replace")[-1500:]
-            raise Refusal(f"the coordinator for {run} exited at once ({code}): {tail}")
-        status = store.db.execute("SELECT status FROM runs WHERE id=?", (run,)).fetchone()["status"]
-        answer(run=run, started=True, resumed=bool(row), pid=proc.pid, status=status)
-        return 0
+        except GraphError as e:
+            raise Refusal(*e.problems)
+    keys = {k: v for k, v in keys.items() if k in declared(graph)}   # only what its steps declare (module docstring)
+    if not row:
+        from .cli import plan_json
+        from .plan import plan as make_plan
+        coord = Coordinator(store, reg, backends(), keys)
+        p = make_plan(coord, graph, allow_downloads=bool(spec.get("allow_downloads")),
+                      allow_uploads=bool(spec.get("allow_uploads")))
+        if not p.ok:   # it would not run here: the host's own plan says why, and nothing is created
+            print(json.dumps({"ok": False, "plan": plan_json(p),
+                              "problems": [f"{n.id}: {n.why_not or 'cannot run here (see the plan)'}" for n in p.nodes
+                                           if not n.where or n.missing_secrets or n.downloads]}), flush=True)
+            return 1, False
+        coord.create_run(graph, doc, allow_uploads=bool(spec.get("allow_uploads")), run_id=run)
+    proc = spawn(run, nodes, keys)
+    del keys
+    try:   # one that cannot even start (a broken copy) says so now; one that runs is left to run
+        code = proc.wait(timeout=1.5)
+    except subprocess.TimeoutExpired:
+        code = None
+    if code:
+        tail = (folder / "coordinator.log").read_text(errors="replace")[-1500:]
+        raise Refusal(f"the coordinator for {run} exited at once ({code}): {tail}")
+    status = store.db.execute("SELECT status FROM runs WHERE id=?", (run,)).fetchone()["status"]
+    answer(run=run, started=True, resumed=bool(row), pid=proc.pid, status=status)
+    return 0, True
 
 
 def cmd_serve(args) -> int:
@@ -294,12 +311,13 @@ def cmd_serve(args) -> int:
             except LeaseHeld as e:   # resumed while the last coordinator's leases had not run out yet
                 print(f"waiting: {e}", flush=True)
                 time.sleep(coord.lease_s / 2)
-        if status:   # the run has ended: its inputs need no hold any more (remote_run.Remote.send_input)
-            release(run)
     finally:
-        with contextlib.suppress(OSError, ValueError):
-            if int(pidfile.read_text()) == os.getpid():
-                pidfile.unlink()
+        with locked(folder / ".lock"):   # a start then sees it either running, or ended with its holds released
+            if status:   # the run has ended: its inputs need no hold any more (remote_run.Remote.send_input)
+                release(run)
+            with contextlib.suppress(OSError, ValueError):
+                if int(pidfile.read_text()) == os.getpid():
+                    pidfile.unlink()
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} run {run}: {status}", flush=True)
     return 0 if status else 1
 

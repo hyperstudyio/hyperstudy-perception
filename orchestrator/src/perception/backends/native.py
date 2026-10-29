@@ -151,9 +151,8 @@ def _alive(pid: int, request: str) -> bool:
     moment. Linux shows no command line while a process execs, and a node on a known card is reached through several
     (the GPU lease's perl, then uv, then python). A coordinator that adopted such a node after a restart (not its child,
     so only this check sees it) and polled it mid-exec took it for gone, found no response and ran it again beside the
-    one still running. ps names a process with no command line in brackets ("[perl]"), as it does a zombie, which is
-    gone a poll later (an adopted node's parent is init, which reaps it). A command line naming anything else is a
-    reused pid."""
+    one still running. ps names a process with no command line in brackets ("[perl]"), as it does a zombie and a kernel
+    thread, which are not running nodes (_shown). A command line naming anything else is a reused pid."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -165,15 +164,19 @@ def _alive(pid: int, request: str) -> bool:
 
 
 def _shown(pid: int) -> str | None:
-    """`pid`'s command line as ps shows it, "" while it has none (mid-exec, or a zombie: shown in brackets), or None when
-    there is no such process, or it is a kernel thread (also shown in brackets: a pid reused by one is never a node;
-    their parent is kthreadd, pid 2, or none). -ww: unlimited width (procps truncates columns to 80 characters when not
-    writing to a terminal, and a long request path then made a live node look dead)."""
-    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "command="], capture_output=True, text=True)
+    """`pid`'s command line as ps shows it, "" while it has none for the moment (mid-exec), or None when there is no such
+    process, it has ended (a zombie: its node has finished, whether or not anything reaps it), or it is a kernel thread
+    (shown in brackets as a process with no command line is: a pid reused by one is never a node; their parent is
+    kthreadd, pid 2, or none). -ww: unlimited width (procps truncates columns to 80 characters when not writing to a
+    terminal, and a long request path then made a live node look dead)."""
+    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "stat=", "-o", "command="],
+                         capture_output=True, text=True)
     if out.returncode:   # no such process any more
         return None
-    ppid, _, command = out.stdout.strip().partition(" ")
-    command = command.strip()
+    fields = out.stdout.strip().split(None, 2)
+    ppid, state, command = (fields + ["", "", ""])[:3]
+    if state.startswith("Z"):
+        return None
     if command == "" or command.startswith("["):
         return None if ppid in ("0", "2") else ""
     return command

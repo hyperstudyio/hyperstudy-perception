@@ -664,3 +664,29 @@ def test_starting_a_run_again_differently_leaves_this_machines_record_of_it(tmp_
     code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", run_id, "--detach")
     assert code == 0 and of(out, "remote_started")[0]["started"] is False
     assert json.loads(remote_run.record(run_id).read_text()).get("imported_events")
+
+
+def holds_naming(lab, run_id) -> list[Path]:
+    return [h for h in (host_root(lab) / "holds").glob(f"*/{run_id}-remote-*")
+            if (host_root(lab) / h.read_text().strip()).is_dir()]   # a hold whose folder is gone is stale
+
+
+def test_a_start_that_starts_no_coordinator_leaves_no_hold_on_its_inputs(tmp_path, lab, capsys):
+    """Review of #46: the input is held before it is sent; a start that ends with no coordinator running for the run
+    (the host's plan refuses it, the run has ended already) must release it, or the host's retention would never remove
+    the clip."""
+    rec = str(tmp_path / "rec")
+    # the host's own plan refuses it: a place the host does not have (here, no CUDA)
+    node = {**work("a", record_dir=rec), "place": "native:cuda"}
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [node])), "--allow-uploads")
+    assert code == 1 and of(out, "plan") and not of(out, "plan")[0]["ok"], out
+    run_id = of(out, "run.created")[0]["run"]
+    assert holds_naming(lab, run_id) == []
+    # started again after it ended: nothing starts, and nothing stays held
+    graph = graph_file(tmp_path, [work("b", record_dir=rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    run_id = of(out, "run.created")[0]["run"]
+    assert code == 0 and holds_naming(lab, run_id) == []
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", run_id, "--detach")
+    assert of(out, "remote_started")[0]["started"] is False
+    assert holds_naming(lab, run_id) == []
