@@ -93,7 +93,7 @@ class NativeBackend(Backend):
             from .. import prepare_first
             from ..plan import prepared_marks
             config = json.loads(request.read_text()).get("config", {})
-            sync = self.sync_command(runner)
+            sync = self.sync_command(manifest, runner)
             # by its path, in isolated mode: the node's environment has none of this interpreter's import path
             command = [sys.executable, "-I", prepare_first.__file__, "--secrets", ",".join(manifest.download_secrets),
                        "--offline", json.dumps(OFFLINE), *(["--sync", json.dumps(sync)] if sync else []),
@@ -117,7 +117,7 @@ class NativeBackend(Backend):
         from ..plan import fetched, model_cached
         return any(fetched(x) and not model_cached(x, bool(manifest.download_secrets)) for x in manifest.models_for(runner))
 
-    def sync_command(self, runner: Runner) -> list[str] | None:
+    def sync_command(self, manifest: Manifest, runner: Runner) -> list[str] | None:
         """The node's environment synced from its lock, as `uv run` would before its first use (None: `self`)."""
         if self.kind == "self":
             return None

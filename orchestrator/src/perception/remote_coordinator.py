@@ -144,6 +144,16 @@ class HostBackend(NativeBackend):
     def project_env(self, runner) -> dict[str, str]:
         return {"PYTHONPATH": str(REPO / "sdk" / "src")} if runner.env else {}
 
+    def sync_command(self, manifest, runner) -> list[str] | None:
+        """Its environment by its lock, without the SDK, as command() syncs it (prepare_first: before a prepare)."""
+        from .backends.remote import SDK_PACKAGE
+        return [shutil.which("uv") or "uv", "sync", "--quiet", "--project", str(self.env_project(manifest, runner)), "--frozen",
+                "--no-dev", "--no-install-package", SDK_PACKAGE]
+
+    def prepare_command(self, manifest, runner, config: dict) -> list[str]:
+        return [shutil.which("uv") or "uv", "run", "--project", str(self.env_project(manifest, runner)), "--frozen", "--no-dev",
+                "--no-sync", "python", str(manifest.directory / manifest.prepare), json.dumps(config)]
+
 
 def backends() -> list:
     """Every step here, on this machine (module docstring, Places)."""

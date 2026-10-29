@@ -894,6 +894,40 @@ def test_a_hosts_node_environments_are_kept_by_lock_whatever_copy_runs_them(tmp_
     assert (Path(project) / "uv.lock").read_bytes() == (release.REPO / runner.env / "uv.lock").read_bytes()
 
 
+def test_a_gated_step_on_a_hosts_coordinator_prepares_in_its_lock_kept_environment_then_runs_with_its_request_last(tmp_path, monkeypatch):
+    """Found on liquidswords2: a host's coordinator runs a node through sh, its request the last argument, in an
+    environment kept by lock without the SDK. The launcher's sync and prepare are that environment's, and it finds the
+    request at the end of the node's command."""
+    import perception.backends.native as native
+    import perception.release as release
+    import perception.remote_coordinator as rc
+    from perception import prepare_first
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    m = Registry.load(release.REPO / "nodes").get("audio.diarize@1.1.0")
+    runner = [r for r in m.runners if r.accelerator == "cpu"][0]
+    seen = []
+
+    class Proc:
+        pid = 4242
+
+    popen = native.subprocess.Popen   # git's, for the node's files, runs as it is
+    monkeypatch.setattr(native.subprocess, "Popen",
+                        lambda cmd, **kw: seen.append(cmd) or Proc() if cmd[0] == sys.executable else popen(cmd, **kw))
+    backend = rc.backends()[0]
+    monkeypatch.setattr(backend, "downloads", lambda m, r: True)
+    attempt = tmp_path / "1"
+    attempt.mkdir()
+    (attempt / "request.json").write_text(json.dumps({"run": "r", "node": "diarize", "attempt": 1, "config": {}}))
+    backend.submit(m, runner, attempt, {"PATH": os.environ["PATH"]}, prepare_secrets={"HF_TOKEN": "hf_x"})
+    [cmd] = seen
+    assert cmd[1:3] == ["-I", prepare_first.__file__] and cmd[-1] == str(attempt / "request.json")
+    opts = dict(zip(cmd[3:cmd.index("--"):2], cmd[4:cmd.index("--"):2]))
+    project = str(backend.env_project(m, runner))
+    sync, prepare = json.loads(opts["--sync"]), json.loads(opts["--prepare"])
+    assert project in sync and "--no-install-package" in sync                  # the SDK stays out of the shared environment
+    assert project in prepare and "--no-sync" in prepare
+
+
 def test_an_imported_output_is_checked_against_its_type(tmp_path, lab, capsys):
     """Re-review of #46: a layer rewritten in the host's store (and its hash there with it) is still refused here if it
     is not what its type says, as every commit checks (scheduler._publish)."""

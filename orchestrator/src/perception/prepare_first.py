@@ -2,7 +2,7 @@
 first, with those secrets, then the node, without them (backends/native.py, NativeBackend.submit):
 
     python -I prepare_first.py --secrets HF_TOKEN[,...] --offline OFFLINE_JSON [--sync SYNC_JSON]
-        --prepare PREPARE_JSON --marks MARKS_JSON -- NODE_COMMAND... --request REQUEST
+        --prepare PREPARE_JSON --marks MARKS_JSON -- NODE_COMMAND... REQUEST
 
 Run by its path, with the standard library alone: it starts in the node's environment (child_env), which has none of
 the coordinator's import path (a coordinator on a host imports this package from its copy, through PYTHONPATH), so it
@@ -15,7 +15,9 @@ this process's environment. The node's command (with its GPU lease, when it has 
 the node starts, not while its weights download) is started with execve, without them and offline
 (OFFLINE_JSON): a process's environment is what execve gave it, so the node never holds a download secret
 (/proc/<pid>/environ there shows none), only this process does while its prepare runs. The node's command ends with its
-request, as every node's does: a restarted coordinator recognises this process as the node's by it (native._alive).
+request's path, as every node's does (`--request PATH`, or a host coordinator's sh script's last argument): a
+restarted coordinator recognises this process as the node's by it (native._alive), and a failed prepare's response goes
+beside it.
 
 MARKS_JSON lists the files that say its weights are complete in the cache it reads (plan.prepared_mark), made once its
 prepare succeeds: a download cut short leaves a snapshot that looks there, which the node, offline, could not finish.
@@ -46,7 +48,7 @@ def main(argv: list[str]) -> int:
     opts = dict(zip(head[0::2], head[1::2]))
     secrets = [s for s in opts["--secrets"].split(",") if s]
     offline = json.loads(opts["--offline"])
-    request = Path(node[node.index("--request") + 1])
+    request = Path(node[-1])
     # online, for the download, and with the token it was sent alone (SENT_TOKEN_ONLY stays)
     env = {k: v for k, v in os.environ.items() if k != "HF_HUB_OFFLINE"}
     if "--sync" in opts:
