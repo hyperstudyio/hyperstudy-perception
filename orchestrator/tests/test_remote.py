@@ -1804,3 +1804,20 @@ def test_two_inputs_with_the_same_content_are_sent_once(tmp_path, host, capsys):
     sent = attempt(tmp_path, host, {"a": a, "b": b}).send_inputs()
     assert capsys.readouterr().out.count("[remote] copying") == 1
     assert sent["a"]["object"] == sent["b"]["object"]
+
+
+def test_hosts_set_reaches_the_hosts_sweeper_and_a_full_clean_keeps_its_lock(tmp_path, host, monkeypatch):
+    """A shorter retention set after the last attempt there applies to the sweeper at once (holds/.retention); a full
+    `hosts clean` leaves the sweeper's lock file, so no second sweeper can start beside the one still running."""
+    from perception.cli import main
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    assert main(["hosts", "add", "lab", "lab"]) == 0
+    root = host / "home" / ".cache" / "hyperstudy-perception"
+    (root / "holds").mkdir()
+    (root / "holds" / ".retention").write_text("604800 -1\n")
+    assert main(["hosts", "set", "lab", "--keep-days", "1", "--min-free-gb", "30"]) == 0
+    assert (root / "holds" / ".retention").read_text().split() == ["86400", str(30 << 20)]
+    (root / "holds" / ".sweeper").touch()
+    stored(root, b"x")
+    assert main(["hosts", "clean", "lab"]) == 0
+    assert not (root / "objects").exists() and [p.name for p in (root / "holds").iterdir()] == [".sweeper"]

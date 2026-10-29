@@ -526,7 +526,22 @@ def cmd_hosts(args):
         elif args.action == "check":
             hosts.check(args.name)
         elif args.action == "set":
-            hosts.set(args.name, args.keep_days, args.min_free_gb)
+            host = hosts.set(args.name, args.keep_days, args.min_free_gb)
+            # the host's sweeper reads it there (remote_driver.SWEEP): a shorter retention applies without waiting for an
+            # attempt. If the host cannot be reached, the next attempt there writes it.
+            import shlex
+            import subprocess
+            free = -1 if host.min_free_gb is None else round(host.min_free_gb * 2**20)
+            write = (f"[ -d {shlex.quote(host.root)}/holds ] || exit 0; "
+                     f"printf '%s %s\\n' {int(host.keep_s)} {free} > {shlex.quote(host.root)}/holds/.retention")
+            try:
+                told = subprocess.run([*host.ssh(), host.dest, f"sh -c {shlex.quote(write)}"], capture_output=True, text=True,
+                                      timeout=60).returncode == 0
+            except subprocess.TimeoutExpired:
+                told = False
+            if not told and not args.json:
+                print(f"{host.name} could not be reached: what it keeps follows the new setting from its next attempt",
+                      file=sys.stderr)
         elif args.action == "remove":
             # a node running there could no longer be stopped (cancel finds its place by the host's name)
             busy = Store(home()).db.execute("SELECT run_id, node_id FROM tasks WHERE state IN ('running', 'leased') AND runner LIKE ?",
@@ -558,7 +573,10 @@ def cmd_hosts(args):
                            f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then '
                            f'echo "a node is running there" >&2; exit 4; fi; done\n'
                            + locked(host.root, f"chmod -R u+w {root}/objects 2>/dev/null; "
-                                               f"rm -rf {root}/objects {root}/holds {root}/code {root}/envs {root}/work"))
+                                               f"rm -rf {root}/objects {root}/code {root}/envs {root}/work; "
+                                               # all of holds/ but the sweeper's lock: a sweeper still asleep holds it,
+                                               # and a new file would let a second one start beside it
+                                               f"find {root}/holds -mindepth 1 -maxdepth 1 ! -name .sweeper -exec rm -rf {{}} + 2>/dev/null; true"))
             out = subprocess.run([*host.ssh(), host.dest, f"sh -c {q(script)}"], capture_output=True, text=True, timeout=600)
             if out.returncode:
                 raise HostError(f"could not clean {host.name}: {out.stderr.strip()[-300:]}")
