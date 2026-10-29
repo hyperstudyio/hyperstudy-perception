@@ -1171,6 +1171,20 @@ def test_nodes_with_the_same_lock_share_one_environment_on_a_host_and_each_impor
     assert sdks == {id: f"{root}/code/{codes[id]}/sdk/src/perception_node/__init__.py" for id in ("a", "b")}
 
 
+def explain(coord, run_id: str, status: str):
+    """A run that did not succeed, in full (pytest shortens an assertion's message): each node's error, log and the
+    run's events, printed for the test's report."""
+    if status == "succeeded":
+        return
+    for n, x in coord._tasks(run_id).items():
+        print(n, x["state"], x["error_code"], x["error"], x["attempt"])
+        for a in range(1, x["attempt"] + 1):
+            path = coord.store.root / "work" / run_id / n / str(a)
+            print(sorted(p.name for p in path.iterdir()) if path.is_dir() else "no attempt folder")
+            print((path / "log.txt").read_text() if (path / "log.txt").exists() else "no log")
+    print([dict(e) for e in coord.store.db.execute("SELECT node_id, kind, message FROM events WHERE run_id=?", (run_id,))])
+
+
 def executions(rec: str) -> list[dict]:
     out = []
     for p in sorted(Path(rec).glob("*-*-*")):
@@ -1275,13 +1289,7 @@ def test_two_exclusive_gpu_nodes_on_a_host_with_two_cards_run_together_each_on_i
            "nodes": [gpu("g1"), gpu("g2"), gpu("g3")]}
     run_id = start(coord, doc)
     status = asyncio.run(coord.run(run_id))
-    t = coord._tasks(run_id)
-    if status != "succeeded":   # in full (pytest shortens an assertion's message): seen once on CI, never here
-        for n, x in t.items():
-            print(n, x["state"], x["error_code"], x["error"], x["attempt"])
-            for a in range(1, x["attempt"] + 1):
-                print(log_of(coord, run_id, n, a))
-        print([dict(e) for e in coord.store.db.execute("SELECT node_id, kind, message FROM events WHERE run_id=?", (run_id,))])
+    explain(coord, run_id, status)
     assert status == "succeeded"
     t = coord._tasks(run_id)
     first, second, third = sorted(t.values(), key=lambda x: x["started_at"])
@@ -1316,7 +1324,10 @@ def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_pa
 
     async def both():
         return await asyncio.gather(*(c.run(r) for c, r in zip(coords, runs)))
-    assert asyncio.run(both()) == ["succeeded", "succeeded"]
+    done = asyncio.run(both())
+    for c, r, d in zip(coords, runs, done):
+        explain(c, r, d)
+    assert done == ["succeeded", "succeeded"]
     assert [c._tasks(r)[f"g{i}"]["gpu"] for i, (c, r) in enumerate(zip(coords, runs), 1)] == [1, 1]   # both chose card 1
     first, second = sorted(executions(rec), key=lambda e: e["start"])
     end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
@@ -1364,7 +1375,10 @@ def test_a_coordinator_on_the_host_and_one_elsewhere_lease_the_same_card_whateve
 
     async def both():
         return await asyncio.gather(*(c.run(r) for c, r in zip(coords, runs)))
-    assert asyncio.run(both()) == ["succeeded", "succeeded"]
+    done = asyncio.run(both())
+    for c, r, d in zip(coords, runs, done):
+        explain(c, r, d)
+    assert done == ["succeeded", "succeeded"]
     assert [c._tasks(r)[f"g{i}"]["gpu"] for i, (c, r) in enumerate(zip(coords, runs), 1)] == [1, 1]
     first, second = sorted(executions(rec), key=lambda e: e["start"])
     end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
