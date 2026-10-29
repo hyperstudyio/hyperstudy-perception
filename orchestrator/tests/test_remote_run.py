@@ -690,3 +690,30 @@ def test_a_start_that_starts_no_coordinator_leaves_no_hold_on_its_inputs(tmp_pat
     code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", run_id, "--detach")
     assert of(out, "remote_started")[0]["started"] is False
     assert holds_naming(lab, run_id) == []
+
+
+def test_a_second_fetch_leaves_what_this_store_reran_since(tmp_path, lab, capsys):
+    """Review of #46: a task rerun here after the first import is this store's own result: a later fetch keeps it."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    perception(capsys, "remote", "fetch", "lab", run_id)
+    store = Store(tmp_path / "mac")
+    store.db.execute("UPDATE tasks SET attempt=2, outputs='{}', cache_key=NULL, state='failed' WHERE run_id=? AND node_id='b'", (run_id,))
+    store.db.execute("UPDATE runs SET status='failed' WHERE id=?", (run_id,))   # as a rerun here that failed leaves it
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 0, out
+    b = store.db.execute("SELECT attempt, state FROM tasks WHERE run_id=? AND node_id='b'", (run_id,)).fetchone()
+    assert tuple(b) == (2, "failed")
+    assert store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()[0] == "failed"
+
+
+def test_a_run_id_of_a_run_made_here_is_refused_before_anything_is_sent(tmp_path, lab, capsys):
+    """Review of #46: a --run-id naming one of this store's own runs would run there, spend, and never be imported."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec)])
+    coord = Coordinator(Store(tmp_path / "mac"), Registry.load(NODES), [SelfBackend()])
+    doc = json.loads(graph.read_text())
+    mine = coord.create_run(compile_graph(doc, coord.registry), doc)
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", mine)
+    assert code == 1 and "a run of this machine's" in of(out, "error")[0]["problems"][0], out
+    assert nothing_sent(lab) and not (lab / "argv.log").exists()

@@ -698,6 +698,12 @@ def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, 
             refused += 1
     r = dump["run"]
     tasks_in, kept, added = 0, 0, 0
+    # the attempt each task had when an import last wrote it: one this store has moved on from since (a rerun here) is
+    # this store's own result, and a later fetch leaves it, and the run's status and spend, as they are (review of #46)
+    last = mine.get("imported_attempts") or {}
+    rerun_here = {n for n, t in ((n, store.db.execute("SELECT attempt FROM tasks WHERE run_id=? AND node_id=?", (run_id, n)).fetchone())
+                                 for n in dump["tasks"]) if t is not None and local and last.get(n) != t["attempt"]}
+    imported_attempts = dict(last)
     with store.tx() as db:
         if not local:
             db.execute("INSERT INTO runs (id, pipeline, graph, graph_path, inputs, status, created_at, finished_at, max_cost_usd, spent_usd, allow_uploads) "
@@ -705,16 +711,20 @@ def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, 
                        (run_id, graph.spec.pipeline, dumps(mine["graph_doc"]), mine.get("graph") or None,
                         dumps({k: a.to_json() for k, a in sources.items()}), r["status"], r["created_at"], r["finished_at"],
                         r["max_cost_usd"], r["spent_usd"], 1))
-        else:
+        elif not rerun_here:
             db.execute("UPDATE runs SET status=?, finished_at=?, spent_usd=? WHERE id=?", (r["status"], r["finished_at"], r["spent_usd"], run_id))
         for node_id, t in dump["tasks"].items():
+            if node_id in rerun_here:
+                continue
             now = db.execute("SELECT * FROM tasks WHERE run_id=? AND node_id=?", (run_id, node_id)).fetchone()
             outputs = dumps({k: a.to_json() for k, a in made[node_id].items()}) if node_id in made else None
             key = verified.get(node_id)
             if now and (now["state"], now["cache_key"], now["outputs"]) == (t["state"], key, outputs):
+                imported_attempts[node_id] = now["attempt"]
                 continue   # imported before, unchanged
             # an attempt number of this store's own: one past the last it has for this node (none: the first)
             attempt = (now["attempt"] if now else 0) + 1 if t["attempt"] else (now["attempt"] if now else 0)
+            imported_attempts[node_id] = attempt
             runner = t["runner"]
             if runner and runner.split(":")[0] in ("native", "self"):
                 runner = f"ssh-{host.name}:{runner.split(':', 1)[1]}"
@@ -759,8 +769,9 @@ def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, 
                    (run_id, None, time.time(), "run.imported",
                     f"from {host.name}: {tasks_in} tasks, {added} cache rows ({kept} this machine had kept, {refused} refused: "
                     f"keys this machine does not compute), {brought} objects"))
-    record(run_id).write_text(json.dumps({**mine, "imported_events": after}))
-    return {"tasks": tasks_in, "cache_added": added, "cache_kept": kept, "cache_refused": refused, "objects": brought}
+    record(run_id).write_text(json.dumps({**mine, "imported_events": after, "imported_attempts": imported_attempts}))
+    return {"tasks": tasks_in, "tasks_kept": len(rerun_here), "cache_added": added, "cache_kept": kept,
+            "cache_refused": refused, "objects": brought}
 
 
 def graph_registry(graph: Graph):

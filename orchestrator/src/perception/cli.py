@@ -831,8 +831,10 @@ def cmd_remote(args):
             secrets = load_secrets()
             rp = remote_run.remote_plan(host, graph, doc, secrets, args.allow_uploads)
             run_id = args.run_id or new_run_id()
-            if not args.run_id and Store(home()).db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone():
-                return problem(f"run {run_id} exists here already: try again")
+            if Store(home()).db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone() and not remote_run.record(run_id).exists():
+                # one of this store's own runs (review of #46): it would run there, spend, and never be imported
+                return problem(f"run {run_id} is a run of this machine's, not one it started on a host" if args.run_id
+                               else f"run {run_id} exists here already: try again")
             if args.dry_run or not rp["ok"]:
                 if args.json:
                     emit("remote_plan", run=run_id, **rp)
