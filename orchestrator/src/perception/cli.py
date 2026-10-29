@@ -578,7 +578,8 @@ def cmd_hosts(args):
                 # not while a node runs there (an attempt's pid that is still that attempt's node), nor while a run is
                 # coordinated there (remote run: its coordinator, or a node it started); folders a cancel, a lost
                 # connection or a stop mark left are removed with the inputs and code, and so are the copies of the
-                # pipeline and the store of runs coordinated there (with the results of those not fetched yet). Inputs
+                # pipeline, the store of runs coordinated there (with the results of those not fetched yet) and the gated
+                # weights downloaded there for each Hugging Face account (hosts.hf_home). Inputs
                 # and copies are read-only there (made writable to be removed); under the objects' lock, so no driver
                 # is holding one meanwhile.
                 script += (f'for f in {root}/work/*/*/*/pid; do [ -f "$f" ] || continue; p=$(cat "$f"); '
@@ -592,7 +593,7 @@ def cmd_hosts(args):
                            f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/handle.json}}/request.json"; then '
                            f'echo "a node is running there" >&2; exit 4; fi; done\n'
                            + locked(host.root, f"chmod -R u+w {root}/objects {root}/pipelines 2>/dev/null; "
-                                               f"rm -rf {root}/objects {root}/code {root}/envs {root}/work {root}/pipelines {root}/coordinator; "
+                                               f"rm -rf {root}/objects {root}/code {root}/envs {root}/work {root}/pipelines {root}/coordinator {root}/hf; "
                                                # all of holds/ but the sweeper's lock: a sweeper still asleep holds it,
                                                # and a new file would let a second one start beside it
                                                f"find {root}/holds -mindepth 1 -maxdepth 1 ! -name .sweeper -exec rm -rf {{}} + 2>/dev/null; true"))
@@ -1014,8 +1015,8 @@ def main(argv: list[str] | None = None) -> int:
     rr.set_defaults(fn=cmd_rerun)
     h = sub.add_parser("hosts", help="lab servers nodes can run on, over SSH")
     h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe", "set", "keys"],
-                   help="clean: remove the inputs, the outputs of nodes that ran there, the code kept on a host and the runs "
-                        "coordinated there (fetch them first) (--expired: only what has gone unused for the host's keep days, "
+                   help="clean: remove the inputs, the outputs of nodes that ran there, the code kept on a host, the runs "
+                        "coordinated there (fetch them first) and the gated weights downloaded there (--expired: only what has gone unused for the host's keep days, "
                         "or the oldest while its disk is short; never what a node is using). set: change --keep-days or "
                         "--min-free-gb. keys NAME on|off: whether whole runs coordinated there (remote run) may hold the keys "
                         "their steps declare, and a step placed there the token its prepare downloads gated weights with")

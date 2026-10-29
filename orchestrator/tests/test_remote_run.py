@@ -481,9 +481,10 @@ def test_a_host_is_not_cleaned_while_a_run_is_coordinated_there_and_then_its_cop
     perception(capsys, "remote", "attach", "lab", run_id)
     root = host_root(lab)
     assert (root / "pipelines").exists() and (root / "coordinator").exists()
+    (root / "hf" / "someone" / "hub").mkdir(parents=True)   # an account's gated weights (hosts.hf_home)
     code, out = perception(capsys, "hosts", "clean", "lab")
     assert code == 0, out
-    assert not any((root / d).exists() for d in ("pipelines", "coordinator", "objects", "envs"))
+    assert not any((root / d).exists() for d in ("pipelines", "coordinator", "objects", "envs", "hf"))
 
 
 # --- what a host sends back is not trusted ---------------------------------------------------------------------------
