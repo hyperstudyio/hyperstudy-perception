@@ -496,17 +496,17 @@ class Driver:
         from this code's own folder, and only the card the scheduler gave it (CUDA_VISIBLE_DEVICES). A node with download
         secrets reads its account's cache there (hf_home), offline and without them, as does its prepare without the ones
         it was not sent: the host's own (a login's HF_TOKEN in .bashrc, which bash reads under sshd) are never used."""
-        from .backends.base import OFFLINE, gpu_env
+        from .backends.base import OFFLINE, SENT_TOKEN_ONLY, gpu_env, hf_cache_env
         from .backends.remote import SDK_SOURCE
         q, s = shlex.quote, self.spec
         env = gpu_env(s.get("gpu"))
         if s.get("hf_home"):
-            env["HF_HOME"] = s["hf_home"]
-        if s.get("download_secrets") and not prepare:
-            env.update(OFFLINE)
+            env.update(hf_cache_env(s["hf_home"]))
         unset = [k for k in s.get("download_secrets") or [] if not (prepare and k in self.download)]
-        if s.get("download_secrets") and prepare:
-            unset += list(OFFLINE)   # it downloads, whatever the host's own profile says
+        if s.get("download_secrets"):
+            # the node offline; its prepare online, whatever the host's own profile says, with the token it was sent
+            env.update(SENT_TOKEN_ONLY if prepare else OFFLINE)
+            unset += ["HF_HUB_OFFLINE"] if prepare else []
         if s["runner_kind"] == "self":
             python = q(s["python"])
         else:
@@ -835,6 +835,8 @@ echo $pid
             f"{q(s['uv'])} sync --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-install-package {SDK_PACKAGE}")
         # its download secrets read from stdin into the shell's own variables, and given to the prepare alone by an
         # assignment before its command: never in a command line (ps), a file, or the sync's environment
+        if missing := sorted(set(s.get("download_secrets") or []) - set(self.download)):   # submit refuses this first
+            raise PrepareFailed(f"no {', '.join(missing)} to download its weights with")
         names = list(self.download)
         given = "".join(f'{k}="$_s{i}" ' for i, k in enumerate(names))
         prepare = (f"{given}{self.node_python(prepare=True)} {q(s['prepare'])} {q(json.dumps(self.request.get('config', {})))}"

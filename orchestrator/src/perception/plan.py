@@ -97,13 +97,40 @@ def fetched(model) -> bool:
 
 
 def model_cached(model, downloads_with_secrets: bool = False) -> bool:
-    """In the cache its node reads: for a node with download secrets, GATED_HF_HOME's when set (its account's, on a
-    host: every Hugging Face weight that node loads is read there, node_env), else this machine's."""
+    """In the cache its node reads. For a node with download secrets, which reads it offline: GATED_HF_HOME's when set
+    (its account's, on a host: every Hugging Face weight that node loads is read there, node_env), and only once its
+    prepare finished (prepared_mark): a download cut short leaves a snapshot folder the node could not complete."""
     if not model.source.startswith("hf://"):
         return weights_cached(model.sha256)
+    if not downloads_with_secrets:
+        return hf_cached(model.source)
+    hub = hub_read(True)
+    return hf_cached(model.source, hub) and prepared_mark(model.source, hub).is_file()
+
+
+def hub_read(downloads_with_secrets: bool) -> Path:
+    """The Hugging Face cache a node reads here: for a node with download secrets, its account's when GATED_HF_HOME
+    names one (backends/base.hf_cache_env), else this machine's (HF_HUB_CACHE, else HF_HOME's hub/)."""
     from .backends.base import GATED_HF_HOME
-    home = os.environ.get(GATED_HF_HOME) if downloads_with_secrets else None
-    return hf_cached(model.source, Path(home) / "hub") if home else hf_cached(model.source)
+    if downloads_with_secrets and os.environ.get(GATED_HF_HOME):
+        return Path(os.environ[GATED_HF_HOME]) / "hub"
+    return Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
+
+
+def prepared_mark(source: str, hub: Path) -> Path:
+    """The file that says a node's prepare finished downloading hf://`source` into `hub`: beside the cache, not in
+    huggingface_hub's own folders, and named by the cache too (one machine may have several)."""
+    import hashlib
+    name = source.removeprefix("hf://").replace("/", "--")
+    return hub.parent / "perception-prepared" / f"{name}-{hashlib.sha256(str(hub).encode()).hexdigest()[:8]}"
+
+
+def prepared_marks(manifest, runner) -> list[Path]:
+    """The marks a successful prepare of a node with download secrets makes (prepare_first, perception setup)."""
+    if not manifest.download_secrets:
+        return []
+    hub = hub_read(True)
+    return [prepared_mark(x.source, hub) for x in manifest.models_for(runner) if fetched(x) and x.source.startswith("hf://")]
 
 
 def weights_cached(sha256: str) -> bool:
@@ -121,7 +148,7 @@ def hf_cached(source: str, hub: Path | None = None) -> bool:
     parts = repo.split("/")
     if len(parts) < 2:
         return False
-    hub = hub or Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
+    hub = hub or hub_read(False)
     folder = hub / f"models--{parts[0]}--{parts[1]}"
     if not pinned:
         return folder.is_dir()

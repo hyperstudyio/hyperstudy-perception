@@ -54,7 +54,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from . import artifacts
-from .backends.base import GATED_HF_HOME
+from .backends.base import GATED_HF_HOME, SENT_TOKEN_ONLY
 from .backends.native import NativeBackend, SelfBackend
 from .hosts import hf_home
 from .ir import GraphError, compile_graph
@@ -436,6 +436,8 @@ def cmd_start(args) -> int:
         if not isinstance(account, str) or not ACCOUNT_NAME.fullmatch(account):
             raise Refusal(f"hf_account: not an account's name: {account!r}")
         os.environ[GATED_HF_HOME] = hf_home(str(root()), account)
+    # nothing a run here does uses the host's own Hugging Face login: only the token its starter sent (SENT_TOKEN_ONLY)
+    os.environ.update(SENT_TOKEN_ONLY)
     # under the run's lock, which its coordinator takes too for its last step (releasing the holds, then its pid): so a
     # start either sees it running (and it releases them after) or sees it ended
     from .hosts import KEEP_DAYS

@@ -59,6 +59,12 @@ def load(token: str | None, accelerator: str = "cpu"):
         raise NodeError("transient", f"could not download {REPO} from Hugging Face: {e}") from None
     except HfHubHTTPError as e:   # the network, or the hub, failed: not in the cache either
         raise NodeError("transient", f"could not download {REPO} from Hugging Face: {e}") from None
+    except OSError:   # a library's own answer, offline, for a file not in the cache (transformers: no LocalEntryNotFoundError)
+        from huggingface_hub import constants
+        if constants.HF_HUB_OFFLINE:
+            raise NodeError("resources", f"{REPO} is not in this machine's Hugging Face cache, which the node reads alone: "
+                                         "its prepare downloads it (perception setup, or a run with --allow-downloads)") from None
+        raise
     if pipeline is None:   # from_pretrained's other answer when it gets no config (pyannote 3 gave it for a gated repo)
         raise refused
     return pipeline.to(torch.device(device)), device

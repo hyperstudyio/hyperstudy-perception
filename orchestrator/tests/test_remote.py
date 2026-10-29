@@ -1870,7 +1870,8 @@ def test_a_hosts_prepare_gets_the_token_over_stdin_and_its_node_none_reading_the
     # every ssh command line, logged; and the host's own HF_TOKEN in what the commands there inherit
     argv_log = tmp_path / "argv.log"
     ssh = tmp_path / "ssh-logged"
-    ssh.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {argv_log}\nHF_TOKEN={HOSTS_OWN} exec {tmp_path / "ssh"} "$@"\n')
+    ssh.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {argv_log}\n'
+                   f'HF_TOKEN={HOSTS_OWN} HF_HUB_CACHE={tmp_path / "shared-hub"} exec {tmp_path / "ssh"} "$@"\n')
     ssh.chmod(0o755)
     monkeypatch.setenv("PERCEPTION_SSH", str(ssh))
     remote = SshBackend(lab(host), runner_kind="self", python=sys.executable)
@@ -1883,11 +1884,27 @@ def test_a_hosts_prepare_gets_the_token_over_stdin_and_its_node_none_reading_the
     cache = f"{remote.host.root}/hf/tester"
     [prepare], [node] = gated_records(rec, "prepare"), gated_records(rec, "node-1")
     assert prepare["sha256"] == hashlib.sha256(TOKEN.encode()).hexdigest()   # ours, not the host's own
-    assert (prepare["hf_home"], prepare["offline"]) == (cache, None)
-    assert node == {"keys": [], "sha256": None, "hf_home": cache, "offline": "1", "weights": True}
+    # the account's cache, not the one the host's profile names for everyone (HF_HUB_CACHE); the prepare online, with
+    # only the token it was sent
+    assert (prepare["hf_home"], prepare["hub_cache"], prepare["offline"], prepare["implicit_token"]) == (cache, cache + "/hub", None, False)
+    assert node == {"keys": [], "sha256": None, "hf_home": cache, "hub_cache": cache + "/hub", "offline": "1",
+                    "implicit_token": False, "weights": True}
     # the token in no command line, no file on the host, and nothing this machine wrote for the attempt
     assert TOKEN not in argv_log.read_text()
     for where in (host, coord.store.root):
         for p in where.rglob("*"):
             if p.is_file() and not p.is_symlink():
                 assert TOKEN.encode() not in p.read_bytes(), p
+
+
+def test_a_gated_step_on_a_host_with_no_token_here_is_refused_once_and_nothing_is_sent(tmp_path, host, rec):
+    """A resumed run is not planned again: its submit refuses, rather than leave the host's prepare to its own login."""
+    remote = SshBackend(lab(host), runner_kind="self", python=sys.executable)
+    remote.host.keys = True
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), remote], {},
+                        tick_s=0.02, backoff_s=0.01)
+    run_id = start(coord, gated_graph(tmp_path, rec))
+    assert asyncio.run(coord.run(run_id)) == "failed"
+    t = coord._tasks(run_id)["a"]
+    assert t["error_code"] == "input" and "HF_TOKEN, which is not set here" in t["error"] and t["attempt"] == 1
+    assert not (host / "home" / ".cache").exists()

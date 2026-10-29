@@ -118,6 +118,14 @@ class LeaseRefused(PermissionError):
     """The machine's lease folder is not the user's own (LEASE_FOLDER): the same every time, so the node fails once."""
 
 
+class SubmitRefused(Exception):
+    """A submit that would be refused again, for the same reason: the node fails once, with this error code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 def lease_command(leases: str, index: int, use: str, who: str) -> list[str]:
     """What goes before a node's command to run it holding card `index`'s lease in the folder `leases` (LEASE), as
     `use` (shared, exclusive); `who` says which attempt holds it (run, node, attempt)."""
@@ -304,6 +312,9 @@ class Backend(ABC):
 # --- the child's environment: no credentials it did not ask for -------------------------------------------------
 
 SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", re.I)
+# settings named like credentials that are none: kept (a coordinator on a host sets this one so that nothing a run
+# there does uses the host's own Hugging Face login: SENT_TOKEN_ONLY)
+NOT_SECRETS = {"HF_HUB_DISABLE_IMPLICIT_TOKEN"}
 # the coordinator's own interpreter settings: a node runs in its own environment, never the coordinator's
 INTERPRETER_VARS = {"VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIRONMENT", "CONDA_PREFIX"}
 
@@ -311,7 +322,8 @@ INTERPRETER_VARS = {"VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIR
 def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
     """The parent's environment without anything that looks like a credential, plus the secrets the node's manifest
     names. A node never sees a key it did not declare."""
-    env = {k: v for k, v in os.environ.items() if not SECRET_NAME.search(k) and k not in INTERPRETER_VARS}
+    env = {k: v for k, v in os.environ.items()
+           if (k in NOT_SECRETS or not SECRET_NAME.search(k)) and k not in INTERPRETER_VARS}
     for name in requested:
         if name in secrets:
             env[name] = secrets[name]
@@ -319,8 +331,18 @@ def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
 
 
 # a node whose downloads are its prepare's (download_secrets) reads only the cache: a missing weight is an error at
-# once, not a download it has no token for
-OFFLINE = {"HF_HUB_OFFLINE": "1"}
+# once, not a download it has no token for. Nor does it load a token stored on the machine (`hf auth login`'s, or
+# HF_TOKEN_PATH's), which huggingface_hub otherwise does even offline
+OFFLINE = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
+# a prepare on another machine: the token it was sent, or none, never the machine's own login (its HF_TOKEN in a
+# profile, its stored token): access to a gated model is a person's
+SENT_TOKEN_ONLY = {"HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
+
+
+def hf_cache_env(home: str) -> dict[str, str]:
+    """A Hugging Face cache to read and write, whatever the machine sets: HF_HUB_CACHE (which huggingface_hub takes over
+    HF_HOME's hub/, and a lab server may point at a cache every user shares) to the one in `home`."""
+    return {"HF_HOME": home, "HF_HUB_CACHE": f"{home}/hub"}
 # where such a node's gated weights are, when not in the machine's own Hugging Face cache: on a host, its account's
 # (hosts.hf_home), which a coordinator there is told (remote_coordinator). Its HF_HOME, and only its: other nodes keep
 # the machine's cache, so public weights are not kept once per person
@@ -333,7 +355,7 @@ def node_env(manifest: Manifest, secrets: dict[str, str]) -> dict[str, str]:
     env = child_env(manifest.secrets, secrets)
     if not manifest.download_secrets:
         return env
-    gated = {"HF_HOME": env[GATED_HF_HOME]} if env.get(GATED_HF_HOME) else {}
+    gated = hf_cache_env(env[GATED_HF_HOME]) if env.get(GATED_HF_HOME) else {}
     return {**env, **gated, **OFFLINE}
 
 

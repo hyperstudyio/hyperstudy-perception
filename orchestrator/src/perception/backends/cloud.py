@@ -101,12 +101,13 @@ class CloudBackend(SshBackend):
             "sky": os.environ.get("PERCEPTION_SKY") or shutil.which("sky") or "sky",
             "aws": os.environ.get("PERCEPTION_AWS") or shutil.which("aws") or "aws"}}
 
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
+               prepare_secrets: dict[str, str] | None = None) -> dict:
         # a machine of its own (machine None): the scheduler gives it no card, and the node has the machine's one
         # SkyPilot and the AWS CLI need the user's cloud credentials, which child_env keeps from nodes: the driver is
         # this package's code, and passes them to no node (the node runs on the machine, with sshd's environment)
         env = {**env, **{k: v for k, v in os.environ.items() if k.startswith(("AWS_", "SKYPILOT_"))}}
-        return super().submit(manifest, runner, attempt_dir, env)
+        return super().submit(manifest, runner, attempt_dir, env, prepare_secrets=prepare_secrets)
 
 
 def video_seconds(inputs) -> float | None:
@@ -189,10 +190,12 @@ class RunPodBackend(CloudBackend):
             "launch_s": self.launch_s, "down_s": self.down_s, "api_s": self.api_s, "unknown_s": self.unknown_s,
             "deadline_s": self.deadline(video_seconds((e["type"], Path(e["path"])) for e in request["inputs"].values()))}}
 
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
+               prepare_secrets: dict[str, str] | None = None) -> dict:
         # the account key for the driver alone (this package's code), in its environment, never in remote.json: it
         # creates and deletes the pod from here, and sends the key nowhere
-        return SshBackend.submit(self, manifest, runner, attempt_dir, {**env, "RUNPOD_API_KEY": self.api_key or ""})
+        return SshBackend.submit(self, manifest, runner, attempt_dir, {**env, "RUNPOD_API_KEY": self.api_key or ""},
+                                 prepare_secrets=prepare_secrets)
 
 
 class Cloud:

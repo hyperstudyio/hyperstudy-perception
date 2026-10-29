@@ -84,15 +84,20 @@ class NativeBackend(Backend):
         env = {**env, **self.project_env(runner)}
         env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
         command = self.command(manifest, runner, request)
-        if prepare_secrets is not None and manifest.download_secrets and self.downloads(manifest, runner):
-            # its prepare first, with them, then the node without them (prepare_first.py)
-            config = json.loads(request.read_text()).get("config", {})
-            command = [sys.executable, "-m", "perception.prepare_first", "--secrets", ",".join(manifest.download_secrets),
-                       "--prepare", json.dumps(self.prepare_command(manifest, runner, config)), "--", *command]
-            env = {**env, **prepare_secrets}
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
             command = [*lease_command(str(self.lease_folder()), gpu, manifest.resources.gpu,
                                       holder(json.loads(request.read_text()))), *command]
+        if prepare_secrets is not None and manifest.download_secrets and self.downloads(manifest, runner):
+            # its prepare first, with them, then the node (with its lease: no card is held while weights download)
+            # without them (prepare_first.py)
+            from ..plan import prepared_marks
+            config = json.loads(request.read_text()).get("config", {})
+            sync = self.sync_command(runner)
+            command = [sys.executable, "-m", "perception.prepare_first", "--secrets", ",".join(manifest.download_secrets),
+                       *(["--sync", json.dumps(sync)] if sync else []),
+                       "--prepare", json.dumps(self.prepare_command(manifest, runner, config)),
+                       "--marks", json.dumps([str(p) for p in prepared_marks(manifest, runner)]), "--", *command]
+            env = {**env, **prepare_secrets}
         log = open(attempt_dir / "log.txt", "ab")
         proc = subprocess.Popen(command, cwd=manifest.directory, env=env,
                                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -110,12 +115,19 @@ class NativeBackend(Backend):
         from ..plan import fetched, model_cached
         return any(fetched(x) and not model_cached(x, bool(manifest.download_secrets)) for x in manifest.models_for(runner))
 
+    def sync_command(self, runner: Runner) -> list[str] | None:
+        """The node's environment synced from its lock, as `uv run` would before its first use (None: `self`)."""
+        if self.kind == "self":
+            return None
+        return [shutil.which("uv") or "uv", "sync", "--project", str(REPO / runner.env), "--frozen", "--no-dev"]
+
     def prepare_command(self, manifest: Manifest, runner: Runner, config: dict) -> list[str]:
-        """The node's prepare script with its settings, in its environment, as `perception setup` runs it (setup.py)."""
+        """The node's prepare script with its settings, in its environment as sync_command left it, as `perception
+        setup` runs it (setup.py)."""
         script = str(manifest.directory / manifest.prepare)
         if self.kind == "self":
             return [sys.executable, script, json.dumps(config)]
-        return [shutil.which("uv") or "uv", "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev",
+        return [shutil.which("uv") or "uv", "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev", "--no-sync",
                 "python", script, json.dumps(config)]
 
     def project_env(self, runner: Runner) -> dict[str, str]:

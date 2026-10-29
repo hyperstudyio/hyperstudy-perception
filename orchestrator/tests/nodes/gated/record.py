@@ -11,9 +11,11 @@ def record(folder: str, who: str, **more) -> None:
     token = os.environ.get("HF_TOKEN")
     Path(folder).mkdir(parents=True, exist_ok=True)
     (Path(folder) / f"{who}-{os.getpid()}").write_text(json.dumps(
-        {"keys": sorted(k for k in os.environ if k.endswith(("_KEY", "_TOKEN"))),
+        {"keys": sorted(k for k in os.environ if k.endswith(("_KEY", "_TOKEN")) and k != "HF_HUB_DISABLE_IMPLICIT_TOKEN"),
          "sha256": hashlib.sha256(token.encode()).hexdigest() if token else None,
-         "hf_home": os.environ.get("HF_HOME"), "offline": os.environ.get("HF_HUB_OFFLINE"), **more}))
+         "hf_home": os.environ.get("HF_HOME"), "hub_cache": os.environ.get("HF_HUB_CACHE"),
+         "offline": os.environ.get("HF_HUB_OFFLINE"), "implicit_token": os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") != "1",
+         **more}))
 
 
 def weights() -> Path:

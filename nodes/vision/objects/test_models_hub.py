@@ -47,3 +47,17 @@ def test_a_weight_missing_from_the_cache_is_said_so_offline_and_retried_online(m
     with pytest.raises(NodeError, match=said) as e:
         module._from_hub(missing, "facebook/sam3")
     assert e.value.code == code
+
+
+def test_transformers_plain_oserror_offline_is_said_so_too_and_otherwise_left_alone(models):
+    module, constants = models
+
+    def transformers_miss():   # what from_pretrained raises offline for weights not in the cache (transformers 5.20.2)
+        raise OSError("We couldn't connect to 'https://huggingface.co' to load the files")
+    constants.HF_HUB_OFFLINE = True
+    with pytest.raises(NodeError, match="not in this machine's Hugging Face cache") as e:
+        module._from_hub(transformers_miss, "facebook/dinov3-vitl16-pretrain-lvd1689m")
+    assert e.value.code == "resources"
+    constants.HF_HUB_OFFLINE = False
+    with pytest.raises(OSError, match="couldn't connect"):
+        module._from_hub(transformers_miss, "facebook/dinov3-vitl16-pretrain-lvd1689m")

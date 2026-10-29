@@ -29,7 +29,7 @@ from pathlib import Path
 from ..hosts import Host
 from ..manifests import Manifest, Runner
 from ..release import files_in, release
-from .base import OFFLINE, Capabilities
+from .base import OFFLINE, Capabilities, SubmitRefused
 from .native import REPO, NativeBackend
 
 
@@ -160,9 +160,14 @@ class SshBackend(NativeBackend):
 
     def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
                prepare_secrets: dict[str, str] | None = None) -> dict:
+        prepare_secrets = prepare_secrets or {}
+        if missing := [k for k in manifest.download_secrets if not prepare_secrets.get(k)]:
+            # refused, not run with whatever the host has (its own login): the plan says so first (missing_secrets),
+            # but a resumed run is not planned again
+            raise SubmitRefused("input", f"its weights are downloaded with {', '.join(missing)}, which is not set here "
+                                         f"(perception keys set {missing[0]})")
         files = code_files(manifest, runner)
         caps = self.host.caps
-        prepare_secrets = prepare_secrets or {}
         spec = {
             "dest": self.host.dest, "root": self.host.root, "host": self.host.name, "ssh": self.host.ssh(),
             "code": code_hash(files), "files": files,
