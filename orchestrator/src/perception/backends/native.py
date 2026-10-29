@@ -108,7 +108,7 @@ class NativeBackend(Backend):
     def downloads(self, manifest: Manifest, runner: Runner) -> bool:
         """Whether a weight the runner loads is not in this machine's cache yet (plan.model_cached): its prepare fetches it."""
         from ..plan import fetched, model_cached
-        return any(fetched(x) and not model_cached(x) for x in manifest.models_for(runner))
+        return any(fetched(x) and not model_cached(x, bool(manifest.download_secrets)) for x in manifest.models_for(runner))
 
     def prepare_command(self, manifest: Manifest, runner: Runner, config: dict) -> list[str]:
         """The node's prepare script with its settings, in its environment, as `perception setup` runs it (setup.py)."""

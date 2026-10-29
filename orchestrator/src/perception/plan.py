@@ -96,12 +96,13 @@ def fetched(model) -> bool:
     return bool(model.source) and (model.source.startswith("hf://") or (model.source.startswith("https://") and bool(model.sha256)))
 
 
-def model_cached(model) -> bool:
-    """In this machine's cache: a gated model in GATED_HF_HOME's, when set (the account's, on a host), as its node reads it."""
+def model_cached(model, downloads_with_secrets: bool = False) -> bool:
+    """In the cache its node reads: for a node with download secrets, GATED_HF_HOME's when set (its account's, on a
+    host: every Hugging Face weight that node loads is read there, node_env), else this machine's."""
     if not model.source.startswith("hf://"):
         return weights_cached(model.sha256)
     from .backends.base import GATED_HF_HOME
-    home = os.environ.get(GATED_HF_HOME) if model.gated else None
+    home = os.environ.get(GATED_HF_HOME) if downloads_with_secrets else None
     return hf_cached(model.source, Path(home) / "hub") if home else hf_cached(model.source)
 
 
@@ -177,7 +178,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         # there (a run never downloads silently: --allow-downloads). Only the ones the chosen runner loads, which are also
         # the models the plan says the node uses
         loaded = m.models_for(placement.runner) if placement else m.models
-        np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
+        np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x, bool(m.download_secrets)))]
         np.secrets, np.download_secrets = list(m.secrets), list(m.download_secrets)
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(loaded)
