@@ -1268,7 +1268,7 @@ def test_two_exclusive_gpu_nodes_on_a_host_with_two_cards_run_together_each_on_i
     coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), remote], tick_s=0.02, backoff_s=0.01)
     seed = tmp_path / "seed.json"
     seed.write_text('{"value": 0}')
-    gpu = lambda id: {"id": id, "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cpu",
+    gpu = lambda id: {"id": id, "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cuda",
                       "config": {"record_dir": rec, "sleep": 2, "add": int(id[1])}}
     doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
            "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
@@ -1303,7 +1303,7 @@ def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_pa
         coord = Coordinator(Store(tmp_path / f"store{i}"), Registry.load(NODES), [SelfBackend(), remote], tick_s=0.02, backoff_s=0.01)
         doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
                "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
-               "nodes": [{"id": f"g{i}", "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cpu",
+               "nodes": [{"id": f"g{i}", "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cuda",
                           "config": {"record_dir": rec, "sleep": 2, "add": i}}]}
         coords.append(coord)
         runs.append(start(coord, doc))
@@ -1347,7 +1347,7 @@ def test_a_coordinator_on_the_host_and_one_elsewhere_lease_the_same_card_whateve
     remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6, gpus=cards), runner_kind="self", python=sys.executable)
     assert not remote.host.root.endswith("/.cache/hyperstudy-perception")   # added with a root of its own
     coords, runs = [], []
-    for i, (backend, place) in enumerate(((TheServer(), "self:cpu"), (remote, "ssh-lab:cpu")), 1):
+    for i, (backend, place) in enumerate(((TheServer(), "self:cuda"), (remote, "ssh-lab:cuda")), 1):
         coord = Coordinator(Store(tmp_path / f"store{i}"), Registry.load(NODES), [backend], tick_s=0.02, backoff_s=0.01)
         doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
                "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},

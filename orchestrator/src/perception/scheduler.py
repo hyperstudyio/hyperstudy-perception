@@ -420,6 +420,10 @@ class Coordinator:
         fits, card = self._fits(run_id, graph, m, placement, tasks)
         if not fits:
             return   # stays ready; started when running nodes free their share
+        if placement.runner.accelerator != "cuda":
+            # a GPU node on the CPU: counted on every card in this run as before (no card recorded), but given none,
+            # so it leases none and holds no card against other runs' nodes on the machine
+            card = None
         estimate = placement.backend.estimate(m, placement.runner, inputs)
         estimate.cost_usd += manifest_cost(m, node.config, inputs)
         run = self.store.db.execute("SELECT max_cost_usd, spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -451,6 +455,9 @@ class Coordinator:
         try:
             handle = placement.backend.submit(m, placement.runner, attempt_dir, child_env(m.secrets, self.secrets),
                                               gpu=card.index if card else None)
+        except PermissionError as e:   # refused for good (a GPU lease folder that is not the user's own): not retried
+            self._attempt_failed(run_id, graph, node.id, attempt, "input", f"submit failed: {e}")
+            return
         except Exception as e:   # could not even start (a missing tool): transient, the retry policy decides
             self._attempt_failed(run_id, graph, node.id, attempt, "transient", f"submit failed: {e}")
             return

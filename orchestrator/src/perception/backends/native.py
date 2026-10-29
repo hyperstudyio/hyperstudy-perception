@@ -80,13 +80,13 @@ class NativeBackend(Backend):
 
     def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
         request = attempt_dir / "request.json"
-        log = open(attempt_dir / "log.txt", "ab")
         env = {**env, **(env_vars(runner.env) if self.kind == "native" and runner.env else {})}   # the package's: in the store
         env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
         command = self.command(manifest, runner, request)
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
             command = [*lease_command(str(self.lease_folder()), gpu, manifest.resources.gpu,
                                       holder(json.loads(request.read_text()))), *command]
+        log = open(attempt_dir / "log.txt", "ab")
         proc = subprocess.Popen(command, cwd=manifest.directory, env=env,
                                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 start_new_session=True)   # its own process group: cancel stops the whole tree
@@ -102,8 +102,8 @@ class NativeBackend(Backend):
         """Where this machine's cards are leased (GPU_LEASES, under this user's home): the folder a coordinator elsewhere
         leases them in when it runs nodes here as a host, made the user's own and private (LEASE_FOLDER), or refused."""
         made = subprocess.run(["sh", "-c", LEASE_FOLDER], capture_output=True, text=True)
-        if made.returncode:
-            raise RuntimeError(f"cannot lease a GPU here: {made.stderr.strip()[-300:]}")
+        if made.returncode:   # the same every time: refused for good (as a host's start refuses it, exit 3: Refused)
+            raise PermissionError(f"cannot lease a GPU here: {made.stderr.strip()[-300:]}")
         return Path.home() / GPU_LEASES
 
     def recorded_handle(self, attempt_dir: Path) -> dict | None:

@@ -231,6 +231,28 @@ def test_cards_the_operator_hid_with_cuda_visible_devices_are_never_given_to_a_n
     assert {e["cuda"] for e in executions(Path(rec))} == seen
 
 
+def test_a_gpu_node_placed_on_the_cpu_is_given_no_card_and_leases_none(tmp_path, rec, monkeypatch):
+    """Counted as using the GPU in its own run, as before, but holding no card against other runs on the machine."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    coord = coordinator(tmp_path, TwoCards())
+    run_id, status = run(coord, graph_doc(tmp_path, [{**work("g", uses="test.gpu@1.0.0", record_dir=rec), "place": "self:cpu"}]))
+    assert status == "succeeded"
+    assert coord._tasks(run_id)["g"]["gpu"] is None
+    assert [e["cuda"] for e in executions(Path(rec))] == [os.environ.get("CUDA_VISIBLE_DEVICES")]
+    assert not (tmp_path / "home" / ".cache" / "hyperstudy-perception-gpus").exists()
+
+
+def test_a_gpu_lease_folder_that_is_not_the_users_own_fails_the_node_once(tmp_path, rec, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / ".cache").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "home" / ".cache" / "hyperstudy-perception-gpus").symlink_to(tmp_path / "elsewhere")
+    coord = coordinator(tmp_path, TwoCards())
+    run_id, status = run(coord, graph_doc(tmp_path, [work("g", uses="test.gpu@1.0.0", record_dir=rec)]))   # retries: 2
+    t = coord._tasks(run_id)["g"]
+    assert (status, t["error_code"], t["attempt"]) == ("failed", "input", 1) and "not your own folder" in t["error"]
+
+
 def test_gpu_nodes_are_given_cards_one_exclusive_node_per_card_shared_ones_within_its_memory():
     from perception.backends.base import Gpu
     from perception.scheduler import card_for
