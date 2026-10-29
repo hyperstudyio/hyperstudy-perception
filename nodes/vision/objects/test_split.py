@@ -195,11 +195,12 @@ def models_module():
 
 
 def verdict(label: str, image: bytes) -> str:
-    """The crop check's answer for one view: posters are graphics; a t-shirt or pants crop is absent or not by its
-    bytes, so an answer put on another track's view changes the layer."""
+    """The crop check's answer for one view: posters are graphics, shoes absent; a pants crop is absent or not by its
+    bytes, so an answer put on another track's view changes the layer (which pants are rejected depends on the JPEG
+    encoder's bytes, so on the platform: the comparison below is within one machine)."""
     if label == "poster":
         return "graphic"
-    if label in ("t-shirt", "pants") and hashlib.sha256(image).digest()[0] % 3 == 0:
+    if label == "shoe" or (label == "pants" and hashlib.sha256(image).digest()[0] % 3 == 0):
         return "absent"
     return "object"
 
@@ -303,9 +304,9 @@ def test_the_three_steps_make_the_unsplit_nodes_layer_side_file_and_crops_byte_f
     stand_ins.calls.clear()
     split = run_split(tmp_path, monkeypatch, given)
     want, got = files(unsplit), files(split["out"])
-    assert sorted(got) == sorted(want) == ["assets/crops/objects/chair_1.jpg", "assets/crops/objects/chair_2.jpg",
-                                           "assets/crops/objects/pants_1.jpg", "assets/crops/objects/t_shirt_1.jpg",
-                                           "objects.json", "objects_masks.parquet"]
+    assert sorted(got) == sorted(want)
+    assert {"assets/crops/objects/chair_1.jpg", "assets/crops/objects/t_shirt_1.jpg", "objects.json",
+            "objects_masks.parquet"} <= set(got)
     for name in want:
         assert got[name] == want[name], name
 
@@ -320,11 +321,10 @@ def test_the_three_steps_make_the_unsplit_nodes_layer_side_file_and_crops_byte_f
     rows, _ = object_raw.read(split["out"] / "objects_masks.parquet")
     assert {r["outcome"] for r in rows} == {"tracks", "rejected", "too_short", "none"}
     assert {r["reason"] for r in rows} == {"kept", "trimmed", "worn", "item", "person", "below_keep", "not_this_body"}
-    assert {(t["label"], t["verdict"]) for t in layer["rejected_tracks"]} == {("poster", "graphic"), ("t-shirt", "absent"),
-                                                                             ("pants", "absent")}
+    assert {(t["label"], t["verdict"]) for t in layer["rejected_tracks"]} >= {("poster", "graphic"), ("shoe", "absent")}
     assert {t["wearer"] for t in layer["tracks"] if t["label"] == "helmet"} == {"person:1"}   # worn: assign_wearers
     linked = {i["id"]: (i["tracks"], i["worn_by"]) for i in layer["identities"] if len(i["tracks"]) > 1}
-    assert linked == {"objid:pants 1": (["obj:6", "obj:14"], ["person:1"]), "objid:t-shirt 1": (["obj:3", "obj:10"], ["person:0"])}
+    assert linked["objid:t-shirt 1"] == (["obj:3", "obj:10"], ["person:0"])   # one wearer's, across the cut
     assert next(i for i in layer["identities"] if i["label"] == "mug")["crop"] is None   # never big enough to embed
     assert layer["producer"]["models"][0]["id"] == "facebook/sam3"
 

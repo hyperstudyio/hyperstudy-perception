@@ -42,7 +42,7 @@ secrets: [ANTHROPIC_API_KEY]
 # screen and their time (every person's garment tracks are checked), not with the cuts. 1.1.0 measured $0.021-0.024 a
 # minute for the vocabulary, name classes and crop check together on OOO clips 1 and 2 and NES; the names are about
 # $0.003 of it (RUN_ANYWHERE_PLAN.md 1b), so the check is about $0.02, and this is about twice that. With the names
-# step's $0.01 it is 1.1.0's $0.05 (orchestrator/tests/test_node_privacy.py checks they add up to at least that).
+# step's $0.01 it is 1.1.0's $0.05 (orchestrator/tests/test_objects_steps.py checks they add up to at least that).
 cost: {usd: 0.04, per: minute, input: media}
 models:
   - {id: claude-haiku-5-5, licence: Anthropic API terms, licence_mode: api-terms}
