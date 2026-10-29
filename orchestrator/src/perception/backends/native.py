@@ -80,7 +80,7 @@ class NativeBackend(Backend):
 
     def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
         request = attempt_dir / "request.json"
-        env = {**env, **(env_vars(runner.env) if self.kind == "native" and runner.env else {})}   # the package's: in the store
+        env = {**env, **self.project_env(runner)}
         env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
         command = self.command(manifest, runner, request)
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
@@ -97,6 +97,10 @@ class NativeBackend(Backend):
         tmp.write_text(json.dumps(handle))
         os.replace(tmp, attempt_dir / "handle.json")
         return handle
+
+    def project_env(self, runner: Runner) -> dict[str, str]:
+        """What the node's environment needs set: for the package, where uv makes it (in the store)."""
+        return env_vars(runner.env) if self.kind == "native" and runner.env else {}
 
     def lease_folder(self) -> Path:
         """Where this machine's cards are leased (GPU_LEASES, under this user's home): the folder a coordinator elsewhere

@@ -581,8 +581,8 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
     stage.mkdir(parents=True)
     got = stage / "got"
     try:
-        objects = sorted({store.object_dir(a["shape"], a["hash"]).relative_to(store.root).as_posix()
-                          for t in dump["tasks"].values() for a in t["outputs"].values()})
+        objects = {store.object_dir(a["shape"], a["hash"]).relative_to(store.root).as_posix(): a["type"]
+                   for t in dump["tasks"].values() for a in t["outputs"].values()}
         wanted = [o for o in objects if not (store.root / o).exists()] + list(dump["logs"].values())
         if dump["run"]["status"] == "succeeded" and (output / "manifest.json").exists():
             raise RemoteError(f"{output} already holds a bundle")
@@ -609,9 +609,11 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
     return {"run": run, "host": remote.host.name, "path": bundle, "bundle_problem": problem, **imported}
 
 
-def _objects(store: Store, objects: list[str], got: Path) -> int:
-    """Each object the run's outputs name, checked against its hash here (as Store.publish computes it) and moved into
-    the store unless it is there already. One that is missing or does not hash to its name refuses the import."""
+def _objects(store: Store, objects: dict[str, str], got: Path) -> int:
+    """Each object the run's outputs name (its folder in the store -> its artifact type), checked against its hash here
+    (as Store.publish computes it) and against its type (as every commit checks an output: scheduler._publish), and
+    moved into the store unless it is there already. One that is missing, does not hash to its name, or is not what its
+    type says refuses the import."""
     brought = 0
     for rel in objects:
         final = store.root / rel
@@ -627,6 +629,9 @@ def _objects(store: Store, objects: list[str], got: Path) -> int:
                 raise RemoteError(f"{rel} is not the file its hash names")
         elif sha256_tree(src) != h:
             raise RemoteError(f"{rel} is not the folder its hash names")
+        readable = src if shape == "tree" else next(src.iterdir())
+        if problems := artifacts.get(objects[rel]).validate(readable):
+            raise RemoteError(f"{rel} is not a {objects[rel]}: {'; '.join(problems[:3])}")
     for rel in objects:   # only once every one has been checked: a refused import leaves this store as it was
         final = store.root / rel
         if final.exists():
@@ -669,7 +674,7 @@ def expected_keys(coord, host: Host, node, inputs: dict[str, Artifact]) -> set[s
 
 
 def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, dump: dict, got: Path,
-               objects: list[str]) -> dict:
+               objects: dict[str, str]) -> dict:
     """The run, its tasks and events, and the cache rows of the results whose keys this machine computes, into this
     store (the comment above). A run of this id that this store has and did not import from HOST is another run:
     refused."""

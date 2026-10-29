@@ -101,9 +101,48 @@ def run_folder(run: str) -> Path:
     return home() / "remote" / run
 
 
+class HostBackend(NativeBackend):
+    """This machine's native runs, with each node's environment kept by its lock, as a host keeps them for steps placed
+    there (remote_driver.make_env, #41): envs/<env_key> in this store, made of the node's uv project and the SDK's
+    project file, synced without the SDK (uv sync --no-install-package), which the node imports from the copy it runs
+    from (PYTHONPATH). Every copy of the pipeline (each named by its whole content: remote_run.Remote.copy) with that
+    lock shares it, so an edit elsewhere in the pipeline makes no new environment here (review of #46)."""
+
+    def env_project(self, manifest, runner) -> Path:
+        from .backends.remote import code_files, env_files, env_key
+        files = code_files(manifest, runner)
+        folder = home() / "envs" / env_key(files, runner.env)
+        if not (folder / ".complete").exists():
+            incoming = home() / "envs" / f".incoming-{os.getpid()}-{folder.name}"
+            shutil.rmtree(incoming, ignore_errors=True)
+            for f in env_files(files, runner.env):
+                (incoming / f).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(REPO / f, incoming / f)
+            (incoming / ".complete").touch()
+            try:
+                os.rename(incoming, folder)
+            except OSError:   # made meanwhile by another node with the same lock: the same content
+                shutil.rmtree(incoming, ignore_errors=True)
+        return folder / runner.env
+
+    def command(self, manifest, runner, request: Path) -> list[str]:
+        if not runner.env:
+            raise ValueError(f"{manifest.ref}: a native runner needs env (a uv project)")
+        from .backends.remote import SDK_PACKAGE
+        uv = shutil.which("uv") or "uv"
+        # synced (a moment once it is), then run without syncing: uv itself makes two syncs of one environment wait
+        script = (f'"$0" sync --quiet --project "$1" --frozen --no-dev --no-install-package {SDK_PACKAGE} && '
+                  'exec "$0" run --project "$1" --frozen --no-dev --no-sync python "$2" --request "$3"')
+        return ["sh", "-c", script, uv, str(self.env_project(manifest, runner)), str(manifest.directory / runner.entry),
+                str(request)]
+
+    def project_env(self, runner) -> dict[str, str]:
+        return {"PYTHONPATH": str(REPO / "sdk" / "src")} if runner.env else {}
+
+
 def backends() -> list:
     """Every step here, on this machine (module docstring, Places)."""
-    return [NativeBackend(), SelfBackend()]
+    return [HostBackend(), SelfBackend()]
 
 
 def registry(nodes: list[str]) -> Registry:
@@ -216,7 +255,7 @@ def spawn(run: str, nodes: list[str], keys: dict[str, str], retention: list[str]
     return proc
 
 
-def prune(store: Store, keep_s: float, min_free_gb: float | None) -> list[str]:
+def prune(store: Store, keep_s: float, min_free_gb: float | None, starting: str | None = None) -> list[str]:
     """The runs coordinated here that ended more than `keep_s` ago, and, while the disk has less than `min_free_gb`
     free (None: hosts.MIN_FREE_GB, or a tenth of the disk if that is less), the ones that ended longest ago too: their
     rows, their folders (work/<run>, remote/<run>), and every object of the store no run left here reads, with the
@@ -225,7 +264,7 @@ def prune(store: Store, keep_s: float, min_free_gb: float | None) -> list[str]:
     #46). Not while any run is being coordinated here: one may be publishing an object this would remove. Fetch the
     runs to keep before then. The runs removed."""
     with locked(home() / PRUNE_LOCK):
-        return _prune(store, keep_s, min_free_gb)
+        return _prune(store, keep_s, min_free_gb, starting)
 
 
 def last_activity(store: Store, run: str) -> float:
@@ -236,7 +275,7 @@ def last_activity(store: Store, run: str) -> float:
     return row[0] or 0.0
 
 
-def _prune(store: Store, keep_s: float, min_free_gb: float | None) -> list[str]:
+def _prune(store: Store, keep_s: float, min_free_gb: float | None, starting: str | None = None) -> list[str]:
     import shutil as _shutil
     from .backends.native import _alive
     from .hosts import MIN_FREE_GB
@@ -252,7 +291,8 @@ def _prune(store: Store, keep_s: float, min_free_gb: float | None) -> list[str]:
             for h in [json.loads(t["handle"])] if isinstance(h, dict) and type(h.get("pid")) is int)
         if not nodes_alive:
             runs.append((r["id"], last_activity(store, r["id"])))
-    runs.sort(key=lambda r: r[1])
+    # never the run a start is for: the holds its inputs were just given name its folder (review of #46)
+    runs = sorted((r for r in runs if r[0] != starting), key=lambda r: r[1])
     if not runs:
         return []
     disk = _shutil.disk_usage(store.root)
@@ -343,7 +383,7 @@ def cmd_start(args) -> int:
     from .hosts import KEEP_DAYS
     keep_s, min_free = spec.get("keep_s", KEEP_DAYS * 86400), spec.get("min_free_gb")
     if _number_ok(keep_s) and (min_free is None or _number_ok(min_free)):
-        for gone in prune(Store(home()), float(keep_s), min_free):
+        for gone in prune(Store(home()), float(keep_s), min_free, starting=run):
             print(f"removed run {gone}: it ended more than the host's keep days ago (or its disk is short)", file=sys.stderr)
     with locked(home() / PRUNE_LOCK, shared=True), locked(folder / ".lock"):
         running = False

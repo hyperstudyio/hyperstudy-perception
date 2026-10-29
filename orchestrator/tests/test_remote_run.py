@@ -823,3 +823,58 @@ def test_a_start_waits_for_a_prune_that_is_removing_objects(tmp_path, lab, capsy
     t.join(60)
     assert done == [0]
     assert store.db.execute("SELECT 1 FROM tasks WHERE node_id='c'").fetchone()
+
+
+def test_a_hosts_node_environments_are_kept_by_lock_whatever_copy_runs_them(tmp_path, monkeypatch):
+    """Re-review of #46 (MEDIUM): a coordinator on a host runs from a copy named by its whole content, and its node
+    environments were keyed by that copy, so every edit to any pipeline file built a new set there. They are kept by
+    lock, as a host keeps them for steps placed there (#41): the SDK left out and imported from the copy (PYTHONPATH)."""
+    import subprocess as sp
+    import perception.backends.native as native
+    import perception.release as release
+    import perception.remote_coordinator as rc
+    from perception.backends.remote import code_files, env_key
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    m = Registry.load(release.REPO / "nodes").get("core.decode@1.1.0")
+    runner = m.runners[0]
+    files = code_files(m, runner)
+    seen = []
+
+    class Proc:
+        pid = 4242
+
+    monkeypatch.setattr(native.subprocess, "Popen", lambda cmd, **kw: seen.append((cmd, kw["env"])) or Proc())
+    for copy in ("aaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbb"):   # two copies: an edit elsewhere in the pipeline
+        (tmp_path / "RELEASE.json").write_text(json.dumps({"commit": "c" * 40, "copy": copy, "files": files}))
+        monkeypatch.setattr(release, "RELEASE", tmp_path / "RELEASE.json")
+        release.release.cache_clear()
+        attempt = tmp_path / copy / "1"
+        attempt.mkdir(parents=True)
+        (attempt / "request.json").write_text(json.dumps({"run": "r", "node": "decode", "attempt": 1}))
+        rc.backends()[0].submit(m, runner, attempt, {"PATH": os.environ["PATH"]})
+    release.release.cache_clear()
+    (a, env_a), (b, env_b) = seen
+    assert a[:-1] == b[:-1]                                              # the same environment, whichever copy (its own request)
+    project = str(tmp_path / "home" / "envs" / env_key(files, runner.env) / runner.env)
+    assert project in " ".join(a) and "--no-install-package" in " ".join(a) and "--no-sync" in " ".join(a)
+    assert "UV_PROJECT_ENVIRONMENT" not in env_a and env_a["PYTHONPATH"] == str(release.REPO / "sdk" / "src")
+    assert (Path(project) / "uv.lock").read_bytes() == (release.REPO / runner.env / "uv.lock").read_bytes()
+
+
+def test_an_imported_output_is_checked_against_its_type(tmp_path, lab, capsys):
+    """Re-review of #46: a layer rewritten in the host's store (and its hash there with it) is still refused here if it
+    is not what its type says, as every commit checks (scheduler._publish)."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    host = Store(host_root(lab) / "coordinator")
+    t = host.db.execute("SELECT outputs FROM tasks WHERE run_id=? AND node_id='b'", (run_id,)).fetchone()
+    bad = tmp_path / "bad" / "out.json"
+    bad.parent.mkdir()
+    bad.write_text("{not json")
+    a = host.publish(bad, "json.v1")                                       # filed there under its own (true) hash
+    outs = json.loads(t["outputs"])
+    outs["out"] = a.to_json()
+    host.db.execute("UPDATE tasks SET outputs=? WHERE run_id=? AND node_id='b'", (json.dumps(outs), run_id))
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and "json.v1" in of(out, "error")[0]["problems"][0], out
+    assert nothing_imported(tmp_path, run_id)
