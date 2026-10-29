@@ -777,3 +777,49 @@ def test_a_host_used_once_is_swept_too(tmp_path, lab, capsys):
     store = Store(host_root(lab) / "coordinator")
     assert wait_for(lambda: not store.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone(), timeout=20)
     assert not (host_root(lab) / "coordinator" / "work" / run_id).exists()
+
+
+def test_a_run_whose_coordinator_died_goes_after_the_keep_days_too(tmp_path, lab, capsys):
+    """Re-review of #46: a run left `running` by a coordinator that died (the host restarted) and never resumed is kept
+    no longer than an ended one, and the hold on its input goes with it."""
+    rec = str(tmp_path / "rec")
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("a", record_dir=rec, sleep=3)])),
+                           "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    assert wait_for(lambda: executions(Path(rec), "a"))
+    os.kill(int((host_root(lab) / "coordinator" / "remote" / run_id / "coordinator.pid").read_text()), 9)
+    assert wait_for(lambda: list(Path(rec).glob("a-*.end")))            # its node ends; nothing records it
+    store = Store(host_root(lab) / "coordinator")
+    week = 8 * 86400
+    store.db.execute("UPDATE runs SET created_at = created_at - ? WHERE id=?", (week, run_id))
+    store.db.execute("UPDATE tasks SET started_at = started_at - ? WHERE run_id=?", (week, run_id))
+    store.db.execute("UPDATE events SET at = at - ? WHERE run_id=?", (week, run_id))
+    assert holds_naming(lab, run_id)
+    graph = graph_file(tmp_path, [work("c", record_dir=rec, add=50)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    assert not store.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone()
+    assert holds_naming(lab, run_id) == []
+
+
+def test_a_start_waits_for_a_prune_that_is_removing_objects(tmp_path, lab, capsys):
+    """Re-review of #46: prune decides what no run reads, then removes it; a run starting meanwhile could have its cache
+    hits or new outputs removed under it. Both take the store's prune lock: a start waits for a prune holding it."""
+    import fcntl
+    import threading
+    rec = str(tmp_path / "rec")
+    finished_run(tmp_path, capsys, rec)                                  # the store there exists
+    fd = os.open(host_root(lab) / "coordinator" / ".prune", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)                                       # a prune at work
+    graph = graph_file(tmp_path, [work("c", record_dir=rec, add=50)])
+    done = []
+    t = threading.Thread(target=lambda: done.append(cli.main(["--json", "--nodes", str(NODES), "remote", "run", "lab", str(graph),
+                                                              "--allow-uploads", "--detach"])))
+    t.start()
+    time.sleep(4)
+    store = Store(host_root(lab) / "coordinator")
+    assert not store.db.execute("SELECT 1 FROM tasks WHERE node_id='c'").fetchone()   # not created while it is held
+    os.close(fd)                                                         # the prune ends
+    t.join(60)
+    assert done == [0]
+    assert store.db.execute("SELECT 1 FROM tasks WHERE node_id='c'").fetchone()

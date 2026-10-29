@@ -118,15 +118,21 @@ def registry(nodes: list[str]) -> Registry:
 
 
 @contextlib.contextmanager
-def locked(path: Path):
-    """One `start` of a run at a time (two at once would both find it missing, or its coordinator gone)."""
+def locked(path: Path, shared: bool = False):
+    """A run's own lock (`.lock` in its folder: one `start` of a run at a time, two at once would both find it missing,
+    or its coordinator gone), or the store's prune lock (PRUNE_LOCK): exclusive for a prune, from its look for running
+    coordinators to its last removal; shared for a start, from its look at the run to its coordinator's pid recorded.
+    So no coordinator appears between a prune's check and its removals (review of #46)."""
     import fcntl
     fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         yield
     finally:
         os.close(fd)
+
+
+PRUNE_LOCK = ".prune"   # in the coordinator's store (home())
 
 
 def alive(run: str) -> bool:
@@ -218,24 +224,47 @@ def prune(store: Store, keep_s: float, min_free_gb: float | None) -> list[str]:
     host no longer than what the host keeps for steps run there (RUN_ANYWHERE_PLAN.md, Privacy across routes; review of
     #46). Not while any run is being coordinated here: one may be publishing an object this would remove. Fetch the
     runs to keep before then. The runs removed."""
+    with locked(home() / PRUNE_LOCK):
+        return _prune(store, keep_s, min_free_gb)
+
+
+def last_activity(store: Store, run: str) -> float:
+    """When anything last happened in a run: its last event, or a task's start or end, or its creation."""
+    row = store.db.execute("SELECT MAX(x) FROM (SELECT MAX(at) AS x FROM events WHERE run_id=? UNION ALL "
+                           "SELECT MAX(COALESCE(finished_at, started_at)) FROM tasks WHERE run_id=? UNION ALL "
+                           "SELECT created_at FROM runs WHERE id=?)", (run, run, run)).fetchone()
+    return row[0] or 0.0
+
+
+def _prune(store: Store, keep_s: float, min_free_gb: float | None) -> list[str]:
     import shutil as _shutil
+    from .backends.native import _alive
     from .hosts import MIN_FREE_GB
-    runs = store.db.execute("SELECT id, finished_at FROM runs WHERE status IN ('succeeded','failed','canceled') "
-                            "AND finished_at IS NOT NULL ORDER BY finished_at").fetchall()
-    if not runs or any(alive(r["id"]) for r in store.db.execute("SELECT id FROM runs WHERE status='running'")):
-        return []
     if any(p.is_file() and alive(p.parent.name) for p in (home() / "remote").glob("*/coordinator.pid")):
+        return []
+    # ended runs, oldest first; and a run left `running` by a coordinator that died (the host restarted) and was never
+    # resumed, once nothing has happened in it for the keep period and no node it started still runs (review of #46)
+    runs = [(r["id"], r["finished_at"]) for r in store.db.execute(
+        "SELECT id, finished_at FROM runs WHERE status IN ('succeeded','failed','canceled') AND finished_at IS NOT NULL")]
+    for r in store.db.execute("SELECT id FROM runs WHERE status='running'").fetchall():
+        nodes_alive = any(_alive(h["pid"], h["request"]) for t in store.db.execute(
+            "SELECT handle FROM tasks WHERE run_id=? AND state IN ('running','leased') AND handle IS NOT NULL", (r["id"],))
+            for h in [json.loads(t["handle"])] if isinstance(h, dict) and type(h.get("pid")) is int)
+        if not nodes_alive:
+            runs.append((r["id"], last_activity(store, r["id"])))
+    runs.sort(key=lambda r: r[1])
+    if not runs:
         return []
     disk = _shutil.disk_usage(store.root)
     need = (min(MIN_FREE_GB, disk.total / 2**30 / 10) if min_free_gb is None else min_free_gb) * 2**30
-    gone = [r["id"] for r in runs if r["finished_at"] < time.time() - keep_s]
+    gone = [run for run, ended in runs if ended < time.time() - keep_s]
     short = disk.free < need
-    for r in runs:   # oldest first, while the disk is short (each run's objects counted once they are removed)
+    for run, ended in runs:   # oldest first, while the disk is short (one more each time: the next prune looks again)
         if not short:
             break
-        if r["id"] not in gone:
-            gone.append(r["id"])
-            short = False   # removed below; the next start looks again
+        if run not in gone and ended < time.time() - 3600:   # never one that ended (or went quiet) within the hour
+            gone.append(run)
+            short = False
     if not gone:
         return []
     with store.tx() as db:
@@ -316,7 +345,7 @@ def cmd_start(args) -> int:
     if _number_ok(keep_s) and (min_free is None or _number_ok(min_free)):
         for gone in prune(Store(home()), float(keep_s), min_free):
             print(f"removed run {gone}: it ended more than the host's keep days ago (or its disk is short)", file=sys.stderr)
-    with locked(folder / ".lock"):
+    with locked(home() / PRUNE_LOCK, shared=True), locked(folder / ".lock"):
         running = False
         try:
             code, running = _start(spec, keys, run, nodes, folder)
