@@ -1406,3 +1406,31 @@ def test_a_lease_names_only_the_nodes_holding_it_now(tmp_path):
     held.wait()
     assert "(held by exclusive node y pid " in waited.stderr          # a shared node that waited for an exclusive one
     assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["shared node c"]   # names it alone
+
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux shows no command line while a process execs")
+def test_a_node_caught_between_two_execs_is_still_running(tmp_path):
+    """Linux shows a process with no command line while it execs (the node is reached through setsid, the GPU lease's
+    perl, env and uv), as it does a zombie: the driver's check must not take that node for gone (seen on CI: a node
+    crashed at once, with nothing in its log). A process whose command line names another request has ended."""
+    from perception.remote_driver import running_sh
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)                                   # a zombie until reaped: alive to kill -0, with no command line
+    try:
+        time.sleep(0.2)
+        assert open(f"/proc/{pid}/cmdline", "rb").read() == b""
+        assert subprocess.run(["sh", "-c", running_sh(pid, "/w/r/a/1/request.json")]).returncode == 0
+    finally:
+        os.waitpid(pid, 0)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)", "/w/r/b/1/request.json"])
+    try:
+        while not open(f"/proc/{other.pid}/cmdline", "rb").read():   # Popen returns before its exec has set it
+            time.sleep(0.01)
+        assert subprocess.run(["sh", "-c", running_sh(other.pid, "/w/r/b/1/request.json")]).returncode == 0
+        assert subprocess.run(["sh", "-c", running_sh(other.pid, "/w/r/a/1/request.json")]).returncode == 1   # a reused pid
+    finally:
+        other.kill()
+        other.wait()
+    assert subprocess.run(["sh", "-c", running_sh(other.pid, "/w/r/b/1/request.json")]).returncode == 1        # gone
