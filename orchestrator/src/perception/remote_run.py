@@ -581,8 +581,12 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
     stage.mkdir(parents=True)
     got = stage / "got"
     try:
-        objects = {store.object_dir(a["shape"], a["hash"]).relative_to(store.root).as_posix(): a["type"]
-                   for t in dump["tasks"].values() for a in t["outputs"].values()}
+        # every type claimed for each object (each the graph's for its output: checked), so an object two outputs name
+        # is checked against both, never only the one claimed last (security review of #46)
+        objects: dict[str, set[str]] = {}
+        for t in dump["tasks"].values():
+            for a in t["outputs"].values():
+                objects.setdefault(store.object_dir(a["shape"], a["hash"]).relative_to(store.root).as_posix(), set()).add(a["type"])
         wanted = [o for o in objects if not (store.root / o).exists()] + list(dump["logs"].values())
         if dump["run"]["status"] == "succeeded" and (output / "manifest.json").exists():
             raise RemoteError(f"{output} already holds a bundle")
@@ -609,18 +613,19 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
     return {"run": run, "host": remote.host.name, "path": bundle, "bundle_problem": problem, **imported}
 
 
-def _objects(store: Store, objects: dict[str, str], got: Path) -> int:
-    """Each object the run's outputs name (its folder in the store -> its artifact type), checked against its hash here
-    (as Store.publish computes it) and against its type (as every commit checks an output: scheduler._publish), and
-    moved into the store unless it is there already. One that is missing, does not hash to its name, or is not what its
+def _objects(store: Store, objects: dict[str, set[str]], got: Path) -> int:
+    """Each object the run's outputs name (its folder in the store -> every artifact type claimed for it), checked
+    against its hash here (as Store.publish computes it) and against each type claimed for it (as every commit checks an
+    output: scheduler._publish), one this store has already too, and moved into the store unless it is there already. One that is missing, does not hash to its name, or is not what its
     type says refuses the import."""
     brought = 0
     for rel in objects:
         final = store.root / rel
-        if final.exists():
-            continue
-        src = _within(got, rel)
         shape, h = ("tree" if rel.startswith("trees/") else "file"), Path(rel).name
+        if final.exists():   # this store's own (checked against its hash when published here): its type still checked
+            src = final
+        else:
+            src = _within(got, rel)
         if not src.is_dir() or special_files(src):
             raise RemoteError(f"{rel}: missing there, or holds a link or a special file")
         if shape == "file":
@@ -630,8 +635,11 @@ def _objects(store: Store, objects: dict[str, str], got: Path) -> int:
         elif sha256_tree(src) != h:
             raise RemoteError(f"{rel} is not the folder its hash names")
         readable = src if shape == "tree" else next(src.iterdir())
-        if problems := artifacts.get(objects[rel]).validate(readable):
-            raise RemoteError(f"{rel} is not a {objects[rel]}: {'; '.join(problems[:3])}")
+        for type_id in sorted(objects[rel]):
+            if artifacts.get(type_id).shape != shape:
+                raise RemoteError(f"{rel} is not a {type_id} (a {shape})")
+            if problems := artifacts.get(type_id).validate(readable):
+                raise RemoteError(f"{rel} is not a {type_id}: {'; '.join(problems[:3])}")
     for rel in objects:   # only once every one has been checked: a refused import leaves this store as it was
         final = store.root / rel
         if final.exists():
@@ -674,7 +682,7 @@ def expected_keys(coord, host: Host, node, inputs: dict[str, Artifact]) -> set[s
 
 
 def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, dump: dict, got: Path,
-               objects: dict[str, str]) -> dict:
+               objects: dict[str, set[str]]) -> dict:
     """The run, its tasks and events, and the cache rows of the results whose keys this machine computes, into this
     store (the comment above). A run of this id that this store has and did not import from HOST is another run:
     refused."""

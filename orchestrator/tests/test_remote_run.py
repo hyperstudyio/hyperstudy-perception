@@ -878,3 +878,54 @@ def test_an_imported_output_is_checked_against_its_type(tmp_path, lab, capsys):
     code, out = perception(capsys, "remote", "fetch", "lab", run_id)
     assert code == 1 and "json.v1" in of(out, "error")[0]["problems"][0], out
     assert nothing_imported(tmp_path, run_id)
+
+
+def test_an_object_claimed_under_two_types_is_checked_against_both(tmp_path, lab, capsys, monkeypatch):
+    """Security review: a dump naming one object for two outputs of different types must not have it checked against
+    only one of them (the last claimed) and imported under the other."""
+    video = tmp_path / "my clip.mp4"
+    video.write_bytes(b"not really a video")
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "policy": {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ["video", "transcript", "faces"]},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    graph = tmp_path / "graph.yaml"
+    graph.write_text(json.dumps(doc))
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    run_id = of(out, "run.created")[0]["run"]
+
+    def change(d):
+        t = d["tasks"][0]
+        outs = json.loads(t["outputs"])
+        outs["media"] = {**outs["media"], "hash": outs["shots"]["hash"]}   # media.v1 claims the shots layer's bytes
+        t["outputs"] = json.dumps(outs)
+    tampered(monkeypatch, change)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and "media.v1" in of(out, "error")[0]["problems"][0], out
+    assert nothing_imported(tmp_path, run_id)
+
+
+
+def test_an_object_this_store_has_is_checked_against_the_type_it_is_claimed_as(tmp_path, lab, capsys, monkeypatch):
+    """An object already here was checked under its own type when it was published; claimed under another, it is
+    checked against that one too."""
+    video = tmp_path / "my clip.mp4"
+    video.write_bytes(b"not really a video")
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "policy": {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ["video", "transcript", "faces"]},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    graph = tmp_path / "graph.yaml"
+    graph.write_text(json.dumps(doc))
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    run_id = of(out, "run.created")[0]["run"]
+    host = Store(host_root(lab) / "coordinator")
+    outs = json.loads(host.db.execute("SELECT outputs FROM tasks WHERE run_id=?", (run_id,)).fetchone()[0])
+    Store(tmp_path / "mac").publish(Path(outs["shots"]["path"]), "bundle.shots@0.1")   # this store has the shots bytes
+
+    def change(d):
+        t = d["tasks"][0]
+        o = json.loads(t["outputs"])
+        o["media"] = {**o["media"], "hash": o["shots"]["hash"]}
+        t["outputs"] = json.dumps(o)
+    tampered(monkeypatch, change)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and "media.v1" in of(out, "error")[0]["problems"][0], out
