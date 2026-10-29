@@ -104,6 +104,9 @@ Not done:
   stream, 6.6 MB/s on four.
 - ~~**Nodes on a lab server.**~~ Done 2026-10-24: `perception hosts add NAME USER@HOST` records a machine reached over SSH
   (probed once: platform, cores, memory, GPU, uv, ffmpeg), and its places (`ssh-NAME:cuda`) join each node's options.
+  Environments on a host are kept by their lock (`envs/<key>`: the env's pyproject.toml and uv.lock, and the SDK's
+  project file), shared by every node and code version with that lock; the SDK is left out of them and imported from
+  the code's own folder (PYTHONPATH), so a shared environment never runs another version's SDK (2026-10-28).
   A local driver process per attempt (`remote_driver.py`) sends the node's git-tracked code and its inputs (by content:
   once per host), starts it detached in its own session, streams its log, and brings out/ and response.json back, so
   the coordinator's cancel, adoption and publication are unchanged. Sending inputs is an upload: the graph's

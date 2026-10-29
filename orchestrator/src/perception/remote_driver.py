@@ -2,7 +2,8 @@
 
     python -m perception.remote_driver --request ATTEMPT/request.json      (with ATTEMPT/remote.json beside it)
 
-1. Copies the node's code (by content: once per version) and its inputs (by sha256: once per host) to the host.
+1. Copies the node's code (by content: once per version) and its inputs (by sha256: once per host) to the host, and
+   makes its environment's folder there (envs/<env_key>: its uv project, once per lock), which prepare syncs.
 2. Writes the request there, with the host's paths, and starts the node in its own session (setsid), detached,
    so a dropped connection does not end it, with a watchdog beside it (WATCHDOG) that stops it and removes its folder
    if no driver asks about it for a while. A previous attempt of the same node still running there is stopped first.
@@ -201,6 +202,8 @@ class Driver:
         self.attempt = f"{root}/work/{r['run']}/{r['node']}/{r['attempt']}"
         self.node_runs = f"{root}/work/{r['run']}/{r['node']}"
         self.code = f"{root}/code/{self.spec['code']}"
+        # the node's environment: its uv project, by its lock, shared by every node and code version that has it
+        self.env = f"{root}/envs/{self.spec['env_key']}" if self.spec.get("env_key") else None
         self.tag = f"{r['run']}-{r['node']}-{r['attempt']}"   # this attempt's own names for what it uploads
 
     # --- commands on the host -----------------------------------------------------------------------------------
@@ -262,6 +265,38 @@ class Driver:
         self.sh(f"{PUBLISH}\ntouch {q(incoming)}/.complete && publish {q(incoming)} {q(self.code)}")
         shutil.rmtree(snapshot)
 
+    def make_env(self):
+        """The environment's folder, envs/<env_key>: its uv project (pyproject.toml, uv.lock) and the SDK's project file,
+        copied from the code just sent (env_files) and published in one step (PUBLISH). Its .venv is made in it by the
+        first prepare that syncs it, and every later node with the same lock finds it synced (uv sync then changes
+        nothing). Two nodes syncing it at once are made to wait for each other by uv itself, which holds a lock on the
+        environment (.venv/.lock) while it installs: checked with three syncs started together on uv 0.11.8 (one
+        installed, two found it done)."""
+        if not self.env:
+            return
+        q = shlex.quote
+        if self.sh(f"test -e {q(self.env)}/.complete", check=False).returncode == 0:
+            return
+        incoming = f"{self.root}/envs/.incoming-{self.tag}"
+        self.uploading = True
+        # the file names on stdin, one per line (they are files git tracks: no new lines)
+        copy = (f'while IFS= read -r f; do mkdir -p "$(dirname {q(incoming)}/"$f")" && cp -p {q(self.code)}/"$f" {q(incoming)}/"$f" || exit 1; done')
+        self.sh(f"{PUBLISH}\nrm -rf {q(incoming)} && mkdir -p {q(incoming)}\n{copy}\n"
+                f"touch {q(incoming)}/.complete && publish {q(incoming)} {q(self.env)}",
+                data="".join(f + "\n" for f in self.spec["env_files"]).encode())
+
+    def node_python(self) -> str:
+        """sh for the node's Python on the host: its environment's (uv run --no-sync: prepare synced it, and the SDK, left
+        out of it, would otherwise be installed into the shared environment from wherever this code is), with the SDK
+        from this code's own folder."""
+        from .backends.remote import SDK_SOURCE
+        q, s = shlex.quote, self.spec
+        if s["runner_kind"] == "self":
+            return q(s["python"])
+        # through env(1): the node's command follows nohup and setsid in start, where an assignment would be a command
+        return (f"env PYTHONPATH={q(self.code + '/' + SDK_SOURCE)} "
+                f"{q(s['uv'])} run --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-sync python")
+
     def send_inputs(self) -> dict[str, dict]:
         """Each input as objects/<sha256>/data on the host, published in one step (PUBLISH): nodes on the host at the
         same time may send the same input. The node gets it under its own name, a link in its attempt's in/ (the same
@@ -299,10 +334,7 @@ class Driver:
         q, s = shlex.quote, self.spec
         request = {**self.request, "inputs": {k: {x: y for x, y in v.items() if x != "object"} for k, v in inputs.items()},
                    "out_dir": f"{self.attempt}/out"}
-        if s["runner_kind"] == "self":
-            node = f"{q(s['python'])} {q(s['entry'])}"
-        else:
-            node = f"{q(s['uv'])} run --project {q(self.code + '/' + s['env'])} --frozen --no-dev python {q(s['entry'])}"
+        node = f"{self.node_python()} {q(s['entry'])}"
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
         links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -sfn {q(v['object'])} {q(v['path'])}"
@@ -509,17 +541,15 @@ echo $pid
         """What `perception setup` does for a node here, done on the host before it starts: its uv environment synced from
         its lock, then its prepare script (its weights) run in it with its settings. A failure is the attempt's own and
         final (PrepareFailed: not retried, since it would most likely fail again, at a cloud machine's cost)."""
+        from .backends.remote import SDK_PACKAGE
         q, s = shlex.quote, self.spec
         path = ":".join(s["path"])
         node_dir = f"{self.code}/{s['node_dir']}"
-        if s["runner_kind"] == "self":
-            python = q(s["python"])
-            sync = ""
-        else:
-            project = q(f"{self.code}/{s['env']}")
-            python = f"{q(s['uv'])} run --project {project} --frozen --no-dev python"
-            sync = f"{q(s['uv'])} sync --project {project} --frozen --no-dev"
-        steps = [x for x in (sync, f"{python} {q(s['prepare'])} {q(json.dumps(self.request.get('config', {})))}" if s.get("prepare") else "") if x]
+        sync = "" if s["runner_kind"] == "self" else (
+            # the shared environment, without the SDK (node_python imports this code's own)
+            f"{q(s['uv'])} sync --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-install-package {SDK_PACKAGE}")
+        prepare = f"{self.node_python()} {q(s['prepare'])} {q(json.dumps(self.request.get('config', {})))}" if s.get("prepare") else ""
+        steps = [x for x in (sync, prepare) if x]
         if not steps:
             return
         say("preparing the node there (its environment, its weights)")
@@ -1000,6 +1030,7 @@ echo $pid
             with self.phase("code"):
                 self.patiently(self.check_root)
                 self.patiently(self.send_code)
+                self.patiently(self.make_env)
             with self.phase("inputs"):
                 inputs = self.patiently(self.send_inputs)
             with self.phase("prepare"):   # its environment synced and its weights fetched, before it starts (setup.py)
@@ -1061,7 +1092,8 @@ echo $pid
         q = shlex.quote
         try:
             self.sh(f"chmod -R u+w {q(self.root)}/objects/.incoming-{q(self.tag)}-* 2>/dev/null; "
-                    f"rm -rf {q(self.root)}/objects/.incoming-{q(self.tag)}-* {q(self.root)}/code/.incoming-{q(self.tag)}", check=False)
+                    f"rm -rf {q(self.root)}/objects/.incoming-{q(self.tag)}-* {q(self.root)}/code/.incoming-{q(self.tag)} "
+                    f"{q(self.root)}/envs/.incoming-{q(self.tag)}", check=False)
         except (Unreachable, subprocess.TimeoutExpired) as e:
             say(f"could not remove this attempt's unfinished uploads on {self.spec['host']} ({e}): perception hosts clean removes them")
 

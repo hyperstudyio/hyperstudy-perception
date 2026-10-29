@@ -8,7 +8,8 @@ like any native node: poll, cancel (the driver stops the remote node), adoption 
 collect all work unchanged.
 
 What reaches the other machine: the files git tracks for the node, its uv project and the node SDK, and the node's
-inputs. Those inputs leave this machine, so a remote place is offered only when the graph's policy allows each kind of
+inputs. The node's environment is made there from its uv project once per lock (envs/<env_key>), and shared by every
+node and version of the code that has that lock: a change to a node's code reuses it. Those inputs leave this machine, so a remote place is offered only when the graph's policy allows each kind of
 data in them (policy.allow_upload), and runs only with the run's consent (--allow-uploads), as a cloud API's node does.
 Nodes that send data out themselves (to an API) or need secrets are not run remotely: their data would go to two
 places, and secrets stay here.
@@ -74,6 +75,34 @@ def code_hash(files: list[str], root: Path = REPO) -> str:
     return h.hexdigest()[:20]
 
 
+# The node SDK: a path dependency of every environment (envs/*/pyproject.toml), installed editable here. On another
+# machine it is left out of the environment (uv sync --no-install-package) and imported from the code's own folder
+# (PYTHONPATH): an environment shared by many versions of the code then never runs another version's SDK.
+SDK_PACKAGE = "perception-node"
+SDK_SOURCE = "sdk/src"
+# what of the SDK an environment holds: its project file (its dependencies, which the environment's lock records too)
+SDK_PROJECT = "sdk/pyproject.toml"
+ENV_LAYOUT = "env-1"   # how an environment's folder is made (above): a change gives every environment a new key
+
+
+def env_files(files: list[str], env: str | None) -> list[str]:
+    """What a node's uv environment is made from, among the code sent (code_files): its uv project (pyproject.toml,
+    uv.lock) and the SDK's project file. Not the node's own code, nor the SDK's: a change to either reuses the
+    environment."""
+    if not env:
+        return []
+    return [f for f in files if f.startswith(env.rstrip("/") + "/") or f == SDK_PROJECT]
+
+
+def env_key(files: list[str], env: str | None, root: Path = REPO) -> str | None:
+    """The environment's folder on the other machine (envs/<key>): its content (env_files), so every node and every
+    version of the code with the same lock shares one environment there."""
+    made_of = env_files(files, env)
+    if not made_of:
+        return None
+    return hashlib.sha256(f"{ENV_LAYOUT} {env} {code_hash(made_of, root)}".encode()).hexdigest()[:20]
+
+
 class SshBackend(NativeBackend):
     runner_kind = "native"
     remote = True
@@ -123,6 +152,8 @@ class SshBackend(NativeBackend):
         spec = {
             "dest": self.host.dest, "root": self.host.root, "host": self.host.name, "ssh": self.host.ssh(),
             "code": code_hash(files), "files": files,
+            # its environment, by its lock: shared with every node that has the same one
+            "env_key": env_key(files, runner.env), "env_files": env_files(files, runner.env),
             "node_dir": manifest.directory.resolve().relative_to(REPO).as_posix(), "entry": runner.entry, "env": runner.env,
             "runner_kind": self.runner_kind, "python": self.python, "uv": caps.tools.get("uv"), "prepare": manifest.prepare,
             # the folders of the tools it found: ssh commands get a minimal PATH (ffmpeg in /opt/homebrew/bin on a Mac)

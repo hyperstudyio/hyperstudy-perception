@@ -694,8 +694,10 @@ def test_inputs_and_outputs_kept_on_a_host_are_read_only_and_still_cleaned(tmp_p
     assert len(stored) == 3                                 # the video, and the two outputs the node made there
     for path in (*stored, *(p.parent for p in stored)):     # a node cannot change it through its link, as in the store
         assert path.stat().st_mode & 0o222 == 0, path
+    envs = objects.parent / "envs" / "0123abcd"                  # an environment kept there (make_env)
+    (envs / ".venv").mkdir(parents=True)
     assert main(["hosts", "clean", "lab"]) == 0
-    assert not objects.exists()
+    assert not objects.exists() and not envs.parent.exists()
 
 
 def test_a_root_that_already_holds_other_files_is_never_taken_changed_or_cleaned(tmp_path, host, monkeypatch, capsys):
@@ -1086,3 +1088,132 @@ def test_a_connection_test_never_rides_a_shared_connection_and_a_hosts_key_share
     plain = Host("lab", "lab", "/r", lab(tmp_path).caps, 0).ssh()
     assert path.endswith("%C-" + __import__("hashlib").sha256(str(key.resolve()).encode()).hexdigest()[:12])
     assert len({path, next(o for o in other if o.startswith("ControlPath=")), next(o for o in plain if o.startswith("ControlPath="))}) == 3
+
+
+# --- environments on a host, by their lock ---------------------------------------------------------------------------
+
+FAKE_UV = r"""#!/bin/sh
+# uv sync|run --project PROJECT [FLAG]... [python ARG...], on the fake host: each call recorded in $FAKE_HOST/uv.log with
+# the SDK path it was given. `sync` makes PROJECT/.venv, a real virtual environment of the tests' interpreter ("made"),
+# or finds it there ("found"). The one it makes holds a stale SDK, as an editable install from an earlier version of the
+# code would leave it (a .pth naming that version's sdk/src): a node must never import it. `run` runs ARGs with the
+# environment's Python.
+cmd=$1; shift
+project=; prev=
+for a in "$@"; do [ "$prev" = --project ] && project=$a; prev=$a; done
+case "$cmd" in
+  sync) if [ -d "$project/.venv" ]; then made=found
+        else
+          @PYTHON@ -m venv --without-pip "$project/.venv" || exit 1
+          mkdir -p "$project/.venv/stale-sdk/perception_node"
+          echo 'raise ImportError("the stale SDK an earlier version of the code installed")' > "$project/.venv/stale-sdk/perception_node/__init__.py"
+          site=$("$project/.venv/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          echo "$project/.venv/stale-sdk" > "$site/_perception_node.pth"
+          made=made
+        fi
+        echo "sync $made $project | $*" >> "$FAKE_HOST/uv.log";;
+  run) echo "run $project ${PYTHONPATH-} | $*" >> "$FAKE_HOST/uv.log"
+       while [ "$1" != python ]; do shift; done; shift
+       exec "$project/.venv/bin/python" "$@";;
+  *) exit 2;;
+esac
+"""
+
+
+def native_coordinator(tmp_path, fake) -> Coordinator:
+    """A host whose nodes run in uv environments (`native` runners), with a stand-in for uv there."""
+    uv = tmp_path / "uv"
+    uv.write_text(FAKE_UV.replace("@PYTHON@", sys.executable))
+    uv.chmod(0o755)
+    remote = SshBackend(lab(fake, tools={"uv": str(uv), "ffmpeg": None, "ffprobe": None}))
+    return Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), remote], tick_s=0.02, backoff_s=0.01)
+
+
+def test_nodes_with_the_same_lock_share_one_environment_on_a_host_and_each_imports_its_own_codes_sdk(tmp_path, host, rec):
+    """Two nodes with different code and the same uv project (envs/core): one environment on the host, made by the first
+    sync and found by the second, and each node runs in it with the SDK from its own code's folder. Never one the
+    environment holds: the host never installs the SDK there (--no-install-package; --no-sync when the node runs), and
+    even an SDK an editable install left there (a .pth, which the stand-in plants) is not what the node imports, since
+    PYTHONPATH comes before site-packages. The SDK a node imports is then the one its cache key hashed."""
+    from perception.backends.remote import code_files, code_hash, env_key
+    coord = native_coordinator(tmp_path, host)
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    node = lambda id, uses, a: {"id": id, "uses": uses, "inputs": {"a": a}, "place": "ssh-lab:cpu", "config": {"record_dir": rec}}
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+           "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
+           "nodes": [node("a", "test.native-a@1.0.0", "$inputs.seed"), node("b", "test.native-b@1.0.0", "$nodes.a.out")]}
+    run_id = start(coord, doc)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", log_of(coord, run_id, "a") + log_of(coord, run_id, "b")
+    root = host / "home" / ".cache" / "hp"
+    codes, keys = {}, set()
+    for id, ref in (("a", "test.native-a@1.0.0"), ("b", "test.native-b@1.0.0")):
+        m = coord.registry.get(ref)
+        files = code_files(m, m.runners[0])
+        codes[id] = code_hash(files)
+        keys.add(env_key(files, "envs/core"))
+    assert codes["a"] != codes["b"]                         # two versions of the code
+    [key] = keys                                            # one environment's key
+    [env] = [p for p in (root / "envs").iterdir()]          # one environment, under its lock's key
+    assert env.name == key and sorted(p.name for p in (root / "code").iterdir()) == sorted(codes.values())
+    assert sorted(str(p.relative_to(env)) for p in env.rglob("*") if ".venv/" not in str(p)) == [
+        ".complete", "envs", "envs/core", "envs/core/.venv", "envs/core/pyproject.toml", "envs/core/uv.lock", "sdk", "sdk/pyproject.toml"]
+    assert not list((root / "code").glob("*/envs/core/.venv"))   # none in the code's folders
+    project = f"{env}/envs/core"
+    calls = [line.split(" | ")[0].split() + [line.split(" | ")[1]] for line in (host / "uv.log").read_text().splitlines()]
+    syncs = [c for c in calls if c[0] == "sync"]
+    assert [c[1:3] for c in syncs] == [["made", project], ["found", project]]
+    assert all("--frozen --no-dev --no-install-package perception-node" in c[3] for c in syncs)
+    runs = [c for c in calls if c[0] == "run"]               # prepare and the node, for each
+    assert {c[1] for c in runs} == {project} and all("--frozen --no-dev --no-sync python" in c[3] for c in runs)
+    assert sorted({c[2] for c in runs}) == sorted(f"{root}/code/{h}/sdk/src" for h in codes.values())
+    sdks = {e["node"]: e["sdk"] for e in executions(rec)}
+    assert sdks == {id: f"{root}/code/{codes[id]}/sdk/src/perception_node/__init__.py" for id in ("a", "b")}
+
+
+def executions(rec: str) -> list[dict]:
+    out = []
+    for p in sorted(Path(rec).glob("*-*-*")):
+        if p.suffix != ".end":
+            name, attempt, pid = p.name.rsplit("-", 2)
+            out.append({"node": name, "attempt": int(attempt), **json.loads(p.read_text())})
+    return out
+
+
+def test_an_environments_key_is_its_lock_not_the_nodes_code_nor_the_sdks(tmp_path):
+    """A change to a node's code or to the SDK's code reuses the host's environment; a change to the lock (or to the SDK's
+    dependencies) is another environment."""
+    import shutil
+    from perception.backends.native import REPO
+    from perception.backends.remote import code_files, env_files, env_key
+    m = Registry.load(NODES).get("test.native-a@1.0.0")
+    files = code_files(m, m.runners[0])
+    assert env_files(files, "envs/core") == ["envs/core/pyproject.toml", "envs/core/uv.lock", "sdk/pyproject.toml"]
+    assert env_key(files, None) is None                     # no uv project (a `self` runner): no environment
+    for f in files:
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO / f, tmp_path / f)
+    key = env_key(files, "envs/core", tmp_path)
+    assert key == env_key(files, "envs/core")
+    for edited, same in (("orchestrator/tests/nodes/work/node.py", True), ("sdk/src/perception_node/__init__.py", True),
+                         ("envs/core/uv.lock", False), ("sdk/pyproject.toml", False)):
+        before = (tmp_path / edited).read_bytes()
+        (tmp_path / edited).write_bytes(before + b"\n# an edit\n")
+        assert (env_key(files, "envs/core", tmp_path) == key) is same, edited
+        (tmp_path / edited).write_bytes(before)
+
+
+def test_every_environment_has_the_sdk_that_a_host_leaves_out_and_imports_from_the_code():
+    """The SDK a host leaves out of shared environments (uv sync --no-install-package) is each environment's path
+    dependency on sdk/, and what it imports from the code's folder (PYTHONPATH) is where the package is."""
+    import tomllib
+    from perception.backends.native import REPO
+    from perception.backends.remote import SDK_PACKAGE, SDK_PROJECT, SDK_SOURCE
+    assert tomllib.loads((REPO / SDK_PROJECT).read_text())["project"]["name"] == SDK_PACKAGE
+    assert (REPO / SDK_SOURCE / "perception_node" / "__init__.py").is_file()
+    envs = sorted((REPO / "envs").glob("*/pyproject.toml"))
+    assert len(envs) >= 9
+    for p in envs:
+        doc = tomllib.loads(p.read_text())
+        assert SDK_PACKAGE in doc["project"]["dependencies"], p
+        assert doc["tool"]["uv"]["sources"][SDK_PACKAGE] == {"path": "../../sdk", "editable": True}, p

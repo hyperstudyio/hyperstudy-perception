@@ -13,6 +13,8 @@ On the host everything lives under its root (default ~/.cache/hyperstudy-percept
 refused if someone else owns it, so the code, inputs, outputs and markers kept there can be trusted and are not readable
 by others:
     code/<hash>/         the files git tracks for the node, its uv project and the node SDK, by content
+    envs/<key>/          a uv environment (its project, its lock and its .venv), by the lock's content: shared by every
+                         node and version of the code with that lock, so a change to a node's code makes no new one
     objects/<sha256>/data   inputs, by content: the video is sent once per host (each attempt links it under its name);
                          and the outputs of the nodes that ran there (face embeddings, transcripts: whatever a node
                          wrote), kept under the same hashes so a node after it there is not sent them again. Like the
@@ -20,11 +22,11 @@ by others:
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
                          or by the host's watchdog when no driver has asked about it for a while (a finished node's
                          results wait a day for its driver)
-An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*) are removed when it ends; an output a host never
-finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep there a day later.
-`perception hosts clean NAME` removes the root's inputs, the outputs kept there and code (what stays on the host between
-runs), unless a node is running there or the root is not marked as perception's. A host with a node running there is not
-removed either: that node could no longer be stopped.
+An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*, envs/.incoming-*) are removed when it ends; an
+output a host never finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep there a day later.
+`perception hosts clean NAME` removes the root's inputs, the outputs kept there, code and environments (what stays on the
+host between runs), unless a node is running there or the root is not marked as perception's. A host with a node running
+there is not removed either: that node could no longer be stopped.
 """
 
 from __future__ import annotations
