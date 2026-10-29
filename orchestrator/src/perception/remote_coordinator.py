@@ -188,12 +188,15 @@ def alive(run: str) -> bool:
     return command is not None and (f"perception.remote_coordinator serve {run}" in command or command == "")
 
 
-def coordinator_state(store: Store, run: str, status: str) -> str:
-    """running: a coordinator here is working on it; finished: it ended; gone: it says running, and nothing here is
-    (the host restarted, or the process was killed): `remote run` with its id resumes it."""
-    if alive(run):
-        return "running"
-    return "gone" if status == "running" else "finished"
+def coordinator_state(store: Store, run: str) -> tuple[str, str]:
+    """The run's coordinator, and the run's status read after it: running (a coordinator here is working on it),
+    finished (it ended), or gone (it says running, and nothing here is: the host restarted, or the process was killed;
+    `remote run` with its id resumes it). The coordinator is looked at first and the status read after: one that ends
+    between the two is seen ended, never gone with its run still running (code review of #46)."""
+    up = alive(run)
+    row = store.db.execute("SELECT status FROM runs WHERE id=?", (run,)).fetchone()
+    status = row["status"] if row else "running"
+    return ("running" if up else "gone" if status == "running" else "finished"), status
 
 
 def with_inputs(doc: dict, inputs: dict, run: str, make: bool = True) -> dict:
@@ -312,6 +315,10 @@ def _prune(store: Store, keep_s: float, min_free_gb: float | None, starting: str
             for table, col in (("events", "run_id"), ("tasks", "run_id"), ("runs", "id")):
                 db.execute(f"DELETE FROM {table} WHERE {col}=?", (run,))
         kept = {a["hash"] for t in db.execute("SELECT outputs FROM tasks") for a in json.loads(t["outputs"] or "{}").values()}
+        # and the graph inputs a remaining run was given, which the store published (json.v1...): named by its row alone
+        # (code review of #46)
+        kept |= {a["hash"] for r in db.execute("SELECT inputs FROM runs") for a in json.loads(r["inputs"] or "{}").values()
+                 if isinstance(a, dict) and a.get("shape") in ("file", "tree")}
         for c in db.execute("SELECT key, outputs FROM cache").fetchall():
             if any(a["hash"] not in kept for a in json.loads(c["outputs"] or "{}").values()):
                 db.execute("DELETE FROM cache WHERE key=?", (c["key"],))
@@ -507,10 +514,12 @@ def cmd_status(args) -> int:
         row = store.db.execute("SELECT * FROM runs WHERE id=?", (args.run,)).fetchone()
         if row is None:
             raise Refusal(f"no run {args.run} on this host")
-        answer(status=run_json(store, row), coordinator=coordinator_state(store, args.run, row["status"]))
+        state, status = coordinator_state(store, args.run)
+        row = store.db.execute("SELECT * FROM runs WHERE id=?", (args.run,)).fetchone()
+        answer(status=run_json(store, row), coordinator=state)
         return 0
     runs = [{"run": r["id"], "pipeline": r["pipeline"], "status": r["status"], "created_at": iso(r["created_at"]),
-             "coordinator": coordinator_state(store, r["id"], r["status"])}
+             "coordinator": coordinator_state(store, r["id"])[0]}
             for r in store.db.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT 20")]
     answer(runs=runs)
     return 0
@@ -525,8 +534,8 @@ def cmd_events(args) -> int:
     events = [{"id": e["id"], "node": e["node_id"], "kind": e["kind"], "message": e["message"] or "", "at": iso(e["at"])}
               for e in store.events(args.run, args.after)]
     # the run's status after its events: a run that ends between the two reads is seen ending at the next call
-    row = store.db.execute("SELECT status FROM runs WHERE id=?", (args.run,)).fetchone()
-    answer(events=events, status=row["status"], coordinator=coordinator_state(store, args.run, row["status"]))
+    state, status = coordinator_state(store, args.run)
+    answer(events=events, status=status, coordinator=state)
     return 0
 
 
@@ -541,7 +550,7 @@ def cmd_dump(args) -> int:
     if row is None:
         raise Refusal(f"no run {run} on this host")
     if row["status"] not in ("succeeded", "failed", "canceled"):
-        state = coordinator_state(store, run, row["status"])
+        state = coordinator_state(store, run)[0]
         raise Refusal(f"run {run} is still running here" if state == "running" else
                       f"run {run}'s coordinator is gone: `perception remote run` with --run-id {run} resumes it")
     tasks = [dict(t) for t in store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run,))]

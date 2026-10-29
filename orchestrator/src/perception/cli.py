@@ -810,16 +810,19 @@ def cmd_remote(args):
         if args.json:
             emit("error", problems=list(problems))
         else:
-            print("perception remote: " + "; ".join(problems), file=sys.stderr)
+            print("perception remote: " + shown("; ".join(problems)), file=sys.stderr)
         return 1
 
     if host is None:
         return problem(f"no host {args.host!r} (perception hosts add)")
-    remote = remote_run.Remote(host, nodes=args.nodes)
     action = args.remote_action
     if action != "run" and args.run_id and not RUN_ID.match(args.run_id):   # it names folders here and there
         return problem(f"not a run id: {args.run_id!r}")
+    import subprocess
     try:
+        remote = remote_run.Remote(host, nodes=args.nodes)
+        if action in ("status", "attach", "fetch"):   # from the copy the run started with: nothing sent to read it
+            remote.use_copy_of(args.run_id)
         if action == "run":
             if args.run_id and not RUN_ID.match(args.run_id):
                 return problem(f"not a run id: {args.run_id!r}")
@@ -878,14 +881,14 @@ def cmd_remote(args):
                 return 0
             if args.run_id:
                 s = got["status"]
-                print(f"{s['run']}  {s['pipeline']}  {s['status']} on {host.name} (coordinator {got['coordinator']})  "
-                      f"spent ${s['spent_usd']:.2f} of ${s['max_cost_usd']:.2f}")
+                print(shown(f"{s['run']}  {s['pipeline']}  {s['status']} on {host.name} (coordinator {got['coordinator']})  "
+                            f"spent ${s['spent_usd']:.2f} of ${s['max_cost_usd']:.2f}"))
                 for t in s["tasks"]:
-                    print(f"  {t['node']:16s} {t['state']:10s} attempt {t['attempt']}  {t['runner'] or '':12s}"
-                          + (f"  {t['error_code']}: {t['error']}" if t["state"] == "failed" else ""))
+                    print(shown(f"  {t['node']:16s} {t['state']:10s} attempt {t['attempt']}  {t['runner'] or '':12s}"
+                                + (f"  {t['error_code']}: {t['error']}" if t["state"] == "failed" else "")))
             else:
                 for r in got["runs"]:
-                    print(f"{r['run']}  {r['pipeline']:20s} {r['status']:10s} coordinator {r['coordinator']}")
+                    print(shown(f"{r['run']}  {r['pipeline']:20s} {r['status']:10s} coordinator {r['coordinator']}"))
             return 0
         if action == "fetch":
             out = Path(args.output) if args.output else home() / "bundles" / args.run_id
@@ -901,7 +904,15 @@ def cmd_remote(args):
         return problem(*e.problems)
     except Unreachable as e:
         return problem(f"{host.name} cannot be reached: {e}")
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:   # a link git tracks, a file gone, a host too slow
+        return problem(f"{type(e).__name__}: {e}")
     return 1
+
+
+def shown(text) -> str:
+    """Text a host sent, as text mode prints it: control characters escaped (a tampered host could send terminal
+    escapes: OSC 52 sets the clipboard). --json escapes them already (code review of #46)."""
+    return "".join(c if c.isprintable() or c == " " else repr(c)[1:-1] for c in str(text))
 
 
 def _remote_follow(args, remote, run_id: str, announce: bool) -> int:
@@ -915,21 +926,21 @@ def _remote_follow(args, remote, run_id: str, announce: bool) -> int:
 
     def show(e):
         if args.json:
-            emit("event", run=run_id, node=e["node"], kind=e["kind"], message=e["message"], at=e["at"])
+            emit("event", run=run_id, node=e["node"], kind=e["kind"], message=e["message"], at=e["at"], host=remote.host.name)
         else:
-            print(f"  {(e['at'] or '')[11:19]} {e['node'] or '':14s} {e['kind']:16s} {e['message']}")
+            print(shown(f"  {(e['at'] or '')[11:19]} {e['node'] or '':14s} {e['kind']:16s} {e['message']}"))
     try:
         status = remote_run.follow(remote, run_id, show)
     except remote_run.RemoteError as e:
         if args.json:
             emit("error", problems=e.problems)
         else:
-            print(f"perception remote: {e}", file=sys.stderr)
+            print(shown(f"perception remote: {e}"), file=sys.stderr)
         return 1
     if args.json:
         emit("run.finished", run=run_id, status=status, host=remote.host.name)
     else:
-        print(f"run {run_id} on {remote.host.name}: {status}")
+        print(shown(f"run {run_id} on {remote.host.name}: {status}"))
     return 0 if status == "succeeded" else 1
 
 

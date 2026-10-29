@@ -929,3 +929,160 @@ def test_an_object_this_store_has_is_checked_against_the_type_it_is_claimed_as(t
     tampered(monkeypatch, change)
     code, out = perception(capsys, "remote", "fetch", "lab", run_id)
     assert code == 1 and "media.v1" in of(out, "error")[0]["problems"][0], out
+
+
+# --- code review of #46 (independent) -------------------------------------------------------------------------------
+
+def test_a_run_with_an_input_relative_to_its_graph_is_fetched_from_anywhere(tmp_path, lab, capsys, monkeypatch):
+    """1: fetch compiled the recorded graph with no source, so an input named relative to the graph file (as
+    graphs/full.yaml names ../data/video.mp4, run without --input) was looked for relative to the folder fetch ran in."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec)])
+    doc = json.loads(graph.read_text())
+    doc["inputs"]["seed"]["uri"] = "seed.json"                       # relative to the graph file
+    graph.write_text(json.dumps(doc))
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    run_id = of(out, "run.created")[0]["run"]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 0, out
+
+
+def test_a_coordinator_that_ends_between_the_two_reads_is_not_called_gone(tmp_path, monkeypatch, capsys):
+    """2: events read the run's status, then whether its coordinator was alive: one that finished in between was
+    reported `running` with its coordinator `gone`, and attach failed a run that had succeeded."""
+    import perception.remote_coordinator as rc
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "coordinator"))
+    store = Store(tmp_path / "coordinator")
+    run = "20261029-120000-abcdef"
+    store.db.execute("INSERT INTO runs (id, pipeline, graph, inputs, status, created_at, max_cost_usd) VALUES (?,?,?,?,?,?,?)",
+                     (run, "t", "{}", "{}", "running", 1.0, 0.0))
+
+    def ends_now(r):   # it finishes the moment it is looked at
+        store.db.execute("UPDATE runs SET status='succeeded', finished_at=2.0 WHERE id=?", (r,))
+        return False
+    monkeypatch.setattr(rc, "alive", ends_now)
+    assert rc.main(["events", run]) == 0
+    got = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert not (got["status"] == "running" and got["coordinator"] == "gone"), got
+
+
+def test_a_prune_keeps_the_inputs_a_run_it_keeps_was_given(tmp_path, lab, capsys):
+    """3: prune kept only objects named by tasks' outputs; a graph input published into the store (json.v1) is named by
+    its run's inputs alone, and went when another run that had it was pruned: the run that kept it could not resume."""
+    rec = str(tmp_path / "rec")
+    old = finished_run(tmp_path, capsys, rec)                         # ended: pruned below
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("x", record_dir=rec, sleep=4)])),
+                           "--allow-uploads", "--detach")
+    gone_run = of(out, "run.created")[0]["run"]                        # the same seed input
+    assert wait_for(lambda: executions(Path(rec), "x"))
+    os.kill(int((host_root(lab) / "coordinator" / "remote" / gone_run / "coordinator.pid").read_text()), 9)
+    store = Store(host_root(lab) / "coordinator")
+    store.db.execute("UPDATE runs SET finished_at = finished_at - 8 * 86400 WHERE id=?", (old,))
+    seed = Path(json.loads(store.db.execute("SELECT inputs FROM runs WHERE id=?", (gone_run,)).fetchone()[0])["seed"]["path"])
+    other = tmp_path / "other.json"
+    other.write_text('{"value": 7}')
+    g = json.loads(graph_file(tmp_path, [work("c", record_dir=rec, add=50)]).read_text())
+    g["inputs"]["seed"]["uri"] = str(other)
+    (tmp_path / "other.yaml").write_text(json.dumps(g))
+    code, out = perception(capsys, "remote", "run", "lab", str(tmp_path / "other.yaml"), "--allow-uploads")
+    assert code == 0 and not store.db.execute("SELECT 1 FROM runs WHERE id=?", (old,)).fetchone()   # pruned
+    assert seed.exists()                                               # the kept run's input, still there
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("x", record_dir=rec, sleep=4)])),
+                           "--allow-uploads", "--run-id", gone_run)
+    assert code == 0 and of(out, "run.finished")[0]["status"] == "succeeded", out
+
+
+def test_a_refused_import_leaves_this_store_as_it_was(tmp_path, lab, capsys):
+    """4: the objects were moved into this store before the inputs' hashes were checked: a refused import changed it."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    (tmp_path / "seed.json").write_text('{"value": 9}')               # the input here is no longer the run's
+    before = sorted(p for p in (tmp_path / "mac" / "objects").rglob("*"))
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and "inputs here" in of(out, "error")[0]["problems"][0], out
+    assert sorted(p for p in (tmp_path / "mac" / "objects").rglob("*")) == before
+
+
+def test_a_run_is_fetched_again_to_its_default_folder(tmp_path, lab, capsys):
+    """5: a second fetch to the default bundles/RUN always failed (the folder holds the first one's bundle), though the
+    import is made to be repeated."""
+    video = tmp_path / "my clip.mp4"
+    video.write_bytes(b"not really a video")
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "policy": {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ["video", "transcript", "faces"]},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    graph = tmp_path / "graph.yaml"
+    graph.write_text(json.dumps(doc))
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    run_id = of(out, "run.created")[0]["run"]
+    for _ in range(2):
+        code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+        assert code == 0 and of(out, "fetched")[0]["path"], out
+
+
+def test_an_input_that_holds_no_kind_is_no_reason_to_refuse(tmp_path, lab):
+    """6: made_kinds counted an input type that holds none of the kinds (media.v1: kinds ()) as holding every kind."""
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    media = tmp_path / "media.json"
+    media.write_text("{}")
+    doc = {"schema_version": 1, "pipeline": "test",
+           "inputs": {"video": {"type": "video.v1", "uri": str(video)}, "m": {"type": "media.v1", "uri": str(media)}},
+           "policy": {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ["video"]},
+           "nodes": [{"id": "meta", "uses": "test.meta@1.0.0", "inputs": {"m": "$inputs.m"}}]}
+    graph = compile_graph(doc, Registry.load(NODES))
+    kinds = remote_run.made_kinds(graph)
+    assert "input m" not in [by for bys in kinds.values() for by in bys]
+
+
+def test_a_remote_runs_events_name_the_host(tmp_path, lab, capsys):
+    """7: docs/cli-json.md says a remote run's events carry `host`."""
+    rec = str(tmp_path / "rec")
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("a", record_dir=rec)])), "--allow-uploads")
+    assert code == 0 and of(out, "event") and all(e.get("host") == "lab" for e in of(out, "event"))
+
+
+def test_a_bad_nodes_folder_is_an_error_not_a_traceback(tmp_path, lab, capsys):
+    """8: Remote(...) was made outside the command's try: its refusal (and others: a tracked file deleted, a timeout)
+    escaped as a traceback in text mode."""
+    outside = tmp_path / "outside-nodes"
+    outside.mkdir()
+    code = cli.main(["--nodes", str(outside), "remote", "status", "lab"])
+    assert code == 1
+    assert "not in the pipeline's repository" in capsys.readouterr().err
+
+
+def test_reading_a_run_there_sends_no_new_copy_after_an_edit_here(tmp_path, lab, capsys, monkeypatch):
+    """9: status, attach and fetch sent this machine's current copy (hashing every file, uv export) before each call,
+    so any edit here meant a new copy there just to read a run. They use the copy the run started with."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    copies = sorted((host_root(lab) / "pipelines").iterdir())
+    monkeypatch.setattr(remote_run.Remote, "copy_hash", lambda self, files: "f" * 20)   # as after an edit here
+    for argv in (["status", "lab", run_id], ["attach", "lab", run_id], ["fetch", "lab", run_id]):
+        code, out = perception(capsys, "remote", *argv)
+        assert code == 0, out
+    assert sorted((host_root(lab) / "pipelines").iterdir()) == copies
+
+
+def test_text_output_shows_no_control_characters_a_host_sent(tmp_path, lab, capsys, monkeypatch):
+    """10: text mode printed what the host answers as it came: a tampered host could send terminal escapes (OSC 52 sets
+    the clipboard)."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    real = remote_run.Remote.call
+
+    def call(self, action, *a, **k):
+        got = real(self, action, *a, **k)
+        if action == "events":
+            for e in got["events"]:
+                e["message"] = "\x1b]52;c;ZXZpbA==\x07 and \x1b[2J"
+        return got
+    monkeypatch.setattr(remote_run.Remote, "call", call)
+    code = cli.main(["--nodes", str(NODES), "remote", "attach", "lab", run_id])
+    printed = capsys.readouterr().out
+    assert code == 0 and "\x1b" not in printed and "\x07" not in printed

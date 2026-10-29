@@ -103,7 +103,8 @@ def made_kinds(graph: Graph) -> dict[str, list[str]]:
     (an output type that could hold anything, json.v1 or text.v1, counts as every kind)."""
     kinds: dict[str, list[str]] = {}
     for name, spec in graph.spec.inputs.items():
-        for k in artifacts.get(spec.type).kinds or UPLOAD_KINDS:
+        held = artifacts.get(spec.type).kinds   # () holds none; None (json.v1, text.v1) could hold any (Backend.sends)
+        for k in held if held is not None else UPLOAD_KINDS:
             kinds.setdefault(k, []).append(f"input {name}")
     for node in graph.nodes.values():
         for t in node.manifest.outputs.values():
@@ -316,6 +317,27 @@ class Remote:
             raise e
         return last
 
+    def use_copy_of(self, run: str | None = None):
+        """Call the host from the copy a run started with (its record here; without a run, the latest one this machine
+        started there), if it is still there: reading a run sends nothing, whatever was edited here since (code review
+        of #46). Otherwise this machine's own copy is sent first, as for a start."""
+        records = [record(run)] if run else sorted((home() / "remote").glob("*.json"), reverse=True)
+        q = shlex.quote
+        for path in records:
+            try:
+                mine = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if mine.get("host") != self.host.name or not isinstance(mine.get("copy"), str):
+                continue
+            copy = mine["copy"]
+            if not copy.startswith(f"{self.root}/pipelines/") or \
+                    self.sh(f"test -e {q(copy)}/.complete && test -x {q(mine.get('interpreter') or '')}", check=False).returncode:
+                return   # gone there (hosts clean): this machine's copy then
+            self.__dict__["copy"] = copy
+            self.__dict__["interpreter"] = mine["interpreter"]
+            return
+
     def send_input(self, path: Path, sha: str, run: str, name: str):
         """A graph input as objects/<sha256>/data there, once per host, checked there against its hash and published in
         one step, read-only (remote_driver.send_inputs files a step's inputs so: the same folder serves both). Held for
@@ -384,6 +406,9 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
         record(run).parent.mkdir(parents=True, exist_ok=True)
         record(run).write_text(json.dumps(mine))
     remote.copy, remote.interpreter   # the copy and its environment before the video: a host that cannot run it gets no clip
+    had = json.loads(record(run).read_text())
+    if "copy" not in had:   # the copy it started with: status, attach and fetch call it (Remote.use_copy_of)
+        record(run).write_text(json.dumps({**had, "copy": remote.copy, "interpreter": remote.interpreter}))
     for name in graph.spec.inputs:
         remote.send_input(Path(here[name]), inputs[name]["sha256"], run, name)
     # nothing of this machine's paths: each input is named by its sha256 and file name (remote_coordinator.with_inputs)
@@ -571,6 +596,13 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
         raise RemoteError(f"this machine did not start run {run} on {remote.host.name}: only runs it started there are "
                           "imported (their graph and inputs are its own record)")
     registry = Registry.load(*[r for r in [REPO / "nodes", *(REPO / n for n in remote.nodes)] if r.exists()])
+    # each input at the absolute path the run was started with (a URI relative to the graph file would otherwise be
+    # read relative to wherever fetch runs: code review of #46)
+    doc = json.loads(json.dumps(mine["graph_doc"]))
+    for name, path in (mine.get("inputs") or {}).items():
+        if name in doc.get("inputs", {}):
+            doc["inputs"][name]["uri"] = Path(path).as_uri()
+    mine = {**mine, "graph_doc": doc}
     try:
         graph = compile_graph(mine["graph_doc"], registry)
     except GraphError as e:
@@ -588,8 +620,8 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
             for a in t["outputs"].values():
                 objects.setdefault(store.object_dir(a["shape"], a["hash"]).relative_to(store.root).as_posix(), set()).add(a["type"])
         wanted = [o for o in objects if not (store.root / o).exists()] + list(dump["logs"].values())
-        if dump["run"]["status"] == "succeeded" and (output / "manifest.json").exists():
-            raise RemoteError(f"{output} already holds a bundle")
+        if dump["run"]["status"] == "succeeded" and (output / "manifest.json").exists() and not own_bundle(output, run):
+            raise RemoteError(f"{output} already holds a bundle (of another run)")
         got.mkdir()
         if wanted:
             listing = stage / "files.txt"
@@ -606,11 +638,31 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
     if dump["run"]["status"] == "succeeded":
         from . import export as export_mod
         from .scheduler import Coordinator
+        # exported beside it, then put in its place: a fetch again to the same folder (bundles/RUN by default) replaces
+        # the bundle an earlier fetch of this run wrote there (code review of #46)
+        fresh = output.parent / f".{output.name}.{os.getpid()}"
+        shutil.rmtree(fresh, ignore_errors=True)
         try:
-            bundle = str(export_mod.bundle(Coordinator(store, registry, []), run, output))
+            export_mod.bundle(Coordinator(store, registry, []), run, fresh)
+            if own_bundle(output, run):
+                shutil.rmtree(output)
+            os.replace(fresh, output)
+            bundle = str(output)
         except SystemExit as e:   # export's own refusals (unrelated writers of a layer, no decode node)
             problem = str(e)
+        finally:
+            shutil.rmtree(fresh, ignore_errors=True)
     return {"run": run, "host": remote.host.name, "path": bundle, "bundle_problem": problem, **imported}
+
+
+def own_bundle(folder: Path, run: str) -> bool:
+    """Whether `folder` holds a bundle exported from this run (by an earlier fetch): one a fetch may replace."""
+    try:
+        manifest = json.loads((folder / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(manifest, dict) and isinstance(manifest.get("pipeline"), dict) \
+        and manifest["pipeline"].get("source") == f"perception run {run}"
 
 
 def _objects(store: Store, objects: dict[str, set[str]], got: Path) -> int:
@@ -692,12 +744,16 @@ def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, 
                                      (run_id, f"from {host.name}:%")).fetchone()
     if local and not imported_from:
         raise RemoteError(f"this machine's store has another run {run_id}: not imported over it")
-    brought = _objects(store, objects, got)
     coord = Coordinator(store, graph_registry(graph), [])
-    # the graph's inputs as this machine has them: the run's input rows, and what each node's key is computed from
+    # the graph's inputs as this machine has them: the run's input rows, and what each node's key is computed from;
+    # checked before anything moves into this store, so a refused import changes nothing (code review of #46). Hashed,
+    # not published: a json.v1 input is published below only once the import goes ahead
+    for name in graph.spec.inputs:
+        path = graph.input_path(name)
+        if not path.exists() or artifacts.sha256_file(path) != (mine.get("input_sha256") or {}).get(name):
+            raise RemoteError(f"run {run_id}'s inputs here are not the ones it was started with (changed since?): not imported")
+    brought = _objects(store, objects, got)
     sources = {name: coord._graph_input(graph, name) for name in graph.spec.inputs}
-    if {k: a.hash for k, a in sources.items()} != mine.get("input_sha256"):
-        raise RemoteError(f"run {run_id}'s inputs here are not the ones it was started with (changed since?): not imported")
     made: dict[str, dict[str, Artifact]] = {}
     verified: dict[str, str] = {}
     refused = 0
@@ -789,7 +845,10 @@ def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, 
                    (run_id, None, time.time(), "run.imported",
                     f"from {host.name}: {tasks_in} tasks, {added} cache rows ({kept} this machine had kept, {refused} refused: "
                     f"keys this machine does not compute), {brought} objects"))
-    record(run_id).write_text(json.dumps({**mine, "imported_events": after, "imported_attempts": imported_attempts}))
+    # the record as it was written at the start (its graph as started: what a later start is compared with), and how far
+    # imports have gone
+    kept_record = json.loads(record(run_id).read_text())
+    record(run_id).write_text(json.dumps({**kept_record, "imported_events": after, "imported_attempts": imported_attempts}))
     return {"tasks": tasks_in, "tasks_kept": len(rerun_here), "cache_added": added, "cache_kept": kept,
             "cache_refused": refused, "objects": brought}
 
