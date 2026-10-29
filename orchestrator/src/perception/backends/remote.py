@@ -160,6 +160,8 @@ class SshBackend(NativeBackend):
             # the folders of the tools it found: ssh commands get a minimal PATH (ffmpeg in /opt/homebrew/bin on a Mac)
             "path": sorted({str(Path(p).parent) for p in caps.tools.values() if p}),
             "lost_after_s": self.lost_after_s,
+            # how long the host keeps what no step holds, and the free space its cleanup keeps (remote_driver.CLEANUP)
+            "keep_s": self.host.keep_s, "min_free_gb": self.host.min_free_gb,
             **self.driver_spec(attempt_dir),
         }
         (attempt_dir / "remote.json").write_text(json.dumps(spec, indent=1))

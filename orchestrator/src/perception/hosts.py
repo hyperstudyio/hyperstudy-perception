@@ -17,19 +17,29 @@ by others:
                          node and version of the code with that lock, so a change to a node's code makes no new one
     objects/<sha256>/data   inputs, by content: the video is sent once per host (each attempt links it under its name);
                          and the outputs of the nodes that ran there (face embeddings, transcripts: whatever a node
-                         wrote), kept under the same hashes so a node after it there is not sent them again. Like the
-                         inputs, they stay between runs until `perception hosts clean`
-    work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
-                         or by the host's watchdog when no driver has asked about it for a while (a finished node's
-                         results wait a day for its driver)
+                         wrote), kept under the same hashes so a node after it there is not sent them again. Inputs
+                         and outputs alike stay until no step has used them for 7 days (KEEP_DAYS; `--keep-days`), or,
+                         while the host's disk has less than 20 GB free (or a tenth of it, if less; `--min-free-gb`),
+                         until they are the ones unused longest; never while a step holds them. A removed input is sent
+                         again when a node there reads it
+    holds/<sha256>/      who holds an object (a file per attempt, naming its folder in work/: released when that
+                         folder is removed) and when it was last used (.used). The cleanup removes only what no attempt
+                         whose folder exists holds, under objects.lock (remote_driver.CLEANUP). It runs on each attempt
+                         (at most every 10 minutes), every hour in a sweeper of the host's own that the attempts start
+                         (so a host used once is cleaned too; it ends once nothing is kept there, and a host that
+                         restarts has none until its next attempt), and with `perception hosts clean NAME --expired`
+    work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt, made before its
+                         inputs are sent: removed after it, or by the host's watchdog when no driver has asked about it
+                         for a while (a finished node's results wait a day for its driver), or by the cleanup when
+                         no watchdog will (no node running and no heartbeat for a day and an hour: the host restarted)
 Outside the root, ~/.cache/hyperstudy-perception-gpus/<machine>-<index> is a card's lease (backends/base.LEASE): a lock
 a GPU node holds while it runs, which every coordinator's nodes there honour (one on the host itself too, whatever root
 the host was added with), and who holds it.
 An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*, envs/.incoming-*) are removed when it ends; an
-output a host never finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep there a day later.
-`perception hosts clean NAME` removes the root's inputs, the outputs kept there, code and environments (what stays on the
-host between runs), unless a node is running there or the root is not marked as perception's. A host with a node running
-there is not removed either: that node could no longer be stopped.
+output a host never finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep or cleanup there
+a day later. Code and environments stay until `perception hosts clean NAME`, which removes all the root holds: inputs, the
+outputs kept there, code and environments, unless a node is running there or the root is not marked as perception's. A
+host with a node running there is not removed either: that node could no longer be stopped.
 """
 
 from __future__ import annotations
@@ -39,7 +49,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from .backends.base import Capabilities
@@ -52,6 +62,13 @@ DEST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@%+:\[\]-]*$")
 ROOT = re.compile(r"^[A-Za-z0-9_./~-]+$")
 DEFAULT_ROOT = ".cache/hyperstudy-perception"
 RESERVED = {"native", "self", "cloud", "runpod", "local"}
+# What a host keeps (objects/: inputs sent there, outputs kept there) stays while unused for KEEP_DAYS, and its cleanup
+# keeps MIN_FREE_GB free on the host's disk, or a tenth of the disk if that is less (remote_driver.CLEANUP). A week
+# covers a project's runs on the same clips (the video, the largest object, is sent once); 20 GB is room for what one
+# step writes on an hour of video, or a model's weights, on a shared server that is often nearly full. Per host:
+# `hosts add/set --keep-days N --min-free-gb N`.
+KEEP_DAYS = 7
+MIN_FREE_GB = 20
 USER = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$")
 
 # What the host has, as key=value lines. POSIX sh: Linux servers and Macs, no Python needed. Tools are looked for on the
@@ -90,6 +107,13 @@ class Host:
     user: str | None = None
     port: int | None = None
     identity: str | None = None   # a private key on this machine, absolute
+    # how long what a host keeps (objects/) stays there unused, and the free space its cleanup keeps (None: the defaults)
+    keep_days: float | None = None
+    min_free_gb: float | None = None
+
+    @property
+    def keep_s(self) -> float:
+        return (KEEP_DAYS if self.keep_days is None else self.keep_days) * 86400
 
     def to_json(self) -> dict:
         """As hosts.json holds it. The cards beside `caps`, not in it: a reader from before cards were recorded (the
@@ -102,7 +126,8 @@ class Host:
     def from_json(cls, d: dict) -> "Host":
         # a host saved before its cards were recorded has none: counted as one GPU
         caps = Capabilities.from_json({**d["caps"], "gpus": d.get("gpus", d["caps"].get("gpus", []))})
-        return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"))
+        return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"),
+                   d.get("keep_days"), d.get("min_free_gb"))
 
     def ssh(self, fresh: bool = False) -> list[str]:
         """ssh to this host: every command sent to it (probe, nodes, clean) goes through this, with its overrides.
@@ -155,6 +180,12 @@ def ssh_command(shared: bool = True, identity: str | None = None) -> list[str]:
     import hashlib
     keyed = f"-{hashlib.sha256(identity.encode()).hexdigest()[:12]}" if identity else ""   # short: the socket path's limit
     return [*base, "-o", "ControlMaster=auto", "-o", f"ControlPath={control}/%C{keyed}", "-o", "ControlPersist=120"]
+
+
+def check_retention(keep_days: float | None, min_free_gb: float | None):
+    for flag, v in (("--keep-days", keep_days), ("--min-free-gb", min_free_gb)):
+        if v is not None and not (v >= 0 and v < 1e6):
+            raise HostError(f"{flag} is a number of days or GB, 0 or more: {v}")
 
 
 def check_names(name: str, dest: str, root: str):
@@ -248,11 +279,12 @@ class Hosts:
         os.replace(tmp, self.path)
 
     def add(self, name: str, dest: str, root: str = DEFAULT_ROOT, user: str | None = None, port: int | None = None,
-            identity: str | None = None) -> Host:
+            identity: str | None = None, keep_days: float | None = None, min_free_gb: float | None = None) -> Host:
         check_names(name, dest, root)
         identity = check_overrides(dest, user, port, identity)
+        check_retention(keep_days, min_free_gb)
         caps, absolute = probe(dest, root, [*ssh_command(shared=False), *ssh_options(user, port, identity)])
-        host = Host(name, dest, absolute, caps, time.time(), user, port, identity)
+        host = Host(name, dest, absolute, caps, time.time(), user, port, identity, keep_days, min_free_gb)
         hosts = self.load()
         hosts[name] = host
         self.save(hosts)
@@ -264,7 +296,19 @@ class Hosts:
             raise HostError(f"no host {name!r} (perception hosts list)")
         old = hosts[name]
         caps, _ = probe(old.dest, old.root, old.ssh(fresh=True))
-        hosts[name] = Host(name, old.dest, old.root, caps, time.time(), old.user, old.port, old.identity)
+        hosts[name] = replace(old, caps=caps, probed_at=time.time())
+        self.save(hosts)
+        return hosts[name]
+
+    def set(self, name: str, keep_days: float | None = None, min_free_gb: float | None = None) -> Host:
+        """Change how long the host keeps what is unused there, or the free space its cleanup keeps (None: unchanged)."""
+        hosts = self.load()
+        if name not in hosts:
+            raise HostError(f"no host {name!r} (perception hosts list)")
+        check_retention(keep_days, min_free_gb)
+        h = hosts[name]
+        hosts[name] = replace(h, keep_days=h.keep_days if keep_days is None else keep_days,
+                              min_free_gb=h.min_free_gb if min_free_gb is None else min_free_gb)
         self.save(hosts)
         return hosts[name]
 

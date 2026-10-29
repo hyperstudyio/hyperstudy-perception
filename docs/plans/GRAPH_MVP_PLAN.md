@@ -116,7 +116,13 @@ Not done:
   Since 2026-10-28 a node's outputs also stay on the host, filed with its inputs under the hashes this machine's store
   gives them (`keep_outputs`, after the host checks its bytes against them), so the next node there is not sent them
   again. Like the inputs, they stay in the host's private root between runs (face embeddings and transcripts among
-  them) until `perception hosts clean`.
+  them), but not indefinitely (2026-10-29): inputs and outputs alike are removed once no step has used them for 7 days
+  (per host: `hosts add/set --keep-days N`), or, while the host's disk has less than 20 GB free (or a tenth of it, if
+  less; `--min-free-gb`), unused longest first; never while a step holds them (`holds/<sha256>/`, taken under the
+  host's `objects.lock`). The rule is applied by each attempt there and, so that a host used once is cleaned too, every
+  hour by a sweeper the attempts start on the host (until nothing is kept there; a host that restarts has none until
+  its next attempt, so its objects can then outlive the 7 days). `perception hosts clean NAME` removes everything kept there at once; `--expired` only what
+  those rules remove.
 - **Windows.** Untested.
 
 ### Phase 2 progress (2026-10-23)
