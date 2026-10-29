@@ -1,9 +1,10 @@
-"""The node's three Claude Haiku 5.5 calls, with the bake-off's prompts and schemas (objects.py), the vocabulary's
-rules changed (below):
+"""The objects steps' three Claude Haiku 5.5 calls, with the bake-off's prompts and schemas (objects.py), the
+vocabulary's rules changed (below). The names step (names.py) makes the first two, the link step (link.py) the third:
 
 1. vocabulary: per shot, in order, its three keyframes and the names used in earlier shots (never later ones) -> up to
    MAX_OBJECTS concrete, trackable object names (no people or background). The bake-off ran this separately from the
-   captions; PLAN.md §4 says the two passes over the same keyframes are to fold into one (a follow-up).
+   captions; PLAN.md §4 says the two passes over the same keyframes are to fold into one (RUN_ANYWHERE_PLAN.md 1b
+   measures whether they should).
    Its rules differ from the bake-off's on what SAM 3 could not use. Clothing is no longer the vocabulary's: the
    bake-off's "only if notable; not ordinary shirts or pants" made clothing depend on the sample (14 clothing prompts in
    one OOO run, 57 in the next, on the same inputs) and never named a plain t-shirt; the body pass (garments.py) now asks
@@ -17,7 +18,9 @@ rules changed (below):
    object / graphic / absent.
 
 What leaves the machine: keyframes and crops of video frames, which show the people on screen (frames and faces, the
-manifest's privacy.external_upload), and the names themselves. Calls go one at a time, as the bake-off made them (the vocabulary's chaining needs order).
+manifests' privacy.external_upload), and the names themselves. The vocabulary's calls go one at a time, as the bake-off
+made them: each is told the names the shots before it used. The crop check's calls are independent of each other (each
+judges its own tracks), so they go WORKERS at a time (fan_out), and their answers are put back in the calls' order.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ MODEL = "claude-haiku-5-5"
 PRICE_PER_MTOK = (0.10, 0.50)   # input, output (USD), prompts up to 100K tokens
 MAX_OBJECTS = 8                 # names per shot; each is a separate SAM 3 text prompt on every frame
 VERIFY_BATCH = 16               # tracks per crop-check call
+WORKERS = 8                     # crop-check calls at once (prosody-captions makes its calls 8 at a time)
 
 VOCAB_SCHEMA = {
     "type": "object",
@@ -120,7 +124,8 @@ def jpeg_block(data: bytes) -> dict:
 
 
 def jpeg(rgb) -> bytes:
-    """An RGB array as the bake-off encoded crop-check strips: PIL JPEG, quality 90."""
+    """An RGB array as the bake-off encoded crop-check strips: PIL JPEG, quality 90. The track step encodes each strip
+    once, and the link step sends those bytes."""
     from PIL import Image
     buf = io.BytesIO()
     Image.fromarray(rgb).save(buf, "JPEG", quality=90)
@@ -149,8 +154,29 @@ def reply_json(response):
     return json.loads(text)
 
 
+def fan_out(fn, items, workers: int | None = None) -> list:
+    """[fn(x) for x in items] on `workers` threads (WORKERS when not given), in order, raising the first failure:
+    prosody-captions' style_captions.fan_out (a node's code is its own folder's, so it is not imported from there). At
+    most `workers` calls are submitted at a time, the next only once one has finished, so after a failure no call
+    starts: those running finish (each billed call reports its spend itself) and the failure is raised. The results are
+    in the items' order whatever order the calls finish in."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    items, workers = list(items), workers or WORKERS
+    out, running, nxt = [None] * len(items), {}, 0
+    with ThreadPoolExecutor(workers) as pool:   # on a failure, leaving it waits only for the calls already running
+        while nxt < len(items) or running:
+            while nxt < len(items) and len(running) < workers:
+                running[pool.submit(fn, items[nxt])] = nxt
+                nxt += 1
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for f in done:
+                out[running.pop(f)] = f.result()
+    return out
+
+
 class Haiku:
-    """Structured Haiku calls, each billed through spend(tokens_in, tokens_out) as soon as it returns."""
+    """Structured Haiku calls, each billed through spend(tokens_in, tokens_out) as soon as it returns. The client is
+    shared by fan_out's threads (the SDK's client is safe to share); spend must be too."""
 
     STREAM_FROM = 16000   # the SDK wants a long reply streamed (a non-streaming request could time out)
 
@@ -184,9 +210,10 @@ class Haiku:
         text = NAMES_INSTRUCTIONS + "\n\nNames:\n" + "\n".join(names)
         return self.ask([{"type": "text", "text": text}], NAMES_SCHEMA, max_tokens=name_classes_max_tokens(len(names)))["names"]
 
-    def check_crops(self, label: str, strips: list) -> list[dict]:
+    def check_crops(self, label: str, strips: list[bytes]) -> list[dict]:
+        """strips: each track's crop-check image as JPEG (jpeg(), made by the track step)."""
         content = []
         for k, strip in enumerate(strips, 1):
-            content += [{"type": "text", "text": f"view {k}"}, jpeg_block(jpeg(strip))]
+            content += [{"type": "text", "text": f"view {k}"}, jpeg_block(strip)]
         content.append({"type": "text", "text": verify_instructions(label, len(strips))})
         return self.ask(content, VERIFY_SCHEMA, max_tokens=4000)["views"]

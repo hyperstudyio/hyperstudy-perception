@@ -4,7 +4,7 @@ The bundle's layer schemas are artifact types (`bundle.<layer>@0.1`): a layer a 
 annotator and HyperStudy read, and so are the side files a layer points to (SIDE_FILES: `bundle.faces_detail@0.1` is
 the faces layer's layers/faces_detail.json, `bundle.gaze_heatmaps@0.1` the gaze layer's layers/gaze_heatmaps.parquet).
 A side file is JSON or Parquet; schema/README.md says how a step adds one. A few internal types carry what bundles do
-not (media metadata, audio, keyframes).
+not (media metadata, audio, keyframes, the objects steps' names and tracks).
 A type is a file or a tree (a directory); its validator returns a list of problems (empty: valid).
 """
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -191,6 +192,88 @@ MEDIA_SCHEMA = {
     },
 }
 
+# The object names a vision.objects-track step asks SAM 3 for, per shot, and each name's class (nodes/vision/objects/
+# vocabulary.py): written by vision.objects-names, or by any step that names the objects (RUN_ANYWHERE_PLAN.md 1b).
+VOCABULARY_SCHEMA = {
+    "type": "object",
+    "required": ["shots", "classes"],
+    "additionalProperties": False,
+    "properties": {
+        "model": {"type": "string", "description": "what named them"},
+        "shots": {"type": "array", "description": "every shot of the shots layer once, in its order", "items": {
+            "type": "object", "required": ["shot", "names"], "additionalProperties": False,
+            "properties": {
+                "shot": {"type": "string", "pattern": "^shot:", "description": "the shots layer's id"},
+                "names": {"type": "array", "maxItems": 8, "uniqueItems": True, "items": {"type": "string", "minLength": 1},
+                          "description": "SAM 3's text prompts for the shot, most prominent first"},
+                "body_named": {"type": "array", "uniqueItems": True, "items": {"type": "string", "minLength": 1},
+                               "description": "names given that the body pass asks for itself: not prompts"}}}},
+        "classes": {"type": "object", "description": "each name's class: exactly the shots' names", "additionalProperties": {
+            "type": "object", "required": ["family", "kind", "worn"], "additionalProperties": False,
+            "properties": {"family": {"type": "string", "minLength": 1}, "kind": {"enum": ["individual", "lookalike"]},
+                           "worn": {"type": "boolean"}}}},
+    },
+}
+
+
+def _vocabulary(path: Path) -> list[str]:
+    """VOCABULARY_SCHEMA, and what it cannot say: each shot named once, and a class for exactly the names used."""
+    problems = _json_schema(VOCABULARY_SCHEMA)(path)
+    if problems:
+        return problems
+    doc = json.loads(path.read_text())
+    shots = [s["shot"] for s in doc["shots"]]
+    names = {n for s in doc["shots"] for n in s["names"]}
+    if len(set(shots)) != len(shots):
+        problems.append("$.shots: a shot is named twice")
+    if unclassed := sorted(names - set(doc["classes"])):
+        problems.append(f"$.classes: no class for {unclassed[:5]}")
+    if unused := sorted(set(doc["classes"]) - names):
+        problems.append(f"$.classes: {unused[:5]} name no shot's prompt")
+    return problems
+
+
+NPY_MAGIC = b"\x93NUMPY"
+
+
+def _object_tracks(path: Path) -> list[str]:
+    """A vision.objects-track step's tracks (nodes/vision/objects/object_tracks.py): tracks.json naming its tracks' files,
+    the two embedding arrays as .npy, the masks side file's rows as Parquet, and JPEG crops; nothing else."""
+    if not path.is_dir():
+        return ["not a directory"]
+    try:
+        doc = json.loads((path / "tracks.json").read_text())
+    except (OSError, ValueError) as e:
+        return [f"tracks.json: {e}"]
+    if not isinstance(doc, dict) or not isinstance(doc.get("tracks"), list) or not all(isinstance(t, dict) for t in doc["tracks"]):
+        return ["tracks.json: no list of tracks"]
+    problems, named = [], {"tracks.json"}
+    for array in ("embeddings.npy", "view_embeddings.npy"):
+        named.add(array)
+        try:
+            with open(path / array, "rb") as f:
+                ok = f.read(6) == NPY_MAGIC
+        except OSError:
+            ok = False
+        if not ok:
+            problems.append(f"{array}: not a NumPy array file")
+    named.add("masks.parquet")
+    problems += [f"masks.parquet: {p}" for p in _parquet(path / "masks.parquet")]
+    for t in doc["tracks"]:
+        files = [t.get("context")] + [v.get("crop") if isinstance(v, dict) else None for v in t.get("views") or []]
+        for f in files:
+            if not (isinstance(f, str) and re.fullmatch(r"views/\d+_\d+\.jpg|context/\d+\.jpg", f)):
+                problems.append(f"tracks.json: track {t.get('id')!r} names {f!r}, not views/<n>_<k>.jpg or context/<n>.jpg")
+            elif not (path / f).is_file():
+                problems.append(f"tracks.json: track {t.get('id')!r} names {f}, which is not here")
+            else:
+                named.add(f)
+    present = sorted(p.relative_to(path).as_posix() for p in path.rglob("*") if p.is_file())
+    if extra := [f for f in present if f not in named]:
+        problems.append(f"unexpected files: {extra[:5]}")
+    return problems[:20]
+
+
 # What each layer can hold. Shots carry captions, which describe and name the people on screen; prosody measures the
 # audio and carries each utterance's words; the waveform is a measure of the audio. Every layer is listed: a new one must say what it holds.
 LAYER_KINDS: dict[str, tuple[str, ...]] = {
@@ -319,6 +402,12 @@ TYPES: dict[str, ArtifactType] = {
     # bundle's assets/ directory. Either kind of image: both kinds are counted
     "assets.v1": ArtifactType("assets.v1", "tree", _tree_of((".jpg", ".jpeg", ".png", ".webp")), kinds=("frames", "faces")),
     "json.v1": ArtifactType("json.v1", "file", _json_schema({})),
+    # object names and their classes: words, no picture or voice
+    "vocabulary.v1": ArtifactType("vocabulary.v1", "file", _vocabulary, kinds=()),
+    # SAM 3's tracks with the crops the objects step shows and checks: crops of video frames, a worn item's centred on
+    # its wearer's face (frames and faces, as assets.v1), and DINOv3 embeddings of those crops (embeddings: a glasses
+    # crop's is much like a face crop's, so they are counted as identity data could be)
+    "object_tracks.v1": ArtifactType("object_tracks.v1", "tree", _object_tracks, kinds=("frames", "faces", "embeddings")),
     "text.v1": ArtifactType("text.v1", "file", lambda p: []),
     **{f"bundle.{name}@0.1": ArtifactType(f"bundle.{name}@0.1", "file", _layer(name), layer=name, kinds=LAYER_KINDS[name])
        for name in BUNDLE_LAYERS},

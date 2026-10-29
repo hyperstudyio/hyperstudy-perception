@@ -441,7 +441,7 @@ def test_keys_check_hf_token_lists_the_gated_models_the_nodes_use(home, chain, m
     by_repo = {m["repo"]: m for m in out["models"]}
     assert set(by_repo) == {"facebook/sam3", "facebook/dinov3-vitl16-pretrain-lvd1689m", "pyannote/speaker-diarization-community-1"}
     assert by_repo["facebook/sam3"]["revision"] == "3c879f39826c281e95690f02c7821c4de09afae7"
-    assert [n.split("@")[0] for n in by_repo["facebook/sam3"]["nodes"]] == ["vision.objects"]
+    assert [n.split("@")[0] for n in by_repo["facebook/sam3"]["nodes"]] == ["vision.objects-track"]   # the step that downloads it
     assert [n.split("@")[0] for n in by_repo["pyannote/speaker-diarization-community-1"]["nodes"]] == ["audio.diarize"]
     assert by_repo["facebook/sam3"]["access"] == "not-granted"
     assert by_repo["facebook/dinov3-vitl16-pretrain-lvd1689m"]["access"] == "granted"

@@ -1,5 +1,5 @@
-"""Fetch the object node's weights ahead of a run (`perception setup`, and the driver before a remote run): SAM 3 and
-DINOv3 ViT-L/16 from Hugging Face (both gated: HF_TOKEN), at the pinned revisions, into the Hugging Face cache the node
+"""Fetch the track step's weights (vision.objects-track) ahead of a run (`perception setup`, and the driver before a remote run): SAM 3 and
+DINOv3 ViT-L/16 from Hugging Face (both gated: HF_TOKEN), at the pinned revisions, into the Hugging Face cache the step
 then reads (models.py). Loaded on the CPU: nothing runs."""
 
 import os
