@@ -343,10 +343,10 @@ class Driver:
         if s.get("gpu") is not None and s.get("gpu_use", "none") != "none":
             # the card held against every other run there for as long as the node runs (GPU_LEASES): a card another
             # coordinator's node has is waited for, in the node's log
-            from .backends.base import GPU_LEASES, LEASE_PERL
-            # as lease_command, with the lease's path under the host's $HOME (expanded there)
-            node = " ".join(q(x) for x in LEASE_PERL) + f' "$HOME"/{q(GPU_LEASES)} {int(s["gpu"])} {q(s["gpu_use"])} ' + node
-            leases = f'(umask 077 && mkdir -p "$HOME"/{q(GPU_LEASES)})'
+            from .backends.base import GPU_LEASES, holder, lease_command
+            folder = f"{self.root}/{GPU_LEASES}"   # in the host's root (private)
+            node = " ".join(q(x) for x in lease_command(folder, s["gpu"], s["gpu_use"], holder(self.request))) + " " + node
+            leases = f"mkdir -p {q(folder)}"
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
         links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -sfn {q(v['object'])} {q(v['path'])}"

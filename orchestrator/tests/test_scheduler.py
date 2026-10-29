@@ -189,7 +189,10 @@ def test_on_a_machine_with_two_cards_two_exclusive_nodes_run_together_each_seein
     assert {e["cuda"] for e in runs[:2]} == {"0", "1"} and {e["order"] for e in runs} == {"PCI_BUS_ID"}
     assert {t["node_id"]: str(t["gpu"]) for t in coord._tasks(run_id).values()} == {e["node"]: e["cuda"] for e in runs}
     machine = os.uname().nodename                                # a lease per machine and card (an NFS home is shared)
-    assert sorted(p.name for p in (tmp_path / "home" / ".cache" / "hyperstudy-perception-gpus").iterdir()) == [f"{machine}-0", f"{machine}-1"]
+    leases = tmp_path / "home" / ".cache" / "hyperstudy-perception" / "gpus"   # in the root a coordinator elsewhere uses
+    assert sorted(p.name for p in leases.iterdir()) == [f"{machine}-0", f"{machine}-1"]
+    held = {(leases / f"{machine}-{t['gpu']}").read_text() for t in coord._tasks(run_id).values()}
+    assert all(h.startswith(f"exclusive run {run_id} node g") and " pid " in h for h in held), held   # who held it
 
 
 SMI = """#!/bin/sh

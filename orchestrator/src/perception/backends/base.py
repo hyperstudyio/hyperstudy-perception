@@ -69,36 +69,47 @@ class Capabilities:
 
 # A card is leased on its machine for as long as a node runs on it, through a lock file every coordinator there honours
 # (one on this Mac and one on the lab server, or two runs started side by side): the scheduler's own count covers only
-# its run. Under the home of the user the nodes run as, outside any store or host root, so every store and root of that
-# user shares them; named for the machine (uname -n) as well as the card, since lab servers often share one home over
-# NFS, and a card is only another machine's card of the same index there. Not shared with other users of the machine
-# (their homes are their own).
-GPU_LEASES = ".cache/hyperstudy-perception-gpus"
+# its run, so it only asks for a card, and the node's wrapper on the machine takes it (LEASE). In the machine's root
+# (hosts.py: the host's root; for nodes run here, the default one under this user's home), named for the machine
+# (uname -n) as well as the card: lab servers often share one home over NFS, and a card is only another machine's card
+# of the same index there. Not shared with other users of the machine (their roots are their own).
+GPU_LEASES = "gpus"
 
 # perl (on every Linux server and Mac, which flock(1) is not): flock the lease <dir>/<machine>-<index>, shared for a
-# `gpu: shared` node and exclusive for a `gpu: exclusive` one, then exec the node with the lock's descriptor left open
-# ($^F: not closed on exec), so the node's process holds the lease until it ends, however it ends. Opened for reading
-# and writing: on NFS, flock is an fcntl lock, and a shared one needs a descriptor that can read. A lease another run
-# holds is waited for, and the node's log says so.
+# `gpu: shared` node and exclusive for a `gpu: exclusive` one, write who holds it (the run, node and attempt, and the
+# pid), then exec the node with the lock's descriptor left open ($^F: not closed on exec), so the node's process holds
+# the lease until it ends, however it ends: a lost SSH session does not end it. Opened for reading and writing: on NFS,
+# flock is an fcntl lock, and a shared one needs a descriptor that can read. A lease another run holds is waited for,
+# and the node's log says so and who last took it.
 LEASE = r"""$^F = 1023;
-my ($dir, $index, $use) = splice(@ARGV, 0, 3);
+my ($dir, $index, $use, $who) = splice(@ARGV, 0, 4);
 my $path = "$dir/" . (POSIX::uname())[1] . "-$index";
 open(my $lease, "+>>", $path) or die "perception: cannot open the GPU lease $path: $!\n";
 my $how = $use eq "exclusive" ? LOCK_EX : LOCK_SH;
 if (!flock($lease, $how | LOCK_NB)) {
-  print STDERR "perception: waiting for $path ($use): another run on this machine has that GPU\n";
+  seek($lease, 0, 0);
+  my @held = <$lease>;
+  chomp(my $last = $held[-1] // "");
+  print STDERR "perception: waiting for $path ($use): another run on this machine has that GPU (last taken by $last)\n";
   flock($lease, $how) or die "perception: GPU lease $path: $!\n";
   print STDERR "perception: $path is free: starting\n";
 }
+truncate($lease, 0) if $how == LOCK_EX;   # the holders' lines: one for an exclusive node, the shared ones' otherwise
+syswrite($lease, "$use $who pid $$\n");
 exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
 """
 LEASE_PERL = ["perl", "-MFcntl=:flock", "-MPOSIX", "-e", LEASE]
 
 
-def lease_command(leases: str, index: int, use: str) -> list[str]:
+def lease_command(leases: str, index: int, use: str, who: str) -> list[str]:
     """What goes before a node's command to run it holding card `index`'s lease in the folder `leases` (LEASE), as
-    `use` (shared, exclusive)."""
-    return [*LEASE_PERL, leases, str(int(index)), use]
+    `use` (shared, exclusive); `who` says which attempt holds it (run, node, attempt)."""
+    return [*LEASE_PERL, leases, str(int(index)), use, who]
+
+
+def holder(request: dict) -> str:
+    """Who a node's lease says holds it (lease_command's `who`): its run, node and attempt."""
+    return f"run {request['run']} node {request['node']} attempt {request['attempt']}"
 
 
 def gpu_env(index: int | None) -> dict[str, str]:

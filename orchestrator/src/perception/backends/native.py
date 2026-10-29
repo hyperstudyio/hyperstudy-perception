@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
-from .base import GPU_LEASES, Backend, Capabilities, gpu_env, lease_command
+from .base import GPU_LEASES, Backend, Capabilities, gpu_env, holder, lease_command
 from .probe import probe
 
 from ..release import REPO, env_vars
@@ -85,9 +85,8 @@ class NativeBackend(Backend):
         env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
         command = self.command(manifest, runner, request)
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
-            leases = Path.home() / GPU_LEASES
-            leases.mkdir(mode=0o700, parents=True, exist_ok=True)
-            command = [*lease_command(str(leases), gpu, manifest.resources.gpu), *command]
+            command = [*lease_command(str(self.lease_folder()), gpu, manifest.resources.gpu,
+                                      holder(json.loads(request.read_text()))), *command]
         proc = subprocess.Popen(command, cwd=manifest.directory, env=env,
                                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 start_new_session=True)   # its own process group: cancel stops the whole tree
@@ -98,6 +97,18 @@ class NativeBackend(Backend):
         tmp.write_text(json.dumps(handle))
         os.replace(tmp, attempt_dir / "handle.json")
         return handle
+
+    def lease_folder(self) -> Path:
+        """Where this machine's cards are leased (GPU_LEASES): in the default root under this user's home, the one a
+        coordinator elsewhere uses when it adds this machine as a host, made private as a host's root is (or refused:
+        hosts.PRIVATE_ROOT), so both coordinators' nodes take the same leases."""
+        from ..hosts import DEFAULT_ROOT, private_root_script
+        made = subprocess.run(["sh", "-c", private_root_script(DEFAULT_ROOT)], capture_output=True, text=True)
+        if made.returncode:
+            raise RuntimeError(f"cannot lease a GPU here: {made.stderr.strip()[-300:]}")
+        folder = Path.home() / DEFAULT_ROOT / GPU_LEASES
+        folder.mkdir(mode=0o700, exist_ok=True)
+        return folder
 
     def recorded_handle(self, attempt_dir: Path) -> dict | None:
         """Trusted only as a handle for this attempt: the node can write in its folder, so a handle naming another request,

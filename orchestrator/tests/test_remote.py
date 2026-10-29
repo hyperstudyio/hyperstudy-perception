@@ -1316,4 +1316,9 @@ def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_pa
     end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
     assert second["start"] >= end                                         # never on the card at once
     logs = [log_of(c, r, f"g{i}") for i, (c, r) in enumerate(zip(coords, runs), 1)]
-    assert sum("another run on this machine has that GPU" in log for log in logs) == 1, logs
+    waited = [log for log in logs if "another run on this machine has that GPU" in log]
+    assert len(waited) == 1, logs
+    run_of = {f"g{i}": r for i, r in enumerate(runs, 1)}
+    assert f"(last taken by exclusive run {run_of[first['node']]} node {first['node']} attempt 1 pid " in waited[0]   # and by whom
+    lease = host / "home" / ".cache" / "hp" / "gpus" / f"{os.uname().nodename}-1"   # in the host's root
+    assert lease.read_text().startswith(f"exclusive run {run_of[second['node']]} node {second['node']} attempt 1 pid ")
