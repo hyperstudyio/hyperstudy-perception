@@ -69,13 +69,22 @@ class Capabilities:
 
 # A card is leased on its machine for as long as a node runs on it, through a lock file every coordinator there honours
 # (one on this Mac and one on the lab server, or two runs started side by side): the scheduler's own count covers only
-# its run, so it only asks for a card, and the node's wrapper on the machine takes it (LEASE). In the user's default
-# root on that machine (hosts.DEFAULT_ROOT), whatever root a host was added with: a coordinator elsewhere and one on the
-# machine itself (NativeBackend.lease_folder) then always take the same leases. Named for the machine (uname -n) as
+# its run, so it only asks for a card, and the node's wrapper on the machine takes it (LEASE). In a folder of their own
+# under the user's home on that machine, whatever root a host was added with: a coordinator elsewhere and one on the
+# machine itself (NativeBackend.lease_folder) then always take the same leases. Not inside a root: ~/.cache/
+# hyperstudy-perception also holds the nodes' weights, often with no root's marker, and a root must be empty or marked
+# (hosts.PRIVATE_ROOT). The folder is private in itself (LEASE_FOLDER). Named for the machine (uname -n) as
 # well as the card: lab servers often share one home over NFS, and a card is only another machine's card of the same
 # index there. Not shared with other users of the machine (their roots are their own). flock is not fair: a node
 # waiting for an exclusive lease waits until no shared node holds the card, however long a stream of them lasts.
-GPU_LEASES = "gpus"
+GPU_LEASES = ".cache/hyperstudy-perception-gpus"   # under the home
+
+# sh that makes the lease folder ($HOME/GPU_LEASES) the user's own and private, or fails (exit 3: refused, as a root
+# that is someone else's is): only the user then writes the leases there.
+LEASE_FOLDER = r"""d="$HOME/.cache/hyperstudy-perception-gpus"
+(umask 077 && mkdir -p "$d") || exit 3
+if [ -L "$d" ] || [ "$(ls -ldn "$d" | awk '{print $3}')" != "$(id -u)" ]; then echo "$d is not your own folder" >&2; exit 3; fi
+chmod 700 "$d" || exit 3"""
 
 # perl (on every Linux server and Mac, which flock(1) is not): flock the lease <dir>/<machine>-<index>, shared for a
 # `gpu: shared` node and exclusive for a `gpu: exclusive` one, write who holds it (the run, node and attempt, and the

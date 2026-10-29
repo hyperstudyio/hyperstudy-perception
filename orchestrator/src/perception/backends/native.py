@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
-from .base import GPU_LEASES, Backend, Capabilities, gpu_env, holder, lease_command
+from .base import GPU_LEASES, LEASE_FOLDER, Backend, Capabilities, gpu_env, holder, lease_command
 from .probe import probe
 
 from ..release import REPO, env_vars
@@ -99,16 +99,12 @@ class NativeBackend(Backend):
         return handle
 
     def lease_folder(self) -> Path:
-        """Where this machine's cards are leased (GPU_LEASES): in the default root under this user's home, the one a
-        coordinator elsewhere uses when it adds this machine as a host, made private as a host's root is (or refused:
-        hosts.PRIVATE_ROOT), so both coordinators' nodes take the same leases."""
-        from ..hosts import DEFAULT_ROOT, private_root_script
-        made = subprocess.run(["sh", "-c", private_root_script(DEFAULT_ROOT)], capture_output=True, text=True)
+        """Where this machine's cards are leased (GPU_LEASES, under this user's home): the folder a coordinator elsewhere
+        leases them in when it runs nodes here as a host, made the user's own and private (LEASE_FOLDER), or refused."""
+        made = subprocess.run(["sh", "-c", LEASE_FOLDER], capture_output=True, text=True)
         if made.returncode:
             raise RuntimeError(f"cannot lease a GPU here: {made.stderr.strip()[-300:]}")
-        folder = Path.home() / DEFAULT_ROOT / GPU_LEASES
-        folder.mkdir(mode=0o700, exist_ok=True)
-        return folder
+        return Path.home() / GPU_LEASES
 
     def recorded_handle(self, attempt_dir: Path) -> dict | None:
         """Trusted only as a handle for this attempt: the node can write in its folder, so a handle naming another request,

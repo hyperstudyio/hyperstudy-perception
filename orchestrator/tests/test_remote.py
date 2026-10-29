@@ -1320,16 +1320,17 @@ def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_pa
     assert len(waited) == 1, logs
     run_of = {f"g{i}": r for i, r in enumerate(runs, 1)}
     assert f"(held by exclusive run {run_of[first['node']]} node {first['node']} attempt 1 pid " in waited[0]   # and by whom
-    # in the user's default root on the host (whatever root it was added with), naming only the node that held it last
-    lease = host / "home" / ".cache" / "hyperstudy-perception" / "gpus" / f"{os.uname().nodename}-1"
+    # in the user's lease folder on the host (whatever root it was added with), naming only the node that held it last
+    lease = host / "home" / ".cache" / "hyperstudy-perception-gpus" / f"{os.uname().nodename}-1"
     assert lease.read_text().startswith(f"exclusive run {run_of[second['node']]} node {second['node']} attempt 1 pid ")
     assert lease.read_text().count("\n") == 1
 
 
 def test_a_coordinator_on_the_host_and_one_elsewhere_lease_the_same_card_whatever_root_the_host_was_added_with(tmp_path, host, rec, monkeypatch):
     """A coordinator on the lab server itself (a native node, on its own cards) and one elsewhere that added the server with
-    a root of its own (`--root`): the leases are in the user's default root either way, so the two exclusive nodes that
-    both choose card 1 never share it."""
+    a root of its own (`--root`), where nodes have fetched weights before (~/.cache/hyperstudy-perception/weights, no
+    root's marker): the leases are in the user's own lease folder either way, so the two exclusive nodes that both
+    choose card 1 never share it, and both start."""
     import dataclasses
     from perception.backends.base import Gpu
     cards = [Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)]
@@ -1338,6 +1339,9 @@ def test_a_coordinator_on_the_host_and_one_elsewhere_lease_the_same_card_whateve
         def probe_capabilities(self):
             return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=95.6, gpus=cards)
     monkeypatch.setenv("HOME", str(host / "home"))
+    # weights a node fetched there before (the SDK's default cache), in a folder no root marks as perception's
+    (host / "home" / ".cache" / "hyperstudy-perception" / "weights").mkdir(parents=True)
+    (host / "home" / ".cache" / "hyperstudy-perception" / "weights" / "0123").write_bytes(b"weights")
     seed = tmp_path / "seed.json"
     seed.write_text('{"value": 0}')
     remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6, gpus=cards), runner_kind="self", python=sys.executable)

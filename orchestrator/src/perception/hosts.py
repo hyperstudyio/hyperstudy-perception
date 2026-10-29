@@ -19,12 +19,12 @@ by others:
                          and the outputs of the nodes that ran there (face embeddings, transcripts: whatever a node
                          wrote), kept under the same hashes so a node after it there is not sent them again. Like the
                          inputs, they stay between runs until `perception hosts clean`
-    gpus/<machine>-<index>   a card's lease (backends/base.LEASE): a lock its nodes hold while they run, which every
-                         coordinator's nodes there honour, and who holds it. Always in the default root
-                         (~/.cache/hyperstudy-perception), whatever root a host was added with
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
                          or by the host's watchdog when no driver has asked about it for a while (a finished node's
                          results wait a day for its driver)
+Outside the root, ~/.cache/hyperstudy-perception-gpus/<machine>-<index> is a card's lease (backends/base.LEASE): a lock
+a GPU node holds while it runs, which every coordinator's nodes there honour (one on the host itself too, whatever root
+the host was added with), and who holds it.
 An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*, envs/.incoming-*) are removed when it ends; an
 output a host never finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep there a day later.
 `perception hosts clean NAME` removes the root's inputs, the outputs kept there, code and environments (what stays on the

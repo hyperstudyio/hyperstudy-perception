@@ -179,6 +179,8 @@ class TwoCards(SelfBackend):
 
 def test_on_a_machine_with_two_cards_two_exclusive_nodes_run_together_each_seeing_its_own_card(tmp_path, rec, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))           # where the cards' leases are (GPU_LEASES)
+    (tmp_path / "home" / ".cache" / "hyperstudy-perception" / "weights").mkdir(parents=True)   # weights fetched here before
+    (tmp_path / "home" / ".cache" / "hyperstudy-perception" / "weights" / "0123").write_bytes(b"weights")
     coord = coordinator(tmp_path, TwoCards())
     doc = graph_doc(tmp_path, [work(f"g{i}", uses="test.gpu@1.0.0", record_dir=rec, sleep=1.0, add=i) for i in range(3)])
     run_id, status = run(coord, doc)
@@ -189,7 +191,8 @@ def test_on_a_machine_with_two_cards_two_exclusive_nodes_run_together_each_seein
     assert {e["cuda"] for e in runs[:2]} == {"0", "1"} and {e["order"] for e in runs} == {"PCI_BUS_ID"}
     assert {t["node_id"]: str(t["gpu"]) for t in coord._tasks(run_id).values()} == {e["node"]: e["cuda"] for e in runs}
     machine = os.uname().nodename                                # a lease per machine and card (an NFS home is shared)
-    leases = tmp_path / "home" / ".cache" / "hyperstudy-perception" / "gpus"   # in the root a coordinator elsewhere uses
+    leases = tmp_path / "home" / ".cache" / "hyperstudy-perception-gpus"   # where a coordinator elsewhere leases them too
+    assert leases.stat().st_mode & 0o777 == 0o700
     assert sorted(p.name for p in leases.iterdir()) == [f"{machine}-0", f"{machine}-1"]
     held = {(leases / f"{machine}-{t['gpu']}").read_text() for t in coord._tasks(run_id).values()}
     assert all(h.startswith(f"exclusive run {run_id} node g") and " pid " in h for h in held), held   # who held it
