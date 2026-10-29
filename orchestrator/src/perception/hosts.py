@@ -4,7 +4,7 @@ DEST is what you would give ssh (user@host, or a Host from ~/.ssh/config). --use
 ~/.ssh/config says for it; every command sent to the host uses them (Host.ssh). `perception hosts probe DEST` reaches a
 destination and says what it has without adding it or changing anything there (a connection test).
 
-A host is probed when it is added (and by `hosts check`): its platform, cores, memory, GPU and tools are recorded in
+A host is probed when it is added (and by `hosts check`): its platform, cores, memory, GPUs and tools are recorded in
 $PERCEPTION_HOME/hosts.json, so planning never waits on the network. SSH runs in batch mode with the user's own keys
 and ~/.ssh/config: nothing here asks for or stores a password. Connections are shared (ControlMaster), so the many short
 commands a remote node needs cost one handshake.
@@ -22,6 +22,9 @@ by others:
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt: removed after it,
                          or by the host's watchdog when no driver has asked about it for a while (a finished node's
                          results wait a day for its driver)
+Outside the root, ~/.cache/hyperstudy-perception-gpus/<machine>-<index> is a card's lease (backends/base.LEASE): a lock
+a GPU node holds while it runs, which every coordinator's nodes there honour (one on the host itself too, whatever root
+the host was added with), and who holds it.
 An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*, envs/.incoming-*) are removed when it ends; an
 output a host never finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep there a day later.
 `perception hosts clean NAME` removes the root's inputs, the outputs kept there, code and environments (what stays on the
@@ -40,6 +43,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .backends.base import Capabilities
+from .backends.probe import GPU_QUERY, parse_gpus, visible_gpus
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 # an ssh destination: user@host, a host, or a ~/.ssh/config alias; never an option
@@ -52,6 +56,8 @@ USER = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$")
 
 # What the host has, as key=value lines. POSIX sh: Linux servers and Macs, no Python needed. Tools are looked for on the
 # PATH a login shell would add too (~/.local/bin is where uv installs itself), since ssh commands get a minimal PATH.
+# Each NVIDIA card is a line of its own (gpu=index, MiB, name), in nvidia-smi's order; then what the host's own
+# environment says CUDA may see (visible_gpus).
 PROBE = r"""
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 echo "home=$HOME"
@@ -62,9 +68,11 @@ if [ -r /proc/meminfo ]; then echo "memory_kb=$(awk '/^MemTotal:/{print $2}' /pr
 else echo "memory_kb=$(( $(sysctl -n hw.memsize) / 1024 ))"; fi
 for t in uv ffmpeg ffprobe; do echo "tool_$t=$(command -v $t || true)"; done
 if command -v nvidia-smi >/dev/null 2>&1; then
-  echo "vram_mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | sort -n | tail -1)"
+  nvidia-smi --query-gpu=%s --format=csv,noheader,nounits 2>/dev/null | sed 's/^/gpu=/'
 fi
-"""
+[ -n "${CUDA_VISIBLE_DEVICES+set}" ] && echo "cuda_visible=$CUDA_VISIBLE_DEVICES"
+echo "cuda_order=${CUDA_DEVICE_ORDER-}"
+""" % GPU_QUERY
 
 
 class HostError(RuntimeError):
@@ -84,13 +92,16 @@ class Host:
     identity: str | None = None   # a private key on this machine, absolute
 
     def to_json(self) -> dict:
-        d = asdict(self)
-        d["caps"]["accelerators"] = sorted(self.caps.accelerators)
-        return d
+        """As hosts.json holds it. The cards beside `caps`, not in it: a reader from before cards were recorded (the
+        app's own copy of the CLI, reading the same store) passes `caps` whole to Capabilities and would refuse a key it
+        does not know, while it ignores one beside it."""
+        caps = self.caps.to_json()
+        return {**asdict(self), "caps": {k: v for k, v in caps.items() if k != "gpus"}, "gpus": caps["gpus"]}
 
     @classmethod
     def from_json(cls, d: dict) -> "Host":
-        caps = Capabilities(**{**d["caps"], "accelerators": set(d["caps"]["accelerators"])})
+        # a host saved before its cards were recorded has none: counted as one GPU
+        caps = Capabilities.from_json({**d["caps"], "gpus": d.get("gpus", d["caps"].get("gpus", []))})
         return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"))
 
     def ssh(self, fresh: bool = False) -> list[str]:
@@ -191,6 +202,9 @@ def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None, mak
     if out.returncode:
         raise HostError(f"could not reach {dest} (ssh exit {out.returncode}): {out.stderr.strip()[-500:]}")
     facts = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+    found = parse_gpus("\n".join(line.removeprefix("gpu=") for line in out.stdout.splitlines() if line.startswith("gpu=")))
+    # the cards a node there may be given, if the host's own environment narrows what CUDA sees (visible_gpus)
+    gpus = visible_gpus(found, facts.get("cuda_visible"), facts.get("cuda_order") or None)
     try:
         system = {"Linux": "linux", "Darwin": "darwin"}[facts["system"]]
         arch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}[facts["machine"]]
@@ -199,14 +213,15 @@ def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None, mak
     except (KeyError, ValueError) as e:
         raise HostError(f"{dest} answered, but not as expected ({e}): {out.stdout[-500:]}")
     accelerators, vram = {"cpu"}, 0.0
-    if facts.get("vram_mib", "").strip().isdigit():
+    if found:
         accelerators.add("cuda")
-        vram = int(facts["vram_mib"]) / 1024
+        vram = max(g.memory_gb for g in gpus or found)   # what a runner's minimum is checked against: the largest card
     if (system, arch) == ("darwin", "arm64"):
         accelerators.add("mps")
         vram = vram or memory   # unified memory
     caps = Capabilities(platform=f"{system}/{arch}", cpu_cores=cores, memory_gb=round(memory, 1), accelerators=accelerators,
-                        vram_gb=round(vram, 1), tools={t: facts.get(f"tool_{t}") or None for t in ("uv", "ffmpeg", "ffprobe")})
+                        vram_gb=round(vram, 1), tools={t: facts.get(f"tool_{t}") or None for t in ("uv", "ffmpeg", "ffprobe")},
+                        gpus=gpus)
     home = facts["home"]
     absolute = (root if root.startswith("/") else f"{home}/{root.removeprefix('~/')}").rstrip("/")
     # plain characters in the whole path, the host's home too: rsync passes remote paths through the host's shell

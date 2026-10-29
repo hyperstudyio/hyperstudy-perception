@@ -13,7 +13,10 @@ Guarantees (spec, "Scheduler and execution policy"):
   alive it is adopted and waited for; if it finished, its response is collected; otherwise it is retried.
 - Transient errors (and a process that died without a response) are retried with backoff, up to policy.retries.
   input / schema / privacy / licence / internal errors are terminal.
-- Independent nodes run in parallel within CPU, memory and GPU budgets; `gpu: exclusive` nodes run one at a time.
+- Independent nodes run in parallel within CPU, memory and GPU budgets: on each GPU, one `gpu: exclusive` node at a
+  time, or `gpu: shared` ones within its memory (card_for). A machine with several cards runs one on each, and the
+  node sees only its own card (CUDA_VISIBLE_DEVICES). The card is also leased where the node runs (GPU_LEASES), which
+  every coordinator there honours: this count covers only this run's nodes.
 - A hard cost cap: a billable node is not submitted if its estimate would exceed what the run has left.
 """
 
@@ -30,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 from . import artifacts
-from .backends.base import Backend, child_env
+from .backends.base import Backend, Gpu, LeaseRefused, child_env
 from .ir import CompiledNode, Graph, Policy, compile_graph
 from .manifests import Manifest, Registry, Runner
 from .store import Artifact, Store, dumps
@@ -72,6 +75,37 @@ def manifest_cost(m: Manifest, config: dict, inputs: dict[str, Artifact]) -> flo
     units = {"shot": lambda: len(doc["shots"]), "utterance": lambda: len(doc["utterances"]),
              "minute": lambda: doc["duration"] / 60}[m.cost.per]()
     return round(m.cost.unit_usd(config) * units, 4)
+
+
+def card_for(gpu: str, need_gb: float, cards: list[Gpu], taken: list[tuple[str, int | None, float]]) -> tuple[bool, Gpu | None]:
+    """Whether a node that uses the GPU as `gpu` (none, shared, exclusive) fits on one of a machine's `cards` beside the
+    nodes already there (`taken`: each one's use, the card it holds and the memory it was given), and on which.
+
+    An exclusive node takes a card no other GPU node is on, at least as large as its runner's minimum (need_gb); the
+    largest such card, which is the fastest one on the lab servers. A shared node goes on a card with no exclusive node,
+    within the card's memory once the shared nodes already there have theirs (their runners' minimums), and beside other
+    shared nodes before taking a free card (the smallest that fits), which leaves free cards for exclusive nodes. A node
+    on an unknown card (None: started before the cards were known) counts as on every card. On the machine's GPU taken as
+    one (Capabilities.devices: a Mac, a host probed before its cards were recorded) memory is not divided: one exclusive
+    node, or any number of shared ones, as before."""
+    if gpu == "none":
+        return True, None
+    fits = []
+    for card in cards:
+        there = [(use, gb) for use, index, gb in taken
+                 if use != "none" and (index is None or card.index is None or index == card.index)]
+        if gpu == "exclusive":
+            ok = not there and (card.index is None or card.memory_gb >= need_gb)
+        else:
+            ok = (all(use != "exclusive" for use, _ in there)
+                  and (card.index is None or sum(gb for _, gb in there) + need_gb <= card.memory_gb))
+        if ok:
+            fits.append((card, bool(there)))
+    if not fits:
+        return False, None
+    if gpu == "exclusive":
+        return True, max(fits, key=lambda f: (f[0].memory_gb, -(f[0].index or 0)))[0]
+    return True, min(fits, key=lambda f: (not f[1], f[0].memory_gb, f[0].index or 0))[0]
 
 
 class LeaseHeld(RuntimeError):
@@ -383,8 +417,13 @@ class Coordinator:
             self._fail(run_id, node.id, "policy", f"{m.ref} sends {', '.join(sent) or 'its inputs'} off this machine (to {to}), "
                                                   "and this run may not (--allow-uploads)")
             return
-        if not self._fits(run_id, graph, m, placement, tasks):
+        fits, card = self._fits(run_id, graph, m, placement, tasks)
+        if not fits:
             return   # stays ready; started when running nodes free their share
+        if placement.runner.accelerator != "cuda":
+            # a GPU node on the CPU: counted on every card in this run as before (no card recorded), but given none,
+            # so it leases none and holds no card against other runs' nodes on the machine
+            card = None
         estimate = placement.backend.estimate(m, placement.runner, inputs)
         estimate.cost_usd += manifest_cost(m, node.config, inputs)
         run = self.store.db.execute("SELECT max_cost_usd, spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -400,9 +439,11 @@ class Coordinator:
         attempt_dir.mkdir(parents=True, exist_ok=False)
         # reserved from the moment it is chosen: a coordinator that dies before recording it running leaves the
         # reservation with the task that the next one adopts
+        # and the card it takes on its machine, held until it ends (what card_for counts)
         self._set(run_id, node.id, state="leased", attempt=attempt, cache_key=key, lease_owner=self.owner,
                   lease_expires=time.time() + self.lease_s, runner=placement.label,
-                  cost_usd=estimate.cost_usd)
+                  cost_usd=estimate.cost_usd, gpu=card.index if card else None,
+                  gpu_vram_gb=placement.runner.minimum_vram_gb if m.resources.gpu != "none" else 0)
         request = {
             "protocol": 1, "run": run_id, "node": node.id, "uses": m.ref, "attempt": attempt, "partition": None,
             "accelerator": placement.runner.accelerator,
@@ -412,7 +453,11 @@ class Coordinator:
         }
         (attempt_dir / "request.json").write_text(json.dumps(request, indent=1))
         try:
-            handle = placement.backend.submit(m, placement.runner, attempt_dir, child_env(m.secrets, self.secrets))
+            handle = placement.backend.submit(m, placement.runner, attempt_dir, child_env(m.secrets, self.secrets),
+                                              gpu=card.index if card else None)
+        except LeaseRefused as e:   # the machine's GPU lease folder is not the user's own: the same every time
+            self._attempt_failed(run_id, graph, node.id, attempt, "internal", f"submit failed: {e}")
+            return
         except Exception as e:   # could not even start (a missing tool): transient, the retry policy decides
             self._attempt_failed(run_id, graph, node.id, attempt, "transient", f"submit failed: {e}")
             return
@@ -425,26 +470,29 @@ class Coordinator:
                 self._set(run_id, node.id, handle=dumps(handle), cost_usd=0)
                 return
             self._set(run_id, node.id, state="running", handle=dumps(handle), started_at=time.time(), cost_usd=estimate.cost_usd)
-        self.store.event(run_id, node.id, "task.started", f"attempt {attempt} on {placement.backend.kind} ({placement.runner.accelerator})")
+        on = f", GPU {card.index} ({card.name})" if card and card.index is not None else ""
+        self.store.event(run_id, node.id, "task.started", f"attempt {attempt} on {placement.backend.kind} ({placement.runner.accelerator}{on})")
 
-    def _fits(self, run_id: str, graph: Graph, m: Manifest, placement: Placement, tasks: dict[str, dict]) -> bool:
-        """Within the CPU, memory and GPU of the machine it would run on, beside the nodes already running there."""
+    def _fits(self, run_id: str, graph: Graph, m: Manifest, placement: Placement, tasks: dict[str, dict]) -> tuple[bool, Gpu | None]:
+        """Within the CPU, memory and GPUs of the machine it would run on, beside the nodes already running there; and
+        the card it takes there (card_for), if it uses the GPU."""
         machine = placement.backend.machine
         if machine is None:
-            return True   # a machine of its own
+            return True, None   # a machine of its own
         caps = placement.backend.probe_capabilities()
-        running = [graph.nodes[i].manifest.resources for i, x in tasks.items() if x["state"] in ("running", "leased")
-                   and x["runner"] and self.backends[x["runner"].split(":")[0]].machine == machine]
-        if not running:
-            return True   # a node bigger than the machine still runs, alone
+        here = [(graph.nodes[i].manifest.resources, x) for i, x in tasks.items() if x["state"] in ("running", "leased")
+                and x["runner"] and self.backends[x["runner"].split(":")[0]].machine == machine]
         r = m.resources
-        if r.gpu == "exclusive" and any(x.gpu != "none" for x in running):
-            return False
-        if r.gpu != "none" and any(x.gpu == "exclusive" for x in running):
-            return False
-        cpu = sum(x.cpu_cores for x in running) + r.cpu_cores
-        mem = sum(x.memory_gb for x in running) + r.memory_gb
-        return cpu <= caps.cpu_cores and mem <= caps.memory_gb * 0.8
+        cards = caps.devices()
+        fits, card = card_for(r.gpu, placement.runner.minimum_vram_gb, cards,
+                              [(x.gpu, t["gpu"], t["gpu_vram_gb"] or 0.0) for x, t in here])
+        if not here:   # a node bigger than the machine still runs, alone (on its largest card, if none is large enough)
+            return True, card if fits else (max(cards, key=lambda c: c.memory_gb) if r.gpu != "none" else None)
+        if not fits:
+            return False, None
+        cpu = sum(x.cpu_cores for x, _ in here) + r.cpu_cores
+        mem = sum(x.memory_gb for x, _ in here) + r.memory_gb
+        return cpu <= caps.cpu_cores and mem <= caps.memory_gb * 0.8, card
 
     # --- finishing a task -----------------------------------------------------------------------------------
 

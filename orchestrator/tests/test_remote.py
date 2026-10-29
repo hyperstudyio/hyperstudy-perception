@@ -1171,6 +1171,20 @@ def test_nodes_with_the_same_lock_share_one_environment_on_a_host_and_each_impor
     assert sdks == {id: f"{root}/code/{codes[id]}/sdk/src/perception_node/__init__.py" for id in ("a", "b")}
 
 
+def explain(coord, run_id: str, status: str):
+    """A run that did not succeed, in full (pytest shortens an assertion's message): each node's error, log and the
+    run's events, printed for the test's report."""
+    if status == "succeeded":
+        return
+    for n, x in coord._tasks(run_id).items():
+        print(n, x["state"], x["error_code"], x["error"], x["attempt"])
+        for a in range(1, x["attempt"] + 1):
+            path = coord.store.root / "work" / run_id / n / str(a)
+            print(sorted(p.name for p in path.iterdir()) if path.is_dir() else "no attempt folder")
+            print((path / "log.txt").read_text() if (path / "log.txt").exists() else "no log")
+    print([dict(e) for e in coord.store.db.execute("SELECT node_id, kind, message FROM events WHERE run_id=?", (run_id,))])
+
+
 def executions(rec: str) -> list[dict]:
     out = []
     for p in sorted(Path(rec).glob("*-*-*")):
@@ -1217,3 +1231,211 @@ def test_every_environment_has_the_sdk_that_a_host_leaves_out_and_imports_from_t
         doc = tomllib.loads(p.read_text())
         assert SDK_PACKAGE in doc["project"]["dependencies"], p
         assert doc["tool"]["uv"]["sources"][SDK_PACKAGE] == {"path": "../../sdk", "editable": True}, p
+
+
+# --- a host's GPUs ---------------------------------------------------------------------------------------------------
+
+FAKE_SMI = r"""#!/bin/sh
+# nvidia-smi --query-gpu=index,memory.total,name --format=csv,noheader,nounits, as liquidswords2 answers it
+echo "0, 24576, NVIDIA GeForce RTX 3090"
+echo "1, 97887, NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+"""
+
+
+def test_nvidia_smis_cards_are_read_and_a_card_it_could_not_fill_is_left_out():
+    from perception.backends.base import Gpu
+    from perception.backends.probe import parse_gpus
+    text = "1, 97887, NVIDIA RTX PRO 6000, a name with a comma\n0, 24576, NVIDIA GeForce RTX 3090\n2, [N/A], NVIDIA A100\n\n"
+    assert parse_gpus(text) == [Gpu(0, "NVIDIA GeForce RTX 3090", 24.0), Gpu(1, "NVIDIA RTX PRO 6000, a name with a comma", 95.6)]
+
+
+def test_a_host_is_probed_for_every_gpu_and_one_saved_before_cards_were_recorded_counts_as_one(tmp_path, host, monkeypatch):
+    from perception.backends.base import Gpu
+    smi = host / "home" / ".local" / "bin" / "nvidia-smi"   # on the PATH the probe adds
+    smi.parent.mkdir(parents=True)
+    smi.write_text(FAKE_SMI)
+    smi.chmod(0o755)
+    hosts = Hosts(tmp_path / "home")
+    added = hosts.add("lab", "lab")
+    assert added.caps.gpus == [Gpu(0, "NVIDIA GeForce RTX 3090", 24.0), Gpu(1, "NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 95.6)]
+    assert "cuda" in added.caps.accelerators and added.caps.vram_gb == 95.6   # the largest card: what runners are checked against
+    assert hosts.load()["lab"].caps == added.caps
+    saved = json.loads(hosts.path.read_text())["lab"]
+    assert "gpus" not in saved["caps"] and len(saved["gpus"]) == 2      # beside caps: an older reader ignores it there
+    from dataclasses import fields
+    older = {f.name for f in fields(Capabilities)} - {"gpus"}            # what Capabilities took before cards were recorded
+    assert set(saved["caps"]) <= older
+    # as hosts.json held it before the cards were recorded: no `gpus`, the largest card's memory alone
+    old = json.loads(hosts.path.read_text())
+    old["lab"].pop("gpus")
+    hosts.path.write_text(json.dumps(old))
+    caps = hosts.load()["lab"].caps
+    assert caps.gpus == [] and caps.vram_gb == 95.6 and caps.devices() == [Gpu(None, "", 95.6)]
+    assert hosts.check("lab").caps.gpus == added.caps.gpus   # recorded again by a check, not a new `add`
+    # a host whose own environment keeps CUDA off a card: only the cards it leaves can be given (probe.visible_gpus)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")             # (the stand-in ssh passes this one's environment on)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    assert [g.index for g in hosts.check("lab").caps.gpus] == [1]
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")                       # CUDA's own order: not nvidia-smi's, so no card
+    assert hosts.check("lab").caps.gpus == []
+
+
+def test_two_exclusive_gpu_nodes_on_a_host_with_two_cards_run_together_each_on_its_own_card(tmp_path, host, rec):
+    from perception.backends.base import Gpu
+    remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6,
+                            gpus=[Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)]), runner_kind="self", python=sys.executable)
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), remote], tick_s=0.02, backoff_s=0.01)
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    gpu = lambda id: {"id": id, "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cuda",
+                      "config": {"record_dir": rec, "sleep": 2, "add": int(id[1])}}
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+           "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
+           "nodes": [gpu("g1"), gpu("g2"), gpu("g3")]}
+    run_id = start(coord, doc)
+    status = asyncio.run(coord.run(run_id))
+    explain(coord, run_id, status)
+    assert status == "succeeded"
+    t = coord._tasks(run_id)
+    first, second, third = sorted(t.values(), key=lambda x: x["started_at"])
+    assert {first["gpu"], second["gpu"]} == {0, 1}                       # one on each card, at once
+    assert second["started_at"] < first["finished_at"]
+    assert third["started_at"] >= min(first["finished_at"], second["finished_at"])   # a third waits for a card
+    seen = {e["node"]: (e["cuda"], e["order"]) for e in executions(rec)}
+    assert seen == {x["node_id"]: (str(x["gpu"]), "PCI_BUS_ID") for x in t.values()}   # the node sees its card alone
+    assert "GPU 1 (RTX PRO 6000)" in " ".join(e["message"] or "" for e in coord.store.db.execute(
+        "SELECT message FROM events WHERE run_id=? AND kind='task.started'", (run_id,)))
+
+
+
+def test_two_coordinators_never_put_exclusive_nodes_on_one_card_of_a_host(tmp_path, host, rec):
+    """Two runs on a host's cards from two coordinators (two stores here; or this Mac and the lab server itself): each
+    one's scheduler counts only its own nodes, and both choose the larger card. The card's lease on the host (GPU_LEASES)
+    makes the second wait until the first node ends, and its log says why."""
+    from perception.backends.base import Gpu
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    coords, runs = [], []
+    for i in (1, 2):
+        remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6,
+                                gpus=[Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)]), runner_kind="self", python=sys.executable)
+        coord = Coordinator(Store(tmp_path / f"store{i}"), Registry.load(NODES), [SelfBackend(), remote], tick_s=0.02, backoff_s=0.01)
+        doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+               "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
+               "nodes": [{"id": f"g{i}", "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": "ssh-lab:cuda",
+                          "config": {"record_dir": rec, "sleep": 2, "add": i}}]}
+        coords.append(coord)
+        runs.append(start(coord, doc))
+
+    async def both():
+        return await asyncio.gather(*(c.run(r) for c, r in zip(coords, runs)))
+    done = asyncio.run(both())
+    for c, r, d in zip(coords, runs, done):
+        explain(c, r, d)
+    assert done == ["succeeded", "succeeded"]
+    assert [c._tasks(r)[f"g{i}"]["gpu"] for i, (c, r) in enumerate(zip(coords, runs), 1)] == [1, 1]   # both chose card 1
+    first, second = sorted(executions(rec), key=lambda e: e["start"])
+    end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
+    assert second["start"] >= end                                         # never on the card at once
+    logs = [log_of(c, r, f"g{i}") for i, (c, r) in enumerate(zip(coords, runs), 1)]
+    waited = [log for log in logs if "another node on this machine has that GPU" in log]
+    assert len(waited) == 1, logs
+    run_of = {f"g{i}": r for i, r in enumerate(runs, 1)}
+    assert f"(held by exclusive run {run_of[first['node']]} node {first['node']} attempt 1 pid " in waited[0]   # and by whom
+    # in the user's lease folder on the host (whatever root it was added with), naming only the node that held it last
+    lease = host / "home" / ".cache" / "hyperstudy-perception-gpus" / f"{os.uname().nodename}-1"
+    assert lease.read_text().startswith(f"exclusive run {run_of[second['node']]} node {second['node']} attempt 1 pid ")
+    assert lease.read_text().count("\n") == 1
+
+
+def test_a_coordinator_on_the_host_and_one_elsewhere_lease_the_same_card_whatever_root_the_host_was_added_with(tmp_path, host, rec, monkeypatch):
+    """A coordinator on the lab server itself (a native node, on its own cards) and one elsewhere that added the server with
+    a root of its own (`--root`), where nodes have fetched weights before (~/.cache/hyperstudy-perception/weights, no
+    root's marker): the leases are in the user's own lease folder either way, so the two exclusive nodes that both
+    choose card 1 never share it, and both start."""
+    import dataclasses
+    from perception.backends.base import Gpu
+    cards = [Gpu(0, "RTX 3090", 24.0), Gpu(1, "RTX PRO 6000", 95.6)]
+
+    class TheServer(SelfBackend):   # the coordinator on the server: this machine, whose home is the fake host's
+        def probe_capabilities(self):
+            return dataclasses.replace(super().probe_capabilities(), accelerators={"cpu", "cuda"}, vram_gb=95.6, gpus=cards)
+    monkeypatch.setenv("HOME", str(host / "home"))
+    # weights a node fetched there before (the SDK's default cache), in a folder no root marks as perception's
+    (host / "home" / ".cache" / "hyperstudy-perception" / "weights").mkdir(parents=True)
+    (host / "home" / ".cache" / "hyperstudy-perception" / "weights" / "0123").write_bytes(b"weights")
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    remote = SshBackend(lab(host, accelerators={"cpu", "cuda"}, vram_gb=95.6, gpus=cards), runner_kind="self", python=sys.executable)
+    assert not remote.host.root.endswith("/.cache/hyperstudy-perception")   # added with a root of its own
+    coords, runs = [], []
+    for i, (backend, place) in enumerate(((TheServer(), "self:cuda"), (remote, "ssh-lab:cuda")), 1):
+        coord = Coordinator(Store(tmp_path / f"store{i}"), Registry.load(NODES), [backend], tick_s=0.02, backoff_s=0.01)
+        doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+               "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
+               "nodes": [{"id": f"g{i}", "uses": "test.gpu@1.0.0", "inputs": {"a": "$inputs.seed"}, "place": place,
+                          "config": {"record_dir": rec, "sleep": 2, "add": i}}]}
+        coords.append(coord)
+        runs.append(start(coord, doc))
+
+    async def both():
+        return await asyncio.gather(*(c.run(r) for c, r in zip(coords, runs)))
+    done = asyncio.run(both())
+    for c, r, d in zip(coords, runs, done):
+        explain(c, r, d)
+    assert done == ["succeeded", "succeeded"]
+    assert [c._tasks(r)[f"g{i}"]["gpu"] for i, (c, r) in enumerate(zip(coords, runs), 1)] == [1, 1]
+    first, second = sorted(executions(rec), key=lambda e: e["start"])
+    end = json.loads(next(Path(rec).glob(f"{first['node']}-*.end")).read_text())["end"]
+    assert second["start"] >= end                                         # never on the card at once
+
+
+def test_a_lease_names_only_the_nodes_holding_it_now(tmp_path):
+    """Shared nodes, one after another and side by side: the lease file never keeps the lines of nodes that ended, so
+    it stays small on a card that only ever has shared nodes, and says who holds the card."""
+    from perception.backends.base import lease_command
+    path = tmp_path / f"{os.uname().nodename}-0"
+    for i in range(3):   # one after another
+        subprocess.run([*lease_command(str(tmp_path), 0, "shared", f"node s{i}"), "true"], check=True)
+    assert path.read_text().splitlines()[0].startswith("shared node s2 pid ") and path.read_text().count("\n") == 1
+    first = subprocess.Popen([*lease_command(str(tmp_path), 0, "shared", "node a"), "sleep", "1"])
+    time.sleep(0.3)
+    subprocess.run([*lease_command(str(tmp_path), 0, "shared", "node b"), "true"], check=True)   # beside a: both named
+    assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["shared node a", "shared node b"]
+    first.wait()
+    subprocess.run([*lease_command(str(tmp_path), 0, "exclusive", "node x"), "true"], check=True)
+    assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["exclusive node x"]
+    held = subprocess.Popen([*lease_command(str(tmp_path), 0, "exclusive", "node y"), "sleep", "1"])
+    time.sleep(0.3)
+    waited = subprocess.run([*lease_command(str(tmp_path), 0, "shared", "node c"), "true"], check=True, capture_output=True, text=True)
+    held.wait()
+    assert "(held by exclusive node y pid " in waited.stderr          # a shared node that waited for an exclusive one
+    assert [line.split(" pid ")[0] for line in path.read_text().splitlines()] == ["shared node c"]   # names it alone
+
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux shows no command line while a process execs")
+def test_a_node_caught_between_two_execs_is_still_running(tmp_path):
+    """Linux shows a process with no command line while it execs (the node is reached through setsid, the GPU lease's
+    perl, env and uv), as it does a zombie: the driver's check must not take that node for gone (seen on CI: a node
+    crashed at once, with nothing in its log). A process whose command line names another request has ended."""
+    from perception.remote_driver import running_sh
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)                                   # a zombie until reaped: alive to kill -0, with no command line
+    try:
+        time.sleep(0.2)
+        assert open(f"/proc/{pid}/cmdline", "rb").read() == b""
+        assert subprocess.run(["sh", "-c", running_sh(pid, "/w/r/a/1/request.json")]).returncode == 0
+    finally:
+        os.waitpid(pid, 0)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)", "/w/r/b/1/request.json"])
+    try:
+        while not open(f"/proc/{other.pid}/cmdline", "rb").read():   # Popen returns before its exec has set it
+            time.sleep(0.01)
+        assert subprocess.run(["sh", "-c", running_sh(other.pid, "/w/r/b/1/request.json")]).returncode == 0
+        assert subprocess.run(["sh", "-c", running_sh(other.pid, "/w/r/a/1/request.json")]).returncode == 1   # a reused pid
+    finally:
+        other.kill()
+        other.wait()
+    assert subprocess.run(["sh", "-c", running_sh(other.pid, "/w/r/b/1/request.json")]).returncode == 1        # gone

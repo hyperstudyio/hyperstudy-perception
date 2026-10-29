@@ -1,4 +1,5 @@
-"""What this machine has: platform, cores, memory, accelerators, tools. Used by `perception doctor` and placement."""
+"""What this machine has: platform, cores, memory, accelerators (each NVIDIA card), tools. Used by `perception doctor`
+and placement."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import shutil
 import subprocess
 import sys
 
-from .base import Capabilities, this_platform
+from .base import Capabilities, Gpu, this_platform
 
 
 def _memory_gb() -> float:
@@ -19,26 +20,55 @@ def _memory_gb() -> float:
     return 0.0
 
 
-def _cuda_vram_gb() -> float:
+def _cuda_gpus() -> list[Gpu]:
     smi = shutil.which("nvidia-smi")
     if not smi:
-        return 0.0
-    out = subprocess.run([smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True)
-    if out.returncode:
-        return 0.0
-    return max((float(x) / 1024 for x in out.stdout.split() if x.strip()), default=0.0)
+        return []
+    out = subprocess.run([smi, f"--query-gpu={GPU_QUERY}", "--format=csv,noheader,nounits"], capture_output=True, text=True)
+    return parse_gpus(out.stdout) if out.returncode == 0 else []
+
+
+# what nvidia-smi is asked for each card (the name last: the one field that could hold a comma)
+GPU_QUERY = "index,memory.total,name"
+
+
+def parse_gpus(text: str) -> list[Gpu]:
+    """nvidia-smi's lines for GPU_QUERY, as cards; a line it could not fill (a card in a bad state: "[N/A]") is left out."""
+    gpus = []
+    for line in text.splitlines():
+        parts = [x.strip() for x in line.split(",", 2)]
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            gpus.append(Gpu(int(parts[0]), parts[2], round(int(parts[1]) / 1024, 1)))
+    return sorted(gpus, key=lambda g: g.index)
+
+
+def visible_gpus(gpus: list[Gpu], cuda_visible: str | None, order: str | None) -> list[Gpu]:
+    """The cards nodes may be given, when the machine's environment already narrows what CUDA sees (an operator keeping
+    off a colleague's card with CUDA_VISIBLE_DEVICES): nvidia-smi lists every card whatever it says. Only an exact
+    match is kept: indices in nvidia-smi's own order (CUDA_DEVICE_ORDER=PCI_BUS_ID). Any other form (CUDA's default
+    order, fastest first, which nvidia-smi's index is not; UUIDs; MIG devices) gives no cards, so no node is given one,
+    and every node keeps the operator's setting and counts the machine's GPU as one, as before cards were recorded."""
+    if cuda_visible is None:
+        return gpus
+    wanted = [x.strip() for x in cuda_visible.split(",") if x.strip()]
+    if order != "PCI_BUS_ID" or not all(x.isdigit() for x in wanted):
+        return []
+    return [g for g in gpus if str(g.index) in wanted]
 
 
 def probe() -> Capabilities:
     plat = this_platform()
     memory = _memory_gb()
     accelerators = {"cpu"}
-    vram = _cuda_vram_gb()
-    if vram:
+    found = _cuda_gpus()
+    gpus = visible_gpus(found, os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
+    # what a runner's minimum is checked against: the largest card it could be given
+    vram = max((g.memory_gb for g in gpus or found), default=0.0)
+    if found:
         accelerators.add("cuda")
     if plat == "darwin/arm64":
         accelerators.add("mps")
         vram = vram or memory   # unified memory
     return Capabilities(platform=plat, cpu_cores=os.cpu_count() or 1, memory_gb=round(memory, 1), accelerators=accelerators,
                         vram_gb=round(vram, 1), tools={"uv": shutil.which("uv"), "ffmpeg": shutil.which("ffmpeg"),
-                                                       "ffprobe": shutil.which("ffprobe")})
+                                                       "ffprobe": shutil.which("ffprobe")}, gpus=gpus)

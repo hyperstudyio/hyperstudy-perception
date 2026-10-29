@@ -8,8 +8,8 @@ a remote job or an API call.
                            the platform; never the machine): the cache key's runner, one rule for every backend
     estimate(...)          cost and time, before anything is reserved
     stage_inputs(...)      make the inputs readable where the node runs; returns the request's input entries
-    submit(...)            start it; returns a JSON-able handle (kept in the run state, so a restarted coordinator
-                           can find the job again)
+    submit(...)            start it, on the card the scheduler chose if any; returns a JSON-able handle (kept in
+                           the run state, so a restarted coordinator can find the job again)
     poll(handle)           running | exited
     cancel(handle)
     collect(attempt_dir)   the node's response.json, or None if it never wrote one (a crash)
@@ -25,11 +25,21 @@ import platform
 import re
 import stat
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
+
+
+@dataclass(frozen=True)
+class Gpu:
+    """One NVIDIA card, as nvidia-smi lists it. `index` is nvidia-smi's, which counts in PCI bus order: CUDA counts the
+    fastest card first unless CUDA_DEVICE_ORDER=PCI_BUS_ID, so a node confined to a card gets both (gpu_env). None: the
+    machine's GPU taken as one, its cards not known one by one (an Apple GPU, a host probed before cards were recorded)."""
+    index: int | None
+    name: str
+    memory_gb: float
 
 
 @dataclass
@@ -38,8 +48,91 @@ class Capabilities:
     cpu_cores: int
     memory_gb: float
     accelerators: set[str]             # cpu, mps, cuda
-    vram_gb: float = 0                 # CUDA: total; Apple GPU: unified memory (memory_gb)
+    vram_gb: float = 0                 # CUDA: the largest card's; Apple GPU: unified memory (memory_gb)
     tools: dict[str, str | None] = field(default_factory=dict)   # uv, ffmpeg, ffprobe -> path or None
+    gpus: list[Gpu] = field(default_factory=list)   # every NVIDIA card; empty on a Mac, and for a host probed before
+
+    def devices(self) -> list[Gpu]:
+        """What GPU nodes are placed on, one at a time for an exclusive node (scheduler.card_for): each card when the
+        cards are known, else the machine's GPU as one (index None), which is how every machine was counted before the
+        cards were: one exclusive node at a time on it, its memory not divided."""
+        return list(self.gpus) or [Gpu(None, "", self.vram_gb)]
+
+    @classmethod
+    def from_json(cls, d: dict) -> "Capabilities":
+        """As to_json (or a host saved before cards were recorded: no `gpus`) wrote it."""
+        return cls(**{**d, "accelerators": set(d["accelerators"]), "gpus": [Gpu(**g) for g in d.get("gpus", [])]})
+
+    def to_json(self) -> dict:
+        return {**asdict(self), "accelerators": sorted(self.accelerators)}
+
+
+# A card is leased on its machine for as long as a node runs on it, through a lock file every coordinator there honours
+# (one on this Mac and one on the lab server, or two runs started side by side): the scheduler's own count covers only
+# its run, so it only asks for a card, and the node's wrapper on the machine takes it (LEASE). In a folder of their own
+# under the user's home on that machine, whatever root a host was added with: a coordinator elsewhere and one on the
+# machine itself (NativeBackend.lease_folder) then always take the same leases. Not inside a root: ~/.cache/
+# hyperstudy-perception also holds the nodes' weights, often with no root's marker, and a root must be empty or marked
+# (hosts.PRIVATE_ROOT). The folder is private in itself (LEASE_FOLDER). Named for the machine (uname -n) as
+# well as the card: lab servers often share one home over NFS, and a card is only another machine's card of the same
+# index there. Not shared with other users of the machine (their roots are their own). flock is not fair: a node
+# waiting for an exclusive lease waits until no shared node holds the card, however long a stream of them lasts.
+GPU_LEASES = ".cache/hyperstudy-perception-gpus"   # under the home
+
+# sh that makes the lease folder ($HOME/GPU_LEASES) the user's own and private, or fails (exit 3: refused, as a root
+# that is someone else's is): only the user then writes the leases there.
+LEASE_FOLDER = r"""d="$HOME/.cache/hyperstudy-perception-gpus"
+(umask 077 && mkdir -p "$d") || exit 3
+if [ -L "$d" ] || [ "$(ls -ldn "$d" | awk '{print $3}')" != "$(id -u)" ]; then echo "$d is not your own folder" >&2; exit 3; fi
+chmod 700 "$d" || exit 3"""
+
+# perl (on every Linux server and Mac, which flock(1) is not): flock the lease <dir>/<machine>-<index>, shared for a
+# `gpu: shared` node and exclusive for a `gpu: exclusive` one, write who holds it (the run, node and attempt, and the
+# pid), then exec the node with the lock's descriptor left open ($^F: not closed on exec), so the node's process holds
+# the lease until it ends, however it ends: a lost SSH session does not end it. Opened for reading and writing: on NFS,
+# flock is an fcntl lock, and a shared one needs a descriptor that can read. A lease another node holds is waited for,
+# and the node's log says so and who holds it. The file names only the nodes holding the card now: an exclusive node
+# empties it, and a shared one keeps only the lines of nodes still running (two shared nodes taking it at the same
+# moment may each drop the other's line: the file is what is shown, the lock is what decides).
+LEASE = r"""$^F = 1023;
+my ($dir, $index, $use, $who) = splice(@ARGV, 0, 4);
+my $path = "$dir/" . (POSIX::uname())[1] . "-$index";
+open(my $lease, "+>>", $path) or die "perception: cannot open the GPU lease $path: $!\n";
+my $how = $use eq "exclusive" ? LOCK_EX : LOCK_SH;
+sub running { seek($lease, 0, 0); my @held = <$lease>; chomp(@held); return grep { /pid (\d+)$/ && kill(0, $1) } @held }
+if (!flock($lease, $how | LOCK_NB)) {
+  my @held = running();
+  print STDERR "perception: waiting for $path ($use): another node on this machine has that GPU (held by " . ($held[-1] // "a node") . ")\n";
+  flock($lease, $how) or die "perception: GPU lease $path: $!\n";
+  print STDERR "perception: $path is free: starting\n";
+}
+my @keep = $how == LOCK_EX ? () : grep { !/^exclusive / } running();
+truncate($lease, 0);
+syswrite($lease, join("", map { "$_\n" } @keep) . "$use $who pid $$\n");
+exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
+"""
+LEASE_PERL = ["perl", "-MFcntl=:flock", "-MPOSIX", "-e", LEASE]
+
+
+class LeaseRefused(PermissionError):
+    """The machine's lease folder is not the user's own (LEASE_FOLDER): the same every time, so the node fails once."""
+
+
+def lease_command(leases: str, index: int, use: str, who: str) -> list[str]:
+    """What goes before a node's command to run it holding card `index`'s lease in the folder `leases` (LEASE), as
+    `use` (shared, exclusive); `who` says which attempt holds it (run, node, attempt)."""
+    return [*LEASE_PERL, leases, str(int(index)), use, who]
+
+
+def holder(request: dict) -> str:
+    """Who a node's lease says holds it (lease_command's `who`): its run, node and attempt."""
+    return f"run {request['run']} node {request['node']} attempt {request['attempt']}"
+
+
+def gpu_env(index: int | None) -> dict[str, str]:
+    """The environment that confines a node to one card: nvidia-smi's index, in its order (Gpu). Nothing for the
+    machine's GPU as one: the node sees every card, as before."""
+    return {} if index is None else {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": str(int(index))}
 
 
 @dataclass
@@ -167,7 +260,9 @@ class Backend(ABC):
     def stage_inputs(self, attempt_dir: Path, inputs: dict[str, Artifact]) -> dict[str, dict]: ...
 
     @abstractmethod
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str]) -> dict: ...
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+        """`gpu`: the card the scheduler gave the node on its machine (Gpu.index), which it is to see alone (gpu_env);
+        None: no card of its own (no GPU, or the machine's GPU as one)."""
 
     @abstractmethod
     def poll(self, handle: dict) -> str: ...

@@ -168,6 +168,16 @@ def removal_at_boot(at: int, start: str) -> str:
     return f"nohup sh -c {shlex.quote(removal)} perception-deadline > /dev/null 2>&1 & exec {start}"
 
 
+def running_sh(pid: int, request: str) -> str:
+    """sh that succeeds while the node `pid` runs: its process is there, and its command line names its request (pids
+    are reused), or is empty for the moment: Linux shows no command line while a process execs (measured on
+    liquidswords2: about 1% of reads during a chain of execs), and the node is reached through several (setsid, the
+    GPU lease's perl, env, uv), so a check that lands in one must not take the node for gone. ps names such a process
+    in brackets ("[perl]"), as it does a zombie, which ends a poll later."""
+    return (f"kill -0 {int(pid)} 2>/dev/null && {{ c=$(ps -ww -p {int(pid)} -o command= 2>/dev/null); "
+            f"printf '%s' \"$c\" | grep -qF -- {shlex.quote(request)} || case \"$c\" in '['*|'') true;; *) false;; esac; }}")
+
+
 def say(msg: str):
     print(f"[remote] {msg}", flush=True)
 
@@ -288,14 +298,18 @@ class Driver:
     def node_python(self) -> str:
         """sh for the node's Python on the host: its environment's (uv run --no-sync: prepare synced it, and the SDK, left
         out of it, would otherwise be installed into the shared environment from wherever this code is), with the SDK
-        from this code's own folder."""
+        from this code's own folder, and only the card the scheduler gave it (CUDA_VISIBLE_DEVICES)."""
+        from .backends.base import gpu_env
         from .backends.remote import SDK_SOURCE
         q, s = shlex.quote, self.spec
+        env = gpu_env(s.get("gpu"))
         if s["runner_kind"] == "self":
-            return q(s["python"])
+            python = q(s["python"])
+        else:
+            env["PYTHONPATH"] = f"{self.code}/{SDK_SOURCE}"
+            python = f"{q(s['uv'])} run --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-sync python"
         # through env(1): the node's command follows nohup and setsid in start, where an assignment would be a command
-        return (f"env PYTHONPATH={q(self.code + '/' + SDK_SOURCE)} "
-                f"{q(s['uv'])} run --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-sync python")
+        return ("env " + "".join(f"{k}={q(v)} " for k, v in env.items()) if env else "") + python
 
     def send_inputs(self) -> dict[str, dict]:
         """Each input as objects/<sha256>/data on the host, published in one step (PUBLISH): nodes on the host at the
@@ -335,6 +349,17 @@ class Driver:
         request = {**self.request, "inputs": {k: {x: y for x, y in v.items() if x != "object"} for k, v in inputs.items()},
                    "out_dir": f"{self.attempt}/out"}
         node = f"{self.node_python()} {q(s['entry'])}"
+        leases = ""
+        if s.get("gpu") is not None and s.get("gpu_use", "none") != "none":
+            # the card held against every other run there for as long as the node runs (GPU_LEASES): a card another
+            # coordinator's node has is waited for, in the node's log
+            # under the user's home on the host, whatever root this host was added with, as for a coordinator running
+            # there (NativeBackend.lease_folder): both take the same leases. Private in itself (LEASE_FOLDER).
+            from .backends.base import GPU_LEASES, LEASE_FOLDER, LEASE_PERL, holder
+            folder = f'"$HOME"/{q(GPU_LEASES)}'
+            node = (" ".join(q(x) for x in LEASE_PERL) + f" {folder} {int(s['gpu'])} {q(s['gpu_use'])} {q(holder(self.request))} "
+                    + node)
+            leases = f"( {LEASE_FOLDER} )"
         req = f"{self.attempt}/request.json"
         path = ":".join(s["path"])
         links = "\n".join(f"mkdir -p {q(self.attempt)}/in/{q(name)} && ln -sfn {q(v['object'])} {q(v['path'])}"
@@ -355,6 +380,7 @@ for f in {q(self.node_runs)}/*/pid; do
   fi
 done
 mkdir -p {q(self.attempt)}/out
+{leases}
 {links}
 cat > {q(req)}
 {heartbeat_sh(self.attempt)}
@@ -373,7 +399,7 @@ echo $pid
 """
         out = self.sh(script, data=json.dumps(request, indent=1).encode())
         self.pid = int(out.stdout.decode().split()[-1])
-        say(f"started on {s['host']} (pid {self.pid})")
+        say(f"started on {s['host']} (pid {self.pid}" + (f", GPU {s['gpu']})" if s.get("gpu") is not None else ")"))
 
     def unreachable(self, e: Exception):
         """Wait out a host that cannot be reached, for up to lost_after_s in all since it was last reached; past that,
@@ -438,7 +464,7 @@ echo $pid
         while True:
             # the heartbeat first: the host's watchdog ends a node no driver has asked about for too long
             check = (f"{heartbeat_sh(self.attempt)}; "
-                     f"if kill -0 {self.pid} 2>/dev/null && ps -ww -p {self.pid} -o command= | grep -qF -- {q(req)}; "
+                     f"if {running_sh(self.pid, req)}; "
                      f"then echo running; else echo exited; fi; tail -c +{offset + 1} {q(log)} 2>/dev/null || true")
             try:
                 out = self.sh(check).stdout
