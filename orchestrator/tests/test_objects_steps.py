@@ -66,6 +66,14 @@ def test_the_graph_keeps_one_objects_step_that_brings_the_others(registry):
     assert not {n["id"] for n in only(doc, ["gaze"], registry)["nodes"]} & {"objects", "objects_track", "objects_names"}
 
 
+def test_the_names_and_track_steps_are_steps_of_objects(registry):
+    """What the app shows as one feature, Objects: the names and track steps say they are its (part_of), and objects is
+    a feature of its own. The plan's part_of, in the graph's ids, is test_cli's."""
+    names, track, link = (registry.get(ref) for ref in STEPS)
+    assert (names.part_of, track.part_of, link.part_of) == ("vision.objects", "vision.objects", None)
+    assert [m.id for m in registry if m.part_of] == ["vision.objects-names", "vision.objects-track"]
+
+
 def vocabulary(tmp_path, doc) -> list[str]:
     path = tmp_path / "vocabulary.json"
     path.write_text(json.dumps(doc))

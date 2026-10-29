@@ -4,6 +4,8 @@
 id: vision.objects-track
 version: 1.0.0
 title: Object tracks
+# a step of the objects feature: the app shows the three as one, Objects, and runs them together
+part_of: vision.objects
 description: The named things and the clothing on every posed person (SAM 3 inside each body's box), outlined and tracked within shots by SAM 3 with no people inside an object's outline, and embedded by DINOv3, for the objects layer
 inputs:
   vocabulary: vocabulary.v1

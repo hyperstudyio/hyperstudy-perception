@@ -1,0 +1,18 @@
+id: test.part
+version: 1.0.0
+title: A step of work
+description: test.work as a step of the test.work node it feeds (part_of), as the objects names and track steps are of objects
+part_of: test.work
+inputs: {a: json.v1}
+outputs: {out: json.v1}
+config:
+  add: {type: number, default: 1}
+  sleep: {type: number, default: 0}
+  fail: {enum: [none], default: none}
+  fail_until: {type: integer, default: 0}
+  record_dir: {type: string}
+runners:
+  - {kind: self, entry: ../work/node.py}
+resources: {cpu_cores: 1, memory_gb: 0.1}
+models:
+  - {id: test-model, licence_mode: commercial-ok}

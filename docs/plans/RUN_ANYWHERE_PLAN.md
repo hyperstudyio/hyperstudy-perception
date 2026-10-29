@@ -59,7 +59,9 @@ Ranked by measured effect on OOO (2-minute clip):
    wearer's face) and `ANTHROPIC_API_KEY`. Cost: names and link each declare their own (`per: minute` of media, as
    1.1.0 does), track none; the same test checks that the two add up to at least 1.1.0's. Under B the captions
    step's estimate is measured again, since each call returns more.
-   The objects layer and the app are unchanged. Parity: output diff against the unsplit 1.1.0 on OOO, on the lab.
+   The objects layer and the app are unchanged: the names and track steps declare `part_of: vision.objects`, and the
+   app shows the three as one feature, Objects, in Settings and Extract (docs/cli-json.md). Parity: output diff against
+   the unsplit 1.1.0 on OOO, on the lab.
 
    **1b. Where the names come from: measured, then chosen.**
 

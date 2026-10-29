@@ -200,7 +200,7 @@ def plan_json(p) -> dict:
               "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
               "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
               "needs": n.needs, "optional_needs": n.optional_needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
-              "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
+              "part_of": n.part_of, "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
              for n in p.nodes]
     return {"ok": p.ok, "nodes": nodes, "places": p.places, "max_cost_usd": p.max_cost_usd, "estimated_usd": round(sum(n.cost_usd for n in p.nodes if not n.cached), 4)}
 
@@ -263,7 +263,7 @@ def cmd_nodes(args):
     for m in reg:
         options, why = coord.placements(m)
         nodes.append({
-            "ref": m.ref, "id": m.id, "version": m.version, "stage": m.stage or m.id, "description": m.description,
+            "ref": m.ref, "id": m.id, "version": m.version, "stage": m.stage or m.id, "part_of": m.part_of, "description": m.description,
             "inputs": m.inputs, "optional_inputs": m.optional_inputs, "outputs": m.outputs, "config": m.config, "places": [p.label for p in options], "why_not": why,
             "cost": m.cost.model_dump() if m.cost else None, "uploads": list(m.privacy.external_upload), "secrets": m.secrets,
             "models": [x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for x in m.models],
@@ -284,7 +284,7 @@ def cmd_models(args):
         from .plan import settings
         emit("models", models=[{"node": m.ref, **x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"})}
                                for m in reg for x in m.models],
-             nodes=[{"node": m.ref, "title": m.title, "service": m.service, "secrets": list(m.secrets),
+             nodes=[{"node": m.ref, "title": m.title, "service": m.service, "part_of": m.part_of, "secrets": list(m.secrets),
                      "settings": settings(m, {k: s.get("default") for k, s in m.config.items()})} for m in reg])
         return 0
     for m in reg:
