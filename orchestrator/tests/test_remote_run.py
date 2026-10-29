@@ -778,6 +778,10 @@ def test_a_host_used_once_is_swept_too(tmp_path, lab, capsys):
     Hosts(tmp_path / "mac").set("lab", keep_days=3 / 86400)            # three seconds
     run_id = finished_run(tmp_path, capsys, rec)
     store = Store(host_root(lab) / "coordinator")
+    time.sleep(2)
+    assert store.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone()   # within the grace after its end
+    import perception.remote_coordinator as rc
+    store.db.execute("UPDATE runs SET finished_at = finished_at - ? WHERE id=?", (rc.PRUNE_GRACE_S + 60, run_id))
     assert wait_for(lambda: not store.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone(), timeout=20)
     assert not (host_root(lab) / "coordinator" / "work" / run_id).exists()
 
@@ -1120,3 +1124,45 @@ def test_a_recorded_interpreter_is_used_only_from_the_roots_own_environments(tmp
     remote_run.record(run_id).write_text(json.dumps({**mine, "interpreter": str(envs / "python")}))
     remote.use_copy_of(run_id)
     assert remote.__dict__.get("interpreter") == str(envs / "python") and remote.__dict__.get("copy") == mine["copy"]
+
+
+# --- lab check (d): the sweeper's retention -------------------------------------------------------------------------
+
+def ended_run(store: Store, run: str, ago_s: float):
+    store.db.execute("INSERT INTO runs (id, pipeline, graph, inputs, status, created_at, finished_at, max_cost_usd) "
+                     "VALUES (?,?,?,?,?,?,?,?)", (run, "t", "{}", "{}", "succeeded", time.time() - ago_s - 60,
+                                                  time.time() - ago_s, 0.0))
+
+
+def test_a_running_sweeper_takes_a_retention_changed_after_it_started(tmp_path):
+    """Lab check (d): a sweeper started under 7 days kept them, holding the one-sweeper lock, so a host set to keep
+    nothing longer kept ended runs for up to a week. It reads the host's retention (holds/.retention, as `hosts set`
+    and every start write it) on every pass."""
+    root = tmp_path / "root"
+    home = root / "coordinator"
+    store = Store(home)
+    ended_run(store, "20261029-120000-abcdef", ago_s=3 * 3600)        # ended three hours ago
+    env = {**os.environ, "PERCEPTION_HOME": str(home)}
+    sweeper = subprocess.Popen([sys.executable, "-m", "perception.remote_coordinator", "sweep", "--keep-s", str(7 * 86400)],
+                               env=env, cwd=home)
+    try:
+        time.sleep(3)
+        assert store.db.execute("SELECT 1 FROM runs").fetchone()       # within 7 days: kept
+        (root / "holds").mkdir()
+        (root / "holds" / ".retention").write_text("0 -1\n")          # `hosts set NAME --keep-days 0`
+        assert wait_for(lambda: not store.db.execute("SELECT 1 FROM runs").fetchone(), timeout=15)
+        assert sweeper.wait(timeout=15) == 0                           # nothing left: it ends
+    finally:
+        sweeper.kill()
+
+
+def test_an_ended_run_is_kept_a_while_whatever_the_retention(tmp_path, monkeypatch):
+    """Lab check (d): with nothing kept, a run's own sweeper removed it before its attach read its end ("no run on this
+    host"). A run is never pruned within PRUNE_GRACE_S of its end (or of its last activity, for one whose coordinator
+    died), so an attach or a fetch right after it ends finds it."""
+    import perception.remote_coordinator as rc
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "root" / "coordinator"))
+    store = Store(tmp_path / "root" / "coordinator")
+    ended_run(store, "20261029-120000-aaaaaa", ago_s=5)
+    ended_run(store, "20261029-120000-bbbbbb", ago_s=rc.PRUNE_GRACE_S + 60)
+    assert rc.prune(store, 0, None) == ["20261029-120000-bbbbbb"]

@@ -172,6 +172,31 @@ def locked(path: Path, shared: bool = False):
 
 
 PRUNE_LOCK = ".prune"   # in the coordinator's store (home())
+# how long after its end (or its last activity) a run is kept whatever the retention: an attach or a fetch of it right
+# after it ends must find it (lab check (d): with nothing kept, a run's own sweeper removed it before its attach read it)
+PRUNE_GRACE_S = 600
+# the host's retention, as `perception hosts set` and every start there write it (remote_driver's sweeper reads the same
+# file, for what the host keeps for steps): "<keep seconds> <free KB, or -1 for the default>"
+RETENTION = "holds/.retention"   # in the host's root (root())
+
+
+def retention(keep_s: float, min_free_gb: float | None) -> tuple[float, float | None]:
+    """The host's retention now (RETENTION), or `keep_s` and `min_free_gb` where it has none that can be read."""
+    try:
+        keep, free = (root() / RETENTION).read_text().split()[:2]
+        keep_s, free_kb = float(keep), float(free)
+        return max(0.0, keep_s), None if free_kb < 0 else free_kb / 2**20
+    except (OSError, ValueError):
+        return keep_s, min_free_gb
+
+
+def write_retention(keep_s: float, min_free_gb: float | None):
+    """The host's retention, for the sweepers here (both this one and remote_driver's), as a start was told it."""
+    folder = root() / "holds"
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = folder / f".retention.{os.getpid()}"
+    tmp.write_text(f"{int(keep_s)} {-1 if min_free_gb is None else round(min_free_gb * 2**20)}\n")
+    os.replace(tmp, folder / ".retention")
 
 
 def alive(run: str) -> bool:
@@ -300,12 +325,13 @@ def _prune(store: Store, keep_s: float, min_free_gb: float | None, starting: str
         return []
     disk = _shutil.disk_usage(store.root)
     need = (min(MIN_FREE_GB, disk.total / 2**30 / 10) if min_free_gb is None else min_free_gb) * 2**30
-    gone = [run for run, ended in runs if ended < time.time() - keep_s]
+    # never within the grace after its end, whatever the retention: an attach or a fetch right after it finds it
+    gone = [run for run, ended in runs if ended < time.time() - max(keep_s, PRUNE_GRACE_S)]
     short = disk.free < need
     for run, ended in runs:   # oldest first, while the disk is short (one more each time: the next prune looks again)
         if not short:
             break
-        if run not in gone and ended < time.time() - 3600:   # never one that ended (or went quiet) within the hour
+        if run not in gone and ended < time.time() - max(3600, PRUNE_GRACE_S):   # never one that ended (or went quiet) within the hour
             gone.append(run)
             short = False
     if not gone:
@@ -341,25 +367,38 @@ def _prune(store: Store, keep_s: float, min_free_gb: float | None, starting: str
 def cmd_sweep(args) -> int:
     """The host's sweeper for runs coordinated here (prune), as a host has one for what it keeps for steps (remote_driver
     SWEEP): started detached by each coordinator as it ends, one at a time (a lock it holds while it lives), it prunes
-    every hour (or half the keep period, if shorter) and ends once no ended run is left, so a host used once is cleaned
-    too."""
+    every hour (or half the keep period, if shorter), with the host's retention as it is at each pass (RETENTION), and
+    ends once no ended run is left, so a host used once is cleaned too."""
     import fcntl
     fd = os.open(home() / ".sweeper", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return 0   # one is running
-    every = max(1.0, min(3600.0, args.keep_s / 2))
     while True:
         if not (home() / "perception.db").is_file():
             return 0   # the store is gone (hosts clean): nothing to sweep, and not to be made again
+        # the host's retention as it is now, never the one it was started with: one changed since (hosts set, or a start
+        # told another) applies at once (lab check (d))
+        keep_s, min_free_gb = retention(args.keep_s, args.min_free_gb)
         store = Store(home())
-        prune(store, args.keep_s, args.min_free_gb)
+        prune(store, keep_s, min_free_gb)
         left = store.db.execute("SELECT 1 FROM runs").fetchone()
         store.close()
         if not left:
             return 0
-        time.sleep(every)
+        # the next pass in an hour (or half the keep period, if shorter), or as soon as the retention changes
+        said = _said()
+        deadline = time.time() + max(1.0, min(3600.0, keep_s / 2))
+        while time.time() < deadline and _said() == said:
+            time.sleep(1)
+
+
+def _said() -> str:
+    try:
+        return (root() / RETENTION).read_text()
+    except OSError:
+        return ""
 
 
 def sweeper(keep_s: float, min_free_gb: float | None, nodes: list[str]):
@@ -390,6 +429,7 @@ def cmd_start(args) -> int:
     from .hosts import KEEP_DAYS
     keep_s, min_free = spec.get("keep_s", KEEP_DAYS * 86400), spec.get("min_free_gb")
     if _number_ok(keep_s) and (min_free is None or _number_ok(min_free)):
+        write_retention(float(keep_s), min_free)   # for the sweepers here: the host's retention as this start was told it
         for gone in prune(Store(home()), float(keep_s), min_free, starting=run):
             print(f"removed run {gone}: it ended more than the host's keep days ago (or its disk is short)", file=sys.stderr)
     with locked(home() / PRUNE_LOCK, shared=True), locked(folder / ".lock"):
