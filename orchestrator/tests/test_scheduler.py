@@ -473,6 +473,43 @@ def test_a_live_node_is_recognised_however_long_its_request_path(tmp_path):
         proc.wait()
 
 
+def test_an_adopted_node_caught_between_two_execs_is_still_running(tmp_path, monkeypatch):
+    """A coordinator that restarts adopts the nodes the last one started, and polls them by pid and command line. Linux
+    shows no command line while a process execs (the GPU lease's perl, then uv, then python): read then, the node looked
+    gone, its attempt had no response, and it was run a second time beside the first. No command line counts as running
+    (remote_driver.running_sh's rule); one naming another request is still a reused pid."""
+    import perception.backends.native as native
+    request = str(tmp_path / "work" / "r" / "a" / "1" / "request.json")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        for shown, alive in [("", True), ("[perl]", True), ("[python3] <defunct>", True),
+                             (f"python node.py --request {request}", True),
+                             ("python other.py --request /elsewhere/request.json", False)]:
+            monkeypatch.setattr(native.subprocess, "run", lambda *a, _s=shown, **k: subprocess.CompletedProcess(a, 0, _s + "\n", ""))
+            assert native._alive(proc.pid, request) is alive, shown
+        # ps finds no such process (it ended between the two checks): gone
+        monkeypatch.setattr(native.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", ""))
+        assert native._alive(proc.pid, request) is False
+    finally:
+        monkeypatch.undo()
+        proc.kill()
+        proc.wait()
+    assert native._alive(proc.pid, request) is False   # really gone
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="procps shows a zombie's command line in brackets")
+def test_a_zombie_counts_as_running_until_it_is_reaped(tmp_path):
+    from perception.backends.native import _alive
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    deadline = time.time() + 10
+    while time.time() < deadline and "Z" not in subprocess.run(["ps", "-o", "stat=", "-p", str(proc.pid)],
+                                                               capture_output=True, text=True).stdout:
+        time.sleep(0.05)
+    assert _alive(proc.pid, str(tmp_path / "request.json"))   # no command line: not taken for gone yet
+    proc.wait()
+    assert not _alive(proc.pid, str(tmp_path / "request.json"))
+
+
 def test_a_recorded_handle_is_trusted_only_for_its_own_attempt(tmp_path):
     """The node can write in its attempt folder: a handle naming another request or a strange pid steers nothing."""
     attempt = tmp_path / "attempt"

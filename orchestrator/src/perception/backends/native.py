@@ -145,7 +145,15 @@ class SelfBackend(NativeBackend):
 
 
 def _alive(pid: int, request: str) -> bool:
-    """Is `pid` still the node process for this request? (pids are reused, so check its command line too.)"""
+    """Is `pid` still the node process for this request? (pids are reused, so check its command line too.)
+
+    The rule a host's check uses (remote_driver.running_sh): a command line that names the request, or none for the
+    moment. Linux shows no command line while a process execs, and a node on a known card is reached through several
+    (the GPU lease's perl, then uv, then python). A coordinator that adopted such a node after a restart (not its child,
+    so only this check sees it) and polled it mid-exec took it for gone, found no response and ran it again beside the
+    one still running. ps names a process with no command line in brackets ("[perl]"), as it does a zombie, which is
+    gone a poll later (an adopted node's parent is init, which reaps it). A command line naming anything else is a
+    reused pid."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -155,4 +163,7 @@ def _alive(pid: int, request: str) -> bool:
     # -ww: unlimited width (procps truncates columns to 80 characters when not writing to a terminal, and a long request
     # path then made a live node look dead)
     out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
-    return request in out.stdout
+    if out.returncode:   # no such process any more: it ended between the two checks
+        return False
+    command = out.stdout.strip()
+    return request in command or command == "" or command.startswith("[")
