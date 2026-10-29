@@ -80,7 +80,7 @@ class NativeBackend(Backend):
 
     def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
         request = attempt_dir / "request.json"
-        env = {**env, **(env_vars(runner.env) if self.kind == "native" and runner.env else {})}   # the package's: in the store
+        env = {**env, **self.project_env(runner)}
         env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
         command = self.command(manifest, runner, request)
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
@@ -97,6 +97,10 @@ class NativeBackend(Backend):
         tmp.write_text(json.dumps(handle))
         os.replace(tmp, attempt_dir / "handle.json")
         return handle
+
+    def project_env(self, runner: Runner) -> dict[str, str]:
+        """What the node's environment needs set: for the package, where uv makes it (in the store)."""
+        return env_vars(runner.env) if self.kind == "native" and runner.env else {}
 
     def lease_folder(self) -> Path:
         """Where this machine's cards are leased (GPU_LEASES, under this user's home): the folder a coordinator elsewhere
@@ -145,14 +149,38 @@ class SelfBackend(NativeBackend):
 
 
 def _alive(pid: int, request: str) -> bool:
-    """Is `pid` still the node process for this request? (pids are reused, so check its command line too.)"""
+    """Is `pid` still the node process for this request? (pids are reused, so check its command line too.)
+
+    The rule a host's check uses (remote_driver.running_sh): a command line that names the request, or none for the
+    moment. Linux shows no command line while a process execs, and a node on a known card is reached through several
+    (the GPU lease's perl, then uv, then python). A coordinator that adopted such a node after a restart (not its child,
+    so only this check sees it) and polled it mid-exec took it for gone, found no response and ran it again beside the
+    one still running. ps names a process with no command line in brackets ("[perl]"), as it does a zombie and a kernel
+    thread, which are not running nodes (_shown). A command line naming anything else is a reused pid."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return False
-    # -ww: unlimited width (procps truncates columns to 80 characters when not writing to a terminal, and a long request
-    # path then made a live node look dead)
-    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
-    return request in out.stdout
+    command = _shown(pid)
+    return command is not None and (request in command or command == "")
+
+
+def _shown(pid: int) -> str | None:
+    """`pid`'s command line as ps shows it, "" while it has none for the moment (mid-exec), or None when there is no such
+    process, it has ended (a zombie: its node has finished, whether or not anything reaps it), or it is a kernel thread
+    (shown in brackets as a process with no command line is: a pid reused by one is never a node; their parent is
+    kthreadd, pid 2, or none). -ww: unlimited width (procps truncates columns to 80 characters when not writing to a
+    terminal, and a long request path then made a live node look dead)."""
+    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "stat=", "-o", "command="],
+                         capture_output=True, text=True)
+    if out.returncode:   # no such process any more
+        return None
+    fields = out.stdout.strip().split(None, 2)
+    ppid, state, command = (fields + ["", "", ""])[:3]
+    if state.startswith("Z"):
+        return None
+    if command == "" or command.startswith("["):
+        return None if ppid in ("0", "2") else ""
+    return command

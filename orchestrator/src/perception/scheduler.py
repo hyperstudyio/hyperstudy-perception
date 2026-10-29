@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import stat
 import time
 import uuid
@@ -112,6 +113,15 @@ class LeaseHeld(RuntimeError):
     pass
 
 
+# what new_run_id makes; a run id another machine sends (remote_coordinator) must be one, since it names folders there
+RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
+
+
+def new_run_id() -> str:
+    """A run's id: when it was made, and six random hex digits (RUN_ID matches every one)."""
+    return time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+
+
 @dataclass
 class Placement:
     backend: Backend
@@ -134,10 +144,11 @@ class Coordinator:
 
     # --- runs -----------------------------------------------------------------------------------------------
 
-    def create_run(self, graph: Graph, graph_doc: dict, allow_uploads: bool = False) -> str:
+    def create_run(self, graph: Graph, graph_doc: dict, allow_uploads: bool = False, run_id: str | None = None) -> str:
         """A run of `graph`. `allow_uploads`: its nodes may send data off the machine (within the graph's
-        policy.allow_upload); without it a node that would is failed before it starts, whenever it comes to run."""
-        run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        policy.allow_upload); without it a node that would is failed before it starts, whenever it comes to run.
+        `run_id`: one chosen elsewhere (new_run_id), for a run another machine started here (remote_coordinator)."""
+        run_id = run_id or new_run_id()
         inputs = {name: self._graph_input(graph, name).to_json() for name in graph.spec.inputs}
         with self.store.tx() as db:
             db.execute("INSERT INTO runs (id, pipeline, graph, graph_path, inputs, status, created_at, max_cost_usd, allow_uploads) VALUES (?,?,?,?,?,?,?,?,?)",

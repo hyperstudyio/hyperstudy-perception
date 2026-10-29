@@ -13,7 +13,9 @@
     perception artifacts RUN_ID
     perception export RUN_ID --format bundle --output DIR
     perception hosts add NAME USER@HOST [--root DIR] [--keep-days N] | list | check NAME | remove NAME | clean NAME [--expired]
-    perception hosts set NAME [--keep-days N] [--min-free-gb N]
+    perception hosts set NAME [--keep-days N] [--min-free-gb N] | keys NAME on|off
+    perception remote run HOST GRAPH.yaml [as run, and --run-id ID --dry-run --detach] | status HOST [RUN_ID]
+                      | attach HOST RUN_ID | fetch HOST RUN_ID [--output DIR]
     perception cloud on | off | status [aws | runpod]
     perception keys set NAME | list | remove NAME | check NAME
     perception setup [GRAPH.yaml] [--only NODE[,NODE]] [--place NODE=PLACE]
@@ -197,7 +199,7 @@ def graph_error(args, e: GraphError) -> int:
 def plan_json(p) -> dict:
     nodes = [{"id": n.id, "uses": n.uses, "where": n.where, "why_not": n.why_not, "cached": n.cached,
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
-              "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
+              "secrets": n.secrets, "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
               "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
               "needs": n.needs, "optional_needs": n.optional_needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
               "part_of": n.part_of, "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
@@ -521,8 +523,12 @@ def cmd_hosts(args):
             else:
                 print(f"{dest}: {caps.platform}, {caps.cpu_cores} cores, {caps.memory_gb} GB, {'/'.join(sorted(caps.accelerators))}")
             return 0
-        elif args.action in ("check", "remove", "clean", "set") and not args.name:
+        elif args.action in ("check", "remove", "clean", "set", "keys") and not args.name:
             raise HostError(f"hosts {args.action} NAME")
+        elif args.action == "keys":   # whether runs coordinated there may hold the keys their steps declare (remote_run.py)
+            if args.dest not in ("on", "off"):
+                raise HostError(f"hosts keys {args.name} on|off")
+            hosts.allow_keys(args.name, args.dest == "on")
         elif args.action == "check":
             hosts.check(args.name)
         elif args.action == "set":
@@ -566,14 +572,24 @@ def cmd_hosts(args):
                 # or the unused longest while its disk is short; never the code or environments. A node may be running.
                 script += locked(host.root, cleanup_sh(host.root, host.keep_s, host.min_free_gb, 0))
             else:
-                # not while a node runs there (an attempt's pid that is still that attempt's node); folders a cancel, a
-                # lost connection or a stop mark left are removed with the inputs and code. Inputs are read-only there
-                # (made writable to be removed); under the objects' lock, so no driver is holding one meanwhile.
+                # not while a node runs there (an attempt's pid that is still that attempt's node), nor while a run is
+                # coordinated there (remote run: its coordinator, or a node it started); folders a cancel, a lost
+                # connection or a stop mark left are removed with the inputs and code, and so are the copies of the
+                # pipeline and the store of runs coordinated there (with the results of those not fetched yet). Inputs
+                # and copies are read-only there (made writable to be removed); under the objects' lock, so no driver
+                # is holding one meanwhile.
                 script += (f'for f in {root}/work/*/*/*/pid; do [ -f "$f" ] || continue; p=$(cat "$f"); '
                            f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/pid}}/request.json"; then '
                            f'echo "a node is running there" >&2; exit 4; fi; done\n'
-                           + locked(host.root, f"chmod -R u+w {root}/objects 2>/dev/null; "
-                                               f"rm -rf {root}/objects {root}/code {root}/envs {root}/work; "
+                           f'for f in {root}/coordinator/remote/*/coordinator.pid; do [ -f "$f" ] || continue; p=$(cat "$f"); r=${{f%/coordinator.pid}}; '
+                           f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "perception.remote_coordinator serve ${{r##*/}}"; then '
+                           f'echo "a run is being coordinated there (run ${{r##*/}})" >&2; exit 4; fi; done\n'
+                           f'for f in {root}/coordinator/work/*/*/*/handle.json; do [ -f "$f" ] || continue; '
+                           f'p=$(sed -n \'s/.*"pid": *\\([0-9]*\\).*/\\1/p\' "$f"); [ -n "$p" ] || continue; '
+                           f'if ps -ww -p "$p" -o command= 2>/dev/null | grep -qF -- "${{f%/handle.json}}/request.json"; then '
+                           f'echo "a node is running there" >&2; exit 4; fi; done\n'
+                           + locked(host.root, f"chmod -R u+w {root}/objects {root}/pipelines 2>/dev/null; "
+                                               f"rm -rf {root}/objects {root}/code {root}/envs {root}/work {root}/pipelines {root}/coordinator; "
                                                # all of holds/ but the sweeper's lock: a sweeper still asleep holds it,
                                                # and a new file would let a second one start beside it
                                                f"find {root}/holds -mindepth 1 -maxdepth 1 ! -name .sweeper -exec rm -rf {{}} + 2>/dev/null; true"))
@@ -781,6 +797,153 @@ def cmd_setup(args):
     return 0 if result.ok else 1
 
 
+def cmd_remote(args):
+    """A whole run coordinated on a lab server (remote_run.py): `run` checks it may go there, sends it and follows it;
+    `status`, `attach` and `fetch` reach a run there from this machine, whether or not this machine started it."""
+    from . import remote_run
+    from .remote_driver import Unreachable
+    from .scheduler import RUN_ID, new_run_id
+    hosts = Hosts(home()).load()
+    host = hosts.get(args.host)
+
+    def problem(*problems) -> int:
+        if args.json:
+            emit("error", problems=list(problems))
+        else:
+            print("perception remote: " + shown("; ".join(problems)), file=sys.stderr)
+        return 1
+
+    if host is None:
+        return problem(f"no host {args.host!r} (perception hosts add)")
+    action = args.remote_action
+    if action != "run" and args.run_id and not RUN_ID.match(args.run_id):   # it names folders here and there
+        return problem(f"not a run id: {args.run_id!r}")
+    import subprocess
+    try:
+        remote = remote_run.Remote(host, nodes=args.nodes)
+        if action in ("status", "attach", "fetch"):   # from the copy the run started with: nothing sent to read it
+            remote.use_copy_of(args.run_id)
+        if action == "run":
+            if args.run_id and not RUN_ID.match(args.run_id):
+                return problem(f"not a run id: {args.run_id!r}")
+            reg = registry(args)
+            try:
+                graph, doc = read_graph(graph_path(args.graph), reg, args.max_cost_usd, args.input, args.place, args.only, args.set)
+            except GraphError as e:
+                return graph_error(args, e)
+            secrets = load_secrets()
+            rp = remote_run.remote_plan(host, graph, doc, secrets, args.allow_uploads)
+            run_id = args.run_id or new_run_id()
+            if Store(home()).db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone() and not remote_run.record(run_id).exists():
+                # one of this store's own runs (review of #46): it would run there, spend, and never be imported
+                return problem(f"run {run_id} is a run of this machine's, not one it started on a host" if args.run_id
+                               else f"run {run_id} exists here already: try again")
+            if args.dry_run or not rp["ok"]:
+                if args.json:
+                    emit("remote_plan", run=run_id, **rp)
+                else:
+                    for n in rp["nodes"]:
+                        print(f"{n['id']:16s} {n['uses']:28s} {n['place'] or 'on ' + host.name}"
+                              + (f"  receives {', '.join(n['secrets'])}" if n["secrets"] else ""))
+                    print(f"{host.name} receives {', '.join(rp['uploads'])}" + (f" and the keys {', '.join(rp['keys'])}" if rp["keys"] else ""))
+                    for p in rp["problems"]:
+                        print(f"cannot run there: {p}")
+                return 0 if rp["ok"] else 1
+            # said before anything starts: a start whose answer is lost is asked again with this id (--run-id)
+            if args.json:
+                emit("run.created", run=run_id, store=f"{host.name}:{remote.home}", host=host.name)
+            else:
+                print(f"run {run_id}  (on {host.name}, store {remote.home})")
+            try:
+                started = remote_run.start(remote, run_id, graph, doc, secrets, args.allow_uploads, args.allow_downloads)
+            except remote_run.RemoteError as e:
+                if args.json and getattr(e, "answer", {}).get("plan"):
+                    emit("plan", **e.answer["plan"])   # the host's own plan: why it would not run there
+                return problem(*e.problems)
+            if args.json:
+                emit("remote_started", run=run_id, host=host.name, started=started["started"],
+                     resumed=started.get("resumed", False), status=started["status"])
+            else:
+                print(("started" if started["started"] and not started.get("resumed") else "resumed" if started["started"]
+                       else f"already {started['status']}") + f" on {host.name}")
+            if args.detach:
+                return 0
+            return _remote_follow(args, remote, run_id, announce=False)
+        if action == "attach":
+            return _remote_follow(args, remote, args.run_id, announce=True)
+        if action == "status":
+            got = remote.call("status", *([args.run_id] if args.run_id else []))
+            if args.json:
+                if args.run_id:
+                    emit("status", host=host.name, coordinator=got["coordinator"], **got["status"])
+                else:
+                    emit("runs", host=host.name, runs=got["runs"])
+                return 0
+            if args.run_id:
+                s = got["status"]
+                print(shown(f"{s['run']}  {s['pipeline']}  {s['status']} on {host.name} (coordinator {got['coordinator']})  "
+                            f"spent ${s['spent_usd']:.2f} of ${s['max_cost_usd']:.2f}"))
+                for t in s["tasks"]:
+                    print(shown(f"  {t['node']:16s} {t['state']:10s} attempt {t['attempt']}  {t['runner'] or '':12s}"
+                                + (f"  {t['error_code']}: {t['error']}" if t["state"] == "failed" else "")))
+            else:
+                for r in got["runs"]:
+                    print(shown(f"{r['run']}  {r['pipeline']:20s} {r['status']:10s} coordinator {r['coordinator']}"))
+            return 0
+        if action == "fetch":
+            out = Path(args.output) if args.output else home() / "bundles" / args.run_id
+            got = remote_run.fetch(remote, args.run_id, out.expanduser().resolve())
+            if args.json:
+                emit("fetched", **got)
+            else:
+                print(f"imported run {got['run']} from {host.name}: {got['tasks']} tasks, {got['cache_added']} cache rows "
+                      f"({got['cache_kept']} kept as they were here), {got['objects']} objects"
+                      + (f"; bundle in {got['path']}" if got["path"] else f"; no bundle ({got['bundle_problem'] or 'the run did not succeed'})"))
+            return 0
+    except remote_run.RemoteError as e:
+        return problem(*e.problems)
+    except Unreachable as e:
+        return problem(f"{host.name} cannot be reached: {e}")
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:   # a link git tracks, a file gone, a host too slow
+        return problem(f"{type(e).__name__}: {e}")
+    return 1
+
+
+def shown(text) -> str:
+    """Text a host sent, as text mode prints it: control characters escaped (a tampered host could send terminal
+    escapes: OSC 52 sets the clipboard). --json escapes them already (code review of #46)."""
+    return "".join(c if c.isprintable() or c == " " else repr(c)[1:-1] for c in str(text))
+
+
+def _remote_follow(args, remote, run_id: str, announce: bool) -> int:
+    """A run there, followed as `run` follows its own: run.created (when attaching), each event, then run.finished."""
+    from . import remote_run
+    if announce:
+        if args.json:
+            emit("run.created", run=run_id, store=f"{remote.host.name}:{remote.home}", host=remote.host.name)
+        else:
+            print(f"run {run_id}  (on {remote.host.name}, store {remote.home})")
+
+    def show(e):
+        if args.json:
+            emit("event", run=run_id, node=e["node"], kind=e["kind"], message=e["message"], at=e["at"], host=remote.host.name)
+        else:
+            print(shown(f"  {(e['at'] or '')[11:19]} {e['node'] or '':14s} {e['kind']:16s} {e['message']}"))
+    try:
+        status = remote_run.follow(remote, run_id, show)
+    except remote_run.RemoteError as e:
+        if args.json:
+            emit("error", problems=e.problems)
+        else:
+            print(shown(f"perception remote: {e}"), file=sys.stderr)
+        return 1
+    if args.json:
+        emit("run.finished", run=run_id, status=status, host=remote.host.name)
+    else:
+        print(shown(f"run {run_id} on {remote.host.name}: {status}"))
+    return 0 if status == "succeeded" else 1
+
+
 def cmd_export(args):
     coord = coordinator(args)
     out = export_mod.bundle(coord, args.run_id, Path(args.output))
@@ -847,12 +1010,14 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("--allow-uploads", action="store_true", help="let the run's nodes send data off this machine from now on")
     rr.set_defaults(fn=cmd_rerun)
     h = sub.add_parser("hosts", help="lab servers nodes can run on, over SSH")
-    h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe", "set"],
-                   help="clean: remove the inputs, the outputs of nodes that ran there and the code kept on a host "
-                        "(--expired: only what has gone unused for the host's keep days, or the oldest while its disk "
-                        "is short; never what a node is using). set: change --keep-days or --min-free-gb")
+    h.add_argument("action", choices=["add", "list", "check", "remove", "clean", "probe", "set", "keys"],
+                   help="clean: remove the inputs, the outputs of nodes that ran there, the code kept on a host and the runs "
+                        "coordinated there (fetch them first) (--expired: only what has gone unused for the host's keep days, "
+                        "or the oldest while its disk is short; never what a node is using). set: change --keep-days or "
+                        "--min-free-gb. keys NAME on|off: whether whole runs coordinated there (remote run) may hold the keys "
+                        "their steps declare")
     h.add_argument("name", nargs="?", help="probe: the ssh destination")
-    h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias)")
+    h.add_argument("dest", nargs="?", help="add: an ssh destination (user@host, or a ~/.ssh/config alias); keys: on or off")
     h.add_argument("--root", default=".cache/hyperstudy-perception", help="add: where on the host its files go (under its home if relative)")
     h.add_argument("--user", help="add, probe: the user to log in as, over what ~/.ssh/config says")
     h.add_argument("--port", type=int, help="add, probe: the ssh port, over what ~/.ssh/config says")
@@ -877,6 +1042,31 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
     st.add_argument("--place", action="append", metavar="NODE=BACKEND:ACCELERATOR", help="where a node runs (as for run)")
     st.set_defaults(fn=cmd_setup)
+    rm = sub.add_parser("remote", help="a whole run coordinated on a lab server: it goes on with this machine closed")
+    rsub = rm.add_subparsers(dest="remote_action", required=True)
+    rr_ = rsub.add_parser("run", help="start a run there (its keys too, if `hosts keys HOST on`), then follow it")
+    rr_.add_argument("host")
+    rr_.add_argument("graph")
+    rr_.add_argument("--max-cost-usd", type=float)
+    rr_.add_argument("--input", action="append", metavar="NAME=PATH", help="set a graph input's file")
+    rr_.add_argument("--allow-downloads", action="store_true", help="let steps fetch model weights the host does not have yet")
+    rr_.add_argument("--place", action="append", metavar="NODE=native:ACCELERATOR", help="where a node runs there")
+    rr_.add_argument("--only", action="append", metavar="NODE[,NODE]", help="just these nodes and what they need")
+    rr_.add_argument("--set", action="append", metavar="NODE.KEY=VALUE", help="a node's setting (plan lists the choices)")
+    rr_.add_argument("--allow-uploads", action="store_true",
+                     help="let the host receive the video and what every step makes (within policy.allow_upload), and API steps send theirs")
+    rr_.add_argument("--run-id", help="the run's id (the one a start whose answer was lost said): attaches if it is running there")
+    rr_.add_argument("--dry-run", action="store_true", help="say what would be sent and to which steps the keys would go; send nothing")
+    rr_.add_argument("--detach", action="store_true", help="return once it has started there")
+    rr_.set_defaults(fn=cmd_remote)
+    for name, helptext in (("status", "a run there, or the runs there"), ("attach", "follow a run there until it ends"),
+                           ("fetch", "import a finished run into this store, and export its bundle here")):
+        x = rsub.add_parser(name, help=helptext)
+        x.add_argument("host")
+        x.add_argument("run_id", nargs="?" if name == "status" else None)
+        if name == "fetch":
+            x.add_argument("--output", help="where the bundle goes (default: bundles/RUN_ID in the store)")
+        x.set_defaults(fn=cmd_remote)
     ex = sub.add_parser("export")
     ex.add_argument("run_id")
     ex.add_argument("--format", choices=["bundle"], default="bundle")

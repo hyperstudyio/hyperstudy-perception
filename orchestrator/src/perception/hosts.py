@@ -32,13 +32,20 @@ by others:
                          inputs are sent: removed after it, or by the host's watchdog when no driver has asked about it
                          for a while (a finished node's results wait a day for its driver), or by the cleanup when
                          no watchdog will (no node running and no heartbeat for a day and an hour: the host restarted)
+    pipelines/<hash>/    a listed copy of the pipeline, by content, for whole runs coordinated there (`perception remote
+                         run`, remote_run.py), read-only; envs/orchestrator-<key>/ its orchestrator's environment
+    coordinator/         the store of those runs (remote_coordinator.py): their state, results and node environments,
+                         and per run (coordinator/remote/<run>/) its inputs' links, its coordinator's pid and log, and the
+                         bundle `remote fetch` exports. Whether such runs may hold the user's keys is per host, in
+                         hosts.json (`perception hosts keys NAME on|off`, off by default)
 Outside the root, ~/.cache/hyperstudy-perception-gpus/<machine>-<index> is a card's lease (backends/base.LEASE): a lock
 a GPU node holds while it runs, which every coordinator's nodes there honour (one on the host itself too, whatever root
 the host was added with), and who holds it.
 An attempt's unfinished uploads (objects/.incoming-*, code/.incoming-*, envs/.incoming-*) are removed when it ends; an
 output a host never finished keeping (objects/.keeping-*: the host restarted meanwhile) by the next keep or cleanup there
 a day later. Code and environments stay until `perception hosts clean NAME`, which removes all the root holds: inputs, the
-outputs kept there, code and environments, unless a node is running there or the root is not marked as perception's. A
+outputs kept there, code and environments, copies of the pipeline and the store of runs coordinated there, unless a
+node is running there, a run is being coordinated there, or the root is not marked as perception's. A
 host with a node running there is not removed either: that node could no longer be stopped.
 """
 
@@ -110,6 +117,9 @@ class Host:
     # how long what a host keeps (objects/) stays there unused, and the free space its cleanup keeps (None: the defaults)
     keep_days: float | None = None
     min_free_gb: float | None = None
+    # whether whole runs coordinated there (`perception remote run`) may be given the keys their steps declare: the
+    # user's explicit yes for this host (`perception hosts keys NAME on`), off until then and again when it is added anew
+    keys: bool = False
 
     @property
     def keep_s(self) -> float:
@@ -127,7 +137,7 @@ class Host:
         # a host saved before its cards were recorded has none: counted as one GPU
         caps = Capabilities.from_json({**d["caps"], "gpus": d.get("gpus", d["caps"].get("gpus", []))})
         return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"),
-                   d.get("keep_days"), d.get("min_free_gb"))
+                   d.get("keep_days"), d.get("min_free_gb"), d.get("keys") is True)
 
     def ssh(self, fresh: bool = False) -> list[str]:
         """ssh to this host: every command sent to it (probe, nodes, clean) goes through this, with its overrides.
@@ -309,6 +319,16 @@ class Hosts:
         h = hosts[name]
         hosts[name] = replace(h, keep_days=h.keep_days if keep_days is None else keep_days,
                               min_free_gb=h.min_free_gb if min_free_gb is None else min_free_gb)
+        self.save(hosts)
+        return hosts[name]
+
+    def allow_keys(self, name: str, on: bool) -> Host:
+        """Whether runs coordinated on this host may hold the keys their steps declare (remote_run.py): in memory there,
+        for the run's length, readable meanwhile by root and by processes of the same user on that machine."""
+        hosts = self.load()
+        if name not in hosts:
+            raise HostError(f"no host {name!r} (perception hosts list)")
+        hosts[name].keys = on
         self.save(hosts)
         return hosts[name]
 

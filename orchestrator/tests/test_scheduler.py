@@ -473,6 +473,50 @@ def test_a_live_node_is_recognised_however_long_its_request_path(tmp_path):
         proc.wait()
 
 
+def test_an_adopted_node_caught_between_two_execs_is_still_running(tmp_path, monkeypatch):
+    """A coordinator that restarts adopts the nodes the last one started, and polls them by pid and command line. Linux
+    shows no command line while a process execs (the GPU lease's perl, then uv, then python): read then, the node looked
+    gone, its attempt had no response, and it was run a second time beside the first. No command line counts as running
+    (remote_driver.running_sh's rule); one naming another request is still a reused pid."""
+    import perception.backends.native as native
+    request = str(tmp_path / "work" / "r" / "a" / "1" / "request.json")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        for shown, alive in [("  4711 R", True), ("  4711 S [perl]", True),
+                             (f"  4711 Ss python node.py --request {request}", True),
+                             ("  4711 S python other.py --request /elsewhere/request.json", False),
+                             # a zombie has ended, reaped or not (a coordinator that died in this process leaves one)
+                             ("  4711 Z [python3] <defunct>", False), ("  4711 Z+ (python3.12)", False),
+                             # a pid reused by a kernel thread (review of #46): its parent is kthreadd
+                             ("      2 I [kworker/3:1-events]", False), ("    0 S [kthreadd]", False)]:
+            monkeypatch.setattr(native.subprocess, "run", lambda *a, _s=shown, **k: subprocess.CompletedProcess(a, 0, _s + "\n", ""))
+            assert native._alive(proc.pid, request) is alive, shown
+        # ps finds no such process (it ended between the two checks): gone
+        monkeypatch.setattr(native.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", ""))
+        assert native._alive(proc.pid, request) is False
+    finally:
+        monkeypatch.undo()
+        proc.kill()
+        proc.wait()
+    assert native._alive(proc.pid, request) is False   # really gone
+
+
+def test_a_zombie_is_gone_whether_or_not_anything_reaps_it(tmp_path):
+    """A node whose coordinator died in this process stays its zombie (nothing waits for it): it has ended, and a
+    coordinator that adopts it must collect it, not wait for it for ever (it did on Linux, where ps shows a zombie in
+    brackets like a process mid-exec)."""
+    from perception.backends.native import _alive
+    request = str(tmp_path / "request.json")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.2)", request])
+    assert _alive(proc.pid, request)
+    deadline = time.time() + 10
+    while time.time() < deadline and "Z" not in subprocess.run(["ps", "-o", "stat=", "-p", str(proc.pid)],
+                                                               capture_output=True, text=True).stdout:
+        time.sleep(0.05)
+    assert not _alive(proc.pid, request)   # a zombie, not reaped yet
+    proc.wait()
+
+
 def test_a_recorded_handle_is_trusted_only_for_its_own_attempt(tmp_path):
     """The node can write in its attempt folder: a handle naming another request or a strange pid steers nothing."""
     attempt = tmp_path / "attempt"

@@ -27,6 +27,7 @@ class NodePlan:
     why_not: str = ""
     cached: bool = False
     downloads: list[ModelRef] = field(default_factory=list)
+    secrets: list[str] = field(default_factory=list)          # the keys it is given where it runs (its manifest's), and no other
     missing_secrets: list[str] = field(default_factory=list)
     cost_usd: float = 0.0
     cost_note: str = ""
@@ -171,6 +172,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         # the models the plan says the node uses
         loaded = m.models_for(placement.runner) if placement else m.models
         np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
+        np.secrets = list(m.secrets)
         np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(loaded)

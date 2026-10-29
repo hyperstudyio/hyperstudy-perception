@@ -1,0 +1,12 @@
+id: test.keyed
+version: 1.0.0
+description: Adds 1 to its input, as an API node would with its key; records whether it was given TEST_API_KEY (its hash, never the key)
+inputs: {a: json.v1}
+outputs: {out: json.v1}
+config:
+  record_dir: {type: string}
+runners:
+  - {kind: self, entry: node.py}
+secrets: [TEST_API_KEY]
+models:
+  - {id: test-model, licence_mode: commercial-ok}
