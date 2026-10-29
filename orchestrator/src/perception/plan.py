@@ -45,6 +45,7 @@ class NodePlan:
     outputs: dict[str, str] = field(default_factory=dict)      # name -> artifact type
     models: list[ModelRef] = field(default_factory=list)       # every model it uses (downloads: the ones not here yet)
     settings: list[dict] = field(default_factory=list)         # its fixed-choice settings: {key, description, value, choices, prices, per}
+    part_of: str | None = None                                  # the graph node whose feature it is a step of (Manifest.part_of)
 
 
 @dataclass
@@ -136,6 +137,15 @@ def settings(m, config: dict) -> list[dict]:
     return out
 
 
+def feature_of(graph: Graph, node) -> str | None:
+    """The graph node whose feature `node` is a step of: the one node using its manifest's part_of that takes its
+    outputs, directly or through other nodes. None when it is part of nothing, or the graph has no such node (or two)."""
+    if not node.manifest.part_of:
+        return None
+    found = [d for d in graph.descendants(node.id) if graph.nodes[d].manifest.id == node.manifest.part_of]
+    return found[0] if len(found) == 1 else None
+
+
 def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_uploads: bool = False) -> Plan:
     known: dict[str, dict[str, Artifact]] = {}   # node -> outputs, when its result is cached
     graph_inputs = {name: coord._graph_input(graph, name) for name in graph.spec.inputs}
@@ -165,6 +175,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(loaded)
         np.settings = settings(m, node.config)
+        np.part_of = feature_of(graph, node)
         if placement:
             inputs = {}
             for name, ref in node.inputs.items():

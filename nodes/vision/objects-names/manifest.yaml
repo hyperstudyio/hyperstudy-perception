@@ -4,6 +4,8 @@
 id: vision.objects-names
 version: 1.0.0
 title: Object names
+# a step of the objects feature: the app shows the three as one, Objects, and runs them together
+part_of: vision.objects
 service: Anthropic API
 description: The things on screen named by Claude Haiku 5.5 from each shot's keyframes (up to 8 a shot, in generic detector nouns), and each name's family, kind and whether it is worn, for the object tracks
 # media: only for the cost, which is per minute of video

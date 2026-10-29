@@ -265,6 +265,42 @@ def test_only_leaves_out_what_an_optional_input_reads_unless_it_is_chosen(home, 
     assert optional["optional_inputs"] == ["b"] and optional["inputs"] == {"a": "json.v1", "b": "json.v1"}
 
 
+def test_a_step_of_a_feature_names_it_in_nodes_models_and_the_plan(home, capsys):
+    # p (test.part, part of test.work) feeds a (test.work): the app shows them as one feature, a's
+    part = {"id": "p", "uses": "test.part@1.0.0", "inputs": {"a": "$inputs.seed"}, "config": {"record_dir": str(home / "rec")}}
+    g = graph(home, [part, work("a", home, a="$nodes.p.out"), work("d", home)])
+    assert cli("plan", str(g)) == 0
+    [plan] = lines(capsys)
+    assert {n["id"]: n["part_of"] for n in plan["nodes"]} == {"p": "a", "a": None, "d": None}
+    # no test.work that takes its outputs (or two): a step of its own
+    assert cli("plan", str(graph(home, [part, work("d", home)]))) == 0
+    assert {n["id"]: n["part_of"] for n in lines(capsys)[0]["nodes"]} == {"p": None, "d": None}
+    g = graph(home, [part, work("a", home, a="$nodes.p.out"), work("b", home, a="$nodes.p.out")])
+    assert cli("plan", str(g)) == 0
+    assert lines(capsys)[0]["nodes"][0]["part_of"] is None
+    assert cli("nodes") == 0
+    [doc] = lines(capsys)
+    assert {n["ref"]: n["part_of"] for n in doc["nodes"] if n["ref"] in ("test.part@1.0.0", "test.work@1.0.0")} == \
+        {"test.part@1.0.0": "test.work", "test.work@1.0.0": None}
+    assert cli("models", "list") == 0
+    [doc] = lines(capsys)
+    assert {n["node"]: n["part_of"] for n in doc["nodes"] if n["node"] in ("test.part@1.0.0", "test.work@1.0.0")} == \
+        {"test.part@1.0.0": "test.work", "test.work@1.0.0": None}
+
+
+def test_part_of_names_a_node_that_is_a_feature_of_its_own():
+    from perception.manifests import Manifest, Registry
+    base = {"version": "1.0.0", "outputs": {"out": "json.v1"}, "runners": [{"kind": "self", "entry": "node.py"}]}
+    feature, step = Manifest(id="f", **base), Manifest(id="s", part_of="f", **base)
+    assert Registry([feature, step]).get("s@1.0.0").part_of == "f"
+    with pytest.raises(ValueError, match="part_of names f, which no manifest defines"):
+        Registry([step])
+    with pytest.raises(ValueError, match="part_of names s, which is itself part of f"):
+        Registry([feature, step, Manifest(id="t", part_of="s", **base)])
+    with pytest.raises(ValueError, match="cannot be part of itself"):
+        Manifest(id="f", part_of="f", **base)
+
+
 def test_a_run_with_only_runs_just_those_nodes_and_keeps_the_choice_for_resume(home, capsys):
     g = graph(home, [work("a", home), work("b", home, a="$nodes.a.out"), work("d", home)])
     assert cli("run", str(g), "--only", "b") == 0

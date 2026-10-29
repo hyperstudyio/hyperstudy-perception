@@ -98,6 +98,9 @@ class Manifest(Strict):
     service: str | None = None               # the hosted API whose machines do the work ("Anthropic API"): it runs there, not here
     description: str = ""
     stage: str | None = None                 # the bundle producer's stage name (default: the node id)
+    # the node whose feature this one is a step of (vision.objects-names: vision.objects): the app shows them as one
+    # feature, by that node's title, and turns them on and off together. A node another is part of is part of none
+    part_of: str | None = None
     inputs: dict[str, str] = Field(default_factory=dict)      # name -> artifact type
     # inputs a graph may leave unconnected: the node runs without them (its request has no such input). `--only` does
     # not pull in the node that feeds one, and drops the connection when it leaves that node out: gestures and gaze take
@@ -119,6 +122,12 @@ class Manifest(Strict):
     cost: Cost | None = None
 
     directory: Path = Field(default=Path("."), exclude=True)
+
+    @model_validator(mode="after")
+    def _not_part_of_itself(self):
+        if self.part_of == self.id:
+            raise ValueError(f"part_of: {self.id} cannot be part of itself")
+        return self
 
     @model_validator(mode="after")
     def _optional_inputs_are_inputs(self):
@@ -199,6 +208,12 @@ class Registry:
             if m.ref in self.by_ref:
                 raise ValueError(f"two manifests define {m.ref}: {self.by_ref[m.ref].directory} and {m.directory}")
             self.by_ref[m.ref] = m
+        ids = {m.id: m for m in manifests}
+        for m in manifests:
+            if m.part_of and m.part_of not in ids:
+                raise ValueError(f"{m.ref}: part_of names {m.part_of}, which no manifest defines")
+            if m.part_of and ids[m.part_of].part_of:
+                raise ValueError(f"{m.ref}: part_of names {m.part_of}, which is itself part of {ids[m.part_of].part_of}")
 
     @classmethod
     def load(cls, *roots: Path) -> "Registry":
