@@ -717,3 +717,63 @@ def test_a_run_id_of_a_run_made_here_is_refused_before_anything_is_sent(tmp_path
     code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", mine)
     assert code == 1 and "a run of this machine's" in of(out, "error")[0]["problems"][0], out
     assert nothing_sent(lab) and not (lab / "argv.log").exists()
+
+
+def test_a_run_is_resumed_only_with_the_inputs_it_started_with(tmp_path, lab, capsys):
+    """Re-review of #46 (MAJOR): an input rewritten in place (the same path and name, other bytes) is another run's
+    input. A start of the run again with it is refused here, before anything is sent, and there (a host told otherwise
+    would decode the new clip under the old one's cache key); a fetch refuses a run whose input here changed."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec, sleep=4)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    assert wait_for(lambda: executions(Path(rec), "a"))
+    os.kill(int((host_root(lab) / "coordinator" / "remote" / run_id / "coordinator.pid").read_text()), 9)
+    (tmp_path / "seed.json").write_text('{"value": 5}')                # re-exported in place
+    sent = (lab / "argv.log").read_text()
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", run_id)
+    assert code == 1 and "other inputs" in of(out, "error")[0]["problems"][0], out
+    assert (lab / "argv.log").read_text() == sent
+    # the host refuses it too, told the new input's hash for the old run
+    remote = remote_run.Remote(Hosts(tmp_path / "mac").load()["lab"], nodes=[str(NODES)])
+    sha = Store(tmp_path / "mac").source(tmp_path / "seed.json", "json.v1").hash
+    remote.send_input(tmp_path / "seed.json", sha, run_id, "seed")
+    doc = json.loads(remote_run.record(run_id).read_text())["graph_doc"]
+    doc["inputs"]["seed"]["uri"] = "seed.json"
+    spec = {"run": run_id, "graph": doc, "inputs": {"seed": {"sha256": sha, "filename": "seed.json"}},
+            "allow_uploads": True, "nodes": remote.nodes, "keys": {}}
+    with pytest.raises(remote_run.RemoteError, match="other inputs"):
+        remote.call("start", data=json.dumps(spec).encode())
+
+
+def test_runs_that_ended_there_go_after_the_hosts_keep_days(tmp_path, lab, capsys, monkeypatch):
+    """Re-review of #46 (MEDIUM): what a run coordinated on a host made (face crops, transcripts, embeddings) stays in
+    the coordinator's store there only for the host's keep days, as what the host keeps for steps run there does."""
+    rec = str(tmp_path / "rec")
+    old = finished_run(tmp_path, capsys, rec)
+    store = Store(host_root(lab) / "coordinator")
+    made = [Path(a["path"]) for t in store.db.execute("SELECT outputs FROM tasks WHERE run_id=?", (old,))
+            for a in json.loads(t["outputs"]).values()]
+    assert all(p.exists() for p in made)
+    store.db.execute("UPDATE runs SET finished_at = finished_at - 8 * 86400 WHERE id=?", (old,))   # ended 8 days ago
+    graph = graph_file(tmp_path, [work("c", record_dir=rec, add=50)])   # outputs of its own: none shared with the old run
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")   # the next run there removes it
+    new = of(out, "run.created")[0]["run"]
+    assert not store.db.execute("SELECT 1 FROM runs WHERE id=?", (old,)).fetchone()
+    assert not store.db.execute("SELECT 1 FROM tasks WHERE run_id=?", (old,)).fetchone()
+    assert not any(p.exists() for p in made)
+    assert not (host_root(lab) / "coordinator" / "work" / old).exists()
+    assert not (host_root(lab) / "coordinator" / "remote" / old).exists()
+    code, out = perception(capsys, "remote", "fetch", "lab", new)      # the run that is still within its days
+    assert code == 0, out
+
+
+def test_a_host_used_once_is_swept_too(tmp_path, lab, capsys):
+    """The coordinator starts the host's sweeper for these runs as it ends: an ended run past the keep period goes with
+    no other start there."""
+    rec = str(tmp_path / "rec")
+    Hosts(tmp_path / "mac").set("lab", keep_days=3 / 86400)            # three seconds
+    run_id = finished_run(tmp_path, capsys, rec)
+    store = Store(host_root(lab) / "coordinator")
+    assert wait_for(lambda: not store.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone(), timeout=20)
+    assert not (host_root(lab) / "coordinator" / "work" / run_id).exists()

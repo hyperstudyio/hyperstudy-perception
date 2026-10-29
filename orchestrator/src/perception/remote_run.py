@@ -371,10 +371,13 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     # the graph as this machine ran it (its inputs at their paths here): what an import trusts, never the host's copy.
     # Written once: a start under the same id with another graph (another --set or --only, other inputs, another host)
     # is another run, refused before anything is sent, and never changes the record fetch checks the first one against
-    mine = {"host": remote.host.name, "inputs": here, "graph": str(graph.source or ""), "graph_doc": doc}
+    # each input by its hash too: one rewritten in place (the same path, other bytes) is another run's input, which a
+    # resumed run must never read under the first one's cache keys (re-review of #46)
+    mine = {"host": remote.host.name, "inputs": here, "input_sha256": {k: v["sha256"] for k, v in inputs.items()},
+            "graph": str(graph.source or ""), "graph_doc": doc}
     if record(run).exists():
         had = json.loads(record(run).read_text())
-        if any(had.get(k) != mine[k] for k in ("host", "inputs", "graph_doc")):
+        if any(had.get(k) != mine[k] for k in ("host", "inputs", "input_sha256", "graph_doc")):
             raise RemoteError(f"run {run} was started with another graph (or other inputs, or on another host): "
                               "a run's id names one run")
     else:
@@ -388,7 +391,9 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     declared = {s for n in graph.nodes.values() for s in n.manifest.secrets}
     keys = {k: v for k, v in secrets.items() if k in declared} if remote.host.keys else {}
     spec = {"run": run, "graph": sent, "inputs": inputs, "allow_uploads": allow_uploads, "allow_downloads": allow_downloads,
-            "nodes": remote.nodes, "keys": keys}
+            "nodes": remote.nodes, "keys": keys,
+            # the host's retention, for the runs coordinated there (remote_coordinator.prune)
+            "keep_s": remote.host.keep_s, "min_free_gb": remote.host.min_free_gb}
     data = json.dumps(spec).encode()
     del keys, spec
     return remote.call("start", data=data)
@@ -678,6 +683,8 @@ def import_run(store: Store, host: Host, run_id: str, graph: Graph, mine: dict, 
     coord = Coordinator(store, graph_registry(graph), [])
     # the graph's inputs as this machine has them: the run's input rows, and what each node's key is computed from
     sources = {name: coord._graph_input(graph, name) for name in graph.spec.inputs}
+    if {k: a.hash for k, a in sources.items()} != mine.get("input_sha256"):
+        raise RemoteError(f"run {run_id}'s inputs here are not the ones it was started with (changed since?): not imported")
     made: dict[str, dict[str, Artifact]] = {}
     verified: dict[str, str] = {}
     refused = 0

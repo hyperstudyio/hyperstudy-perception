@@ -7,6 +7,7 @@ with its RELEASE.json), with PERCEPTION_HOME set to the host's own store for suc
     python -m perception.remote_coordinator status [RUN]
     python -m perception.remote_coordinator events RUN [--after N]
     python -m perception.remote_coordinator dump RUN              what `remote fetch` imports
+    python -m perception.remote_coordinator sweep --keep-s S      started by `serve` as it ends: prune, hourly
 
 Each prints JSON objects, one per line (an internal protocol between two copies of this code: the machine that started
 the run sends its copy before every call).
@@ -48,6 +49,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from . import artifacts
 from .backends.native import NativeBackend, SelfBackend
@@ -192,13 +194,13 @@ def declared(graph) -> set[str]:
     return {s for n in graph.nodes.values() for s in n.manifest.secrets}
 
 
-def spawn(run: str, nodes: list[str], keys: dict[str, str]) -> subprocess.Popen:
+def spawn(run: str, nodes: list[str], keys: dict[str, str], retention: list[str] = ()) -> subprocess.Popen:
     """`serve RUN` in a session of its own, its keys written to its stdin and the pipe closed: never on its command line,
     in its environment or in a file. Its output (no keys: the coordinator never prints one) goes to the run's log."""
     folder = run_folder(run)
     log = open(folder / "coordinator.log", "ab")
     proc = subprocess.Popen([sys.executable, "-m", "perception.remote_coordinator", "serve", run,
-                             *[x for rel in nodes for x in ("--nodes", rel)]],
+                             *[x for rel in nodes for x in ("--nodes", rel)], *retention],
                             stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, cwd=home(),
                             start_new_session=True, close_fds=True)
     log.close()
@@ -206,6 +208,90 @@ def spawn(run: str, nodes: list[str], keys: dict[str, str]) -> subprocess.Popen:
     proc.stdin.write(json.dumps(keys).encode())
     proc.stdin.close()
     return proc
+
+
+def prune(store: Store, keep_s: float, min_free_gb: float | None) -> list[str]:
+    """The runs coordinated here that ended more than `keep_s` ago, and, while the disk has less than `min_free_gb`
+    free (None: hosts.MIN_FREE_GB, or a tenth of the disk if that is less), the ones that ended longest ago too: their
+    rows, their folders (work/<run>, remote/<run>), and every object of the store no run left here reads, with the
+    cache rows that name one. What a run coordinated here made (face crops, transcripts, embeddings) is kept on the
+    host no longer than what the host keeps for steps run there (RUN_ANYWHERE_PLAN.md, Privacy across routes; review of
+    #46). Not while any run is being coordinated here: one may be publishing an object this would remove. Fetch the
+    runs to keep before then. The runs removed."""
+    import shutil as _shutil
+    from .hosts import MIN_FREE_GB
+    runs = store.db.execute("SELECT id, finished_at FROM runs WHERE status IN ('succeeded','failed','canceled') "
+                            "AND finished_at IS NOT NULL ORDER BY finished_at").fetchall()
+    if not runs or any(alive(r["id"]) for r in store.db.execute("SELECT id FROM runs WHERE status='running'")):
+        return []
+    if any(p.is_file() and alive(p.parent.name) for p in (home() / "remote").glob("*/coordinator.pid")):
+        return []
+    disk = _shutil.disk_usage(store.root)
+    need = (min(MIN_FREE_GB, disk.total / 2**30 / 10) if min_free_gb is None else min_free_gb) * 2**30
+    gone = [r["id"] for r in runs if r["finished_at"] < time.time() - keep_s]
+    short = disk.free < need
+    for r in runs:   # oldest first, while the disk is short (each run's objects counted once they are removed)
+        if not short:
+            break
+        if r["id"] not in gone:
+            gone.append(r["id"])
+            short = False   # removed below; the next start looks again
+    if not gone:
+        return []
+    with store.tx() as db:
+        for run in gone:
+            for table, col in (("events", "run_id"), ("tasks", "run_id"), ("runs", "id")):
+                db.execute(f"DELETE FROM {table} WHERE {col}=?", (run,))
+        kept = {a["hash"] for t in db.execute("SELECT outputs FROM tasks") for a in json.loads(t["outputs"] or "{}").values()}
+        for c in db.execute("SELECT key, outputs FROM cache").fetchall():
+            if any(a["hash"] not in kept for a in json.loads(c["outputs"] or "{}").values()):
+                db.execute("DELETE FROM cache WHERE key=?", (c["key"],))
+        for a in db.execute("SELECT hash, shape FROM artifacts").fetchall():
+            if a["hash"] not in kept and a["shape"] in ("file", "tree"):
+                db.execute("DELETE FROM artifacts WHERE hash=?", (a["hash"],))
+    for sub in ("objects", "trees"):
+        for folder in (store.root / sub).glob("*/*"):
+            if folder.is_dir() and folder.name not in kept:
+                for p in [folder, *folder.rglob("*")]:
+                    with contextlib.suppress(OSError):
+                        p.chmod(0o700 if p.is_dir() else 0o600)
+                _shutil.rmtree(folder, ignore_errors=True)
+    for run in gone:
+        _shutil.rmtree(store.root / "work" / run, ignore_errors=True)
+        _shutil.rmtree(home() / "remote" / run, ignore_errors=True)   # its holds on its inputs go with it
+    return gone
+
+
+def cmd_sweep(args) -> int:
+    """The host's sweeper for runs coordinated here (prune), as a host has one for what it keeps for steps (remote_driver
+    SWEEP): started detached by each coordinator as it ends, one at a time (a lock it holds while it lives), it prunes
+    every hour (or half the keep period, if shorter) and ends once no ended run is left, so a host used once is cleaned
+    too."""
+    import fcntl
+    fd = os.open(home() / ".sweeper", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0   # one is running
+    every = max(1.0, min(3600.0, args.keep_s / 2))
+    while True:
+        if not (home() / "perception.db").is_file():
+            return 0   # the store is gone (hosts clean): nothing to sweep, and not to be made again
+        store = Store(home())
+        prune(store, args.keep_s, args.min_free_gb)
+        left = store.db.execute("SELECT 1 FROM runs").fetchone()
+        store.close()
+        if not left:
+            return 0
+        time.sleep(every)
+
+
+def sweeper(keep_s: float, min_free_gb: float | None, nodes: list[str]):
+    """Start the sweeper (cmd_sweep) in a session of its own, unless one is running (it then exits at once)."""
+    args = ["--keep-s", str(keep_s)] + (["--min-free-gb", str(min_free_gb)] if min_free_gb is not None else [])
+    subprocess.Popen([sys.executable, "-m", "perception.remote_coordinator", "sweep", *args], cwd=home(),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, close_fds=True)
 
 
 def release(run: str):
@@ -225,6 +311,11 @@ def cmd_start(args) -> int:
     folder.mkdir(parents=True, exist_ok=True)
     # under the run's lock, which its coordinator takes too for its last step (releasing the holds, then its pid): so a
     # start either sees it running (and it releases them after) or sees it ended
+    from .hosts import KEEP_DAYS
+    keep_s, min_free = spec.get("keep_s", KEEP_DAYS * 86400), spec.get("min_free_gb")
+    if _number_ok(keep_s) and (min_free is None or _number_ok(min_free)):
+        for gone in prune(Store(home()), float(keep_s), min_free):
+            print(f"removed run {gone}: it ended more than the host's keep days ago (or its disk is short)", file=sys.stderr)
     with locked(folder / ".lock"):
         running = False
         try:
@@ -238,6 +329,10 @@ def cmd_start(args) -> int:
                 release(run)
 
 
+def _number_ok(x) -> bool:
+    return not isinstance(x, bool) and isinstance(x, (int, float)) and x >= 0
+
+
 def _start(spec: dict, keys: dict, run: str, nodes: list[str], folder: Path) -> tuple[int, bool]:
     """cmd_start under the run's lock: its exit code, and whether a coordinator is running for the run when it ends."""
     store = Store(home())
@@ -245,10 +340,14 @@ def _start(spec: dict, keys: dict, run: str, nodes: list[str], folder: Path) -> 
     doc = with_inputs(spec["graph"], spec.get("inputs", {}), run, make=False)
     if problems := refused_places(doc):
         raise Refusal(*problems)
-    row = store.db.execute("SELECT status, graph FROM runs WHERE id=?", (run,)).fetchone()
+    row = store.db.execute("SELECT status, graph, inputs FROM runs WHERE id=?", (run,)).fetchone()
+    sent = {k: v.get("sha256") for k, v in spec.get("inputs", {}).items()}
     if row:
         if json.loads(row["graph"]) != doc:
             raise Refusal(f"run {run} is here already, with another graph")
+        # by hash too: the graph names its inputs by link, and a resume remakes the links (re-review of #46)
+        if {k: v["hash"] for k, v in json.loads(row["inputs"]).items()} != sent:
+            raise Refusal(f"run {run} is here already, with other inputs")
         if alive(run):   # a start whose answer was lost, asked again: the run goes on as it was
             answer(run=run, started=False, status="running")
             return 0, True
@@ -259,6 +358,10 @@ def _start(spec: dict, keys: dict, run: str, nodes: list[str], folder: Path) -> 
         graph = compile_graph(doc, reg)
     else:
         with_inputs(spec["graph"], spec.get("inputs", {}), run)
+        for name, sha in sent.items():   # what the run will read is what was sent under that hash
+            link = Path(unquote(urlparse(doc["inputs"][name]["uri"]).path))
+            if artifacts.get(doc["inputs"][name]["type"]).shape == "source" and store.source(link, "video.v1").hash != sha:
+                raise Refusal(f"input {name} here is not {sha[:12]}")
         try:
             graph = compile_graph(doc, reg)
         except GraphError as e:
@@ -276,7 +379,11 @@ def _start(spec: dict, keys: dict, run: str, nodes: list[str], folder: Path) -> 
                                            if not n.where or n.missing_secrets or n.downloads]}), flush=True)
             return 1, False
         coord.create_run(graph, doc, allow_uploads=bool(spec.get("allow_uploads")), run_id=run)
-    proc = spawn(run, nodes, keys)
+    from .hosts import KEEP_DAYS
+    keep_s, min_free = spec.get("keep_s", KEEP_DAYS * 86400), spec.get("min_free_gb")
+    retention = ["--keep-s", str(float(keep_s))] + (["--min-free-gb", str(float(min_free))] if min_free is not None else []) \
+        if _number_ok(keep_s) and (min_free is None or _number_ok(min_free)) else []
+    proc = spawn(run, nodes, keys, retention)
     del keys
     try:   # one that cannot even start (a broken copy) says so now; one that runs is left to run
         code = proc.wait(timeout=1.5)
@@ -318,6 +425,8 @@ def cmd_serve(args) -> int:
             with contextlib.suppress(OSError, ValueError):
                 if int(pidfile.read_text()) == os.getpid():
                     pidfile.unlink()
+        if args.keep_s is not None:
+            sweeper(args.keep_s, args.min_free_gb, args.nodes or [])
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} run {run}: {status}", flush=True)
     return 0 if status else 1
 
@@ -382,10 +491,17 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="action", required=True)
     sub.add_parser("start").add_argument("--nodes", action="append")   # start reads them from its spec
     sub.choices["start"].set_defaults(fn=cmd_start)
+    sw = sub.add_parser("sweep")
+    sw.add_argument("--keep-s", type=float, required=True)
+    sw.add_argument("--min-free-gb", type=float)
+    sw.set_defaults(fn=cmd_sweep)
     for name, fn in (("serve", cmd_serve), ("status", cmd_status), ("events", cmd_events), ("dump", cmd_dump)):
         p = sub.add_parser(name)
         p.add_argument("run", nargs="?" if name == "status" else None)
         p.add_argument("--nodes", action="append")
+        if name == "serve":
+            p.add_argument("--keep-s", type=float)
+            p.add_argument("--min-free-gb", type=float)
         if name == "events":
             p.add_argument("--after", type=int, default=0)
         p.set_defaults(fn=fn)
