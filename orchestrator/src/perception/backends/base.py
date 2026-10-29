@@ -260,9 +260,12 @@ class Backend(ABC):
     def stage_inputs(self, attempt_dir: Path, inputs: dict[str, Artifact]) -> dict[str, dict]: ...
 
     @abstractmethod
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
+               prepare_secrets: dict[str, str] | None = None) -> dict:
         """`gpu`: the card the scheduler gave the node on its machine (Gpu.index), which it is to see alone (gpu_env);
-        None: no card of its own (no GPU, or the machine's GPU as one)."""
+        None: no card of its own (no GPU, or the machine's GPU as one). `env` is the node's (node_env);
+        `prepare_secrets` its download secrets, for its prepare alone (a backend that runs no prepare ignores them, and
+        the node, offline, then finds only what is in the cache)."""
 
     @abstractmethod
     def poll(self, handle: dict) -> str: ...
@@ -313,3 +316,20 @@ def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
         if name in secrets:
             env[name] = secrets[name]
     return env
+
+
+# a node whose downloads are its prepare's (download_secrets) reads only the cache: a missing weight is an error at
+# once, not a download it has no token for
+OFFLINE = {"HF_HUB_OFFLINE": "1"}
+
+
+def node_env(manifest: Manifest, secrets: dict[str, str]) -> dict[str, str]:
+    """What a node runs with: child_env with its run-time secrets, offline when it has download secrets, which only its
+    prepare is given (download_for)."""
+    env = child_env(manifest.secrets, secrets)
+    return {**env, **OFFLINE} if manifest.download_secrets else env
+
+
+def download_for(manifest: Manifest, secrets: dict[str, str]) -> dict[str, str]:
+    """The node's download secrets that are set: for its prepare, never for the node."""
+    return {k: secrets[k] for k in manifest.download_secrets if secrets.get(k)}

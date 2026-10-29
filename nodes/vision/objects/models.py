@@ -1,7 +1,8 @@
 """SAM 3 (segmentation and tracking with text prompts) and DINOv3 ViT-L/16 (embeddings for cross-shot linking), as the
 bake-off ran them (tools/perception-bakeoff/objects/objects.py): through transformers 5.20.2, from the Hugging Face
-hub at pinned commits. Both are gated: the account whose HF_TOKEN the track step is given must have accepted Meta's terms at
-https://hf.co/facebook/sam3 and https://hf.co/facebook/dinov3-vitl16-pretrain-lvd1689m.
+hub at pinned commits. Both are gated: the account whose HF_TOKEN the track step's prepare downloads them with must have
+accepted Meta's terms at https://hf.co/facebook/sam3 and https://hf.co/facebook/dinov3-vitl16-pretrain-lvd1689m. The
+step itself reads them from the Hugging Face cache, offline (HF_HUB_OFFLINE), with no token.
 
 Where it runs (the request's accelerator): mps (the Apple GPU), cuda, or cpu. SAM 3 runs in bfloat16 on a GPU (on MPS
 the bake-off measured it 2.5x faster than float32 with the same objects on every frame of two NES shots, masks at
@@ -99,7 +100,13 @@ def _from_hub(load, repo: str):
                                    f"and that its account accepted the conditions at https://hf.co/{repo}") from None
     except RepositoryNotFoundError:
         raise NodeError("input", f"Hugging Face did not accept this machine's HF_TOKEN for {repo}") from None
-    except (HfHubHTTPError, LocalEntryNotFoundError) as e:   # the network or the hub failed, and it is not in the cache
+    except LocalEntryNotFoundError as e:
+        from huggingface_hub import constants
+        if constants.HF_HUB_OFFLINE:   # the step: its prepare downloads, and did not
+            raise NodeError("resources", f"{repo} is not in this machine's Hugging Face cache, which the step reads alone: "
+                                         "its prepare downloads it (perception setup, or a run with --allow-downloads)") from None
+        raise NodeError("transient", f"could not download {repo} from Hugging Face: {e}") from None
+    except HfHubHTTPError as e:   # the network or the hub failed, and it is not in the cache
         raise NodeError("transient", f"could not download {repo} from Hugging Face: {e}") from None
 
 

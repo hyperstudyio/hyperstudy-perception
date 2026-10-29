@@ -397,6 +397,8 @@ class Driver:
         self.pod_unknown = False
         # the account key, for this process alone: out of the environment its ssh and rsync commands inherit
         self.runpod_key = os.environ.pop("RUNPOD_API_KEY", None)
+        # the node's download secrets (a gated model's token), likewise: for its prepare there alone, over stdin (prepare)
+        self.download = {k: v for k in spec.get("download_secrets") or [] if (v := os.environ.pop(k, None))}
         self.at(spec["dest"], spec["root"])
 
     def at(self, dest: str, root: str):
@@ -488,21 +490,31 @@ class Driver:
                 f"touch {q(incoming)}/.complete && publish {q(incoming)} {q(self.env)}",
                 data="".join(f + "\n" for f in self.spec["env_files"]).encode())
 
-    def node_python(self) -> str:
+    def node_python(self, prepare: bool = False) -> str:
         """sh for the node's Python on the host: its environment's (uv run --no-sync: prepare synced it, and the SDK, left
         out of it, would otherwise be installed into the shared environment from wherever this code is), with the SDK
-        from this code's own folder, and only the card the scheduler gave it (CUDA_VISIBLE_DEVICES)."""
-        from .backends.base import gpu_env
+        from this code's own folder, and only the card the scheduler gave it (CUDA_VISIBLE_DEVICES). A node with download
+        secrets reads its account's cache there (hf_home), offline and without them, as does its prepare without the ones
+        it was not sent: the host's own (a login's HF_TOKEN in .bashrc, which bash reads under sshd) are never used."""
+        from .backends.base import OFFLINE, gpu_env
         from .backends.remote import SDK_SOURCE
         q, s = shlex.quote, self.spec
         env = gpu_env(s.get("gpu"))
+        if s.get("hf_home"):
+            env["HF_HOME"] = s["hf_home"]
+        if s.get("download_secrets") and not prepare:
+            env.update(OFFLINE)
+        unset = [k for k in s.get("download_secrets") or [] if not (prepare and k in self.download)]
+        if s.get("download_secrets") and prepare:
+            unset += list(OFFLINE)   # it downloads, whatever the host's own profile says
         if s["runner_kind"] == "self":
             python = q(s["python"])
         else:
             env["PYTHONPATH"] = f"{self.code}/{SDK_SOURCE}"
             python = f"{q(s['uv'])} run --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-sync python"
         # through env(1): the node's command follows nohup and setsid in start, where an assignment would be a command
-        return ("env " + "".join(f"{k}={q(v)} " for k, v in env.items()) if env else "") + python
+        return ("env " + "".join(f"-u {q(k)} " for k in unset) + "".join(f"{k}={q(v)} " for k, v in env.items())
+                if env or unset else "") + python
 
     def hold(self) -> set[str]:
         """Make the attempt's folder on the host, hold each of its inputs there (HOLD) and say which are there already,
@@ -821,18 +833,25 @@ echo $pid
         sync = "" if s["runner_kind"] == "self" else (
             # the shared environment, without the SDK (node_python imports this code's own)
             f"{q(s['uv'])} sync --project {q(self.env + '/' + s['env'])} --frozen --no-dev --no-install-package {SDK_PACKAGE}")
-        prepare = f"{self.node_python()} {q(s['prepare'])} {q(json.dumps(self.request.get('config', {})))}" if s.get("prepare") else ""
+        # its download secrets read from stdin into the shell's own variables, and given to the prepare alone by an
+        # assignment before its command: never in a command line (ps), a file, or the sync's environment
+        names = list(self.download)
+        given = "".join(f'{k}="$_s{i}" ' for i, k in enumerate(names))
+        prepare = (f"{given}{self.node_python(prepare=True)} {q(s['prepare'])} {q(json.dumps(self.request.get('config', {})))}"
+                   if s.get("prepare") else "")
         steps = [x for x in (sync, prepare) if x]
         if not steps:
             return
+        reads = "".join(f"IFS= read -r _s{i} && " for i in range(len(names))) if prepare else ""
+        data = "".join(self.download[k] + "\n" for k in names).encode() if prepare and names else None
         say("preparing the node there (its environment, its weights)")
         # within a cloud machine's deadline: past it, the node could not run anyway
         limit = 3600 if self.stop_at is None else self.stop_at - time.monotonic()
         if limit <= 0:
             raise Deadline()
         try:
-            done = self.patiently(self.sh, f"cd {q(node_dir)} && export PATH={q(path)}${{PATH:+:$PATH}} && " + " && ".join(steps),
-                                  False, None, limit)
+            done = self.patiently(self.sh, f"{reads}cd {q(node_dir)} && export PATH={q(path)}${{PATH:+:$PATH}} && " + " && ".join(steps),
+                                  False, data, limit)
         except subprocess.TimeoutExpired:
             if self.stop_at is not None:
                 raise Deadline()

@@ -28,7 +28,8 @@ class NodePlan:
     cached: bool = False
     downloads: list[ModelRef] = field(default_factory=list)
     secrets: list[str] = field(default_factory=list)          # the keys it is given where it runs (its manifest's), and no other
-    missing_secrets: list[str] = field(default_factory=list)
+    download_secrets: list[str] = field(default_factory=list) # the keys its prepare downloads with, when it downloads
+    missing_secrets: list[str] = field(default_factory=list)  # a download secret only when it would download
     cost_usd: float = 0.0
     cost_note: str = ""
     uploads: list[str] = field(default_factory=list)   # data kinds that leave the machine where it would run: to its API, or its inputs to another machine
@@ -172,8 +173,7 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
         # the models the plan says the node uses
         loaded = m.models_for(placement.runner) if placement else m.models
         np.downloads = [x for x in loaded if fetched(x) and ((placement and placement.backend.remote) or not model_cached(x))]
-        np.secrets = list(m.secrets)
-        np.missing_secrets = [s for s in m.secrets if s not in coord.secrets]
+        np.secrets, np.download_secrets = list(m.secrets), list(m.download_secrets)
         np.uploads, np.upload_to = coord.uploads(m, placement) if placement else (list(m.privacy.external_upload), m.service)
         np.title, np.service, np.description, np.outputs, np.models = m.title, m.service, m.description, dict(m.outputs), list(loaded)
         np.settings = settings(m, node.config)
@@ -204,6 +204,8 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
             sent, to = coord.uploads(m, p)
             np.estimates[p.label] = {"estimate_s": seconds, "estimate_basis": basis,
                                      "cost_usd": p.backend.estimate(m, p.runner, {}, video_s).cost_usd, "uploads": sent, "upload_to": to}
+        # a download secret is needed only for a download: weights already in the cache are read without it
+        np.missing_secrets = [s for s in (*m.secrets, *(m.download_secrets if np.downloads else ())) if s not in coord.secrets]
         if placement and not np.cached:
             chosen = np.estimates[placement.label]
             np.estimate_s, np.estimate_basis = chosen["estimate_s"], chosen["estimate_basis"]

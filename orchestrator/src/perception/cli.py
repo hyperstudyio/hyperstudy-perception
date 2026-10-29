@@ -199,7 +199,7 @@ def graph_error(args, e: GraphError) -> int:
 def plan_json(p) -> dict:
     nodes = [{"id": n.id, "uses": n.uses, "where": n.where, "why_not": n.why_not, "cached": n.cached,
               "downloads": [m.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for m in n.downloads],
-              "secrets": n.secrets, "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
+              "secrets": n.secrets, "download_secrets": n.download_secrets, "missing_secrets": n.missing_secrets, "cost_usd": n.cost_usd, "cost_note": n.cost_note, "uploads": n.uploads, "upload_to": n.upload_to,
               "place": n.place, "options": n.options, "estimate_s": n.estimate_s, "estimate_basis": n.estimate_basis,
               "needs": n.needs, "optional_needs": n.optional_needs, "estimates": n.estimates, "title": n.title, "service": n.service, "description": n.description, "outputs": n.outputs,
               "part_of": n.part_of, "models": [m.model_dump(include={"id", "source", "licence_mode", "size_gb"}) for m in n.models], "settings": n.settings}
@@ -268,7 +268,7 @@ def cmd_nodes(args):
             "ref": m.ref, "id": m.id, "version": m.version, "stage": m.stage or m.id, "part_of": m.part_of, "description": m.description,
             "inputs": m.inputs, "optional_inputs": m.optional_inputs, "outputs": m.outputs, "config": m.config, "places": [p.label for p in options], "why_not": why,
             "cost": m.cost.model_dump() if m.cost else None, "uploads": list(m.privacy.external_upload), "secrets": m.secrets,
-            "models": [x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for x in m.models],
+            "download_secrets": m.download_secrets, "models": [x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"}) for x in m.models],
             "gpu": m.resources.gpu})
     if args.json:
         emit("nodes", nodes=nodes)
@@ -281,12 +281,14 @@ def cmd_nodes(args):
 def cmd_models(args):
     reg = registry(args)
     if args.json:
-        # each node too: what it is called, the API it calls (service) and the keys it needs, and its fixed choices
-        # (a model, an effort) at their defaults, with prices: what the app's settings show
+        # each node too: what it is called, the API it calls (service) and the keys it needs (secrets: those it runs
+        # with and those its weights are downloaded with, which download_secrets names), and its fixed choices (a model,
+        # an effort) at their defaults, with prices: what the app's settings show
         from .plan import settings
         emit("models", models=[{"node": m.ref, **x.model_dump(include={"id", "source", "size_gb", "gated", "licence_mode"})}
                                for m in reg for x in m.models],
-             nodes=[{"node": m.ref, "title": m.title, "service": m.service, "part_of": m.part_of, "secrets": list(m.secrets),
+             nodes=[{"node": m.ref, "title": m.title, "service": m.service, "part_of": m.part_of,
+                     "secrets": [*m.secrets, *m.download_secrets], "download_secrets": list(m.download_secrets),
                      "settings": settings(m, {k: s.get("default") for k, s in m.config.items()})} for m in reg])
         return 0
     for m in reg:
@@ -525,7 +527,8 @@ def cmd_hosts(args):
             return 0
         elif args.action in ("check", "remove", "clean", "set", "keys") and not args.name:
             raise HostError(f"hosts {args.action} NAME")
-        elif args.action == "keys":   # whether runs coordinated there may hold the keys their steps declare (remote_run.py)
+        elif args.action == "keys":   # whether runs coordinated there may hold the keys their steps declare (remote_run.py),
+            # and a step's prepare there the token it downloads gated weights with (backends/remote.py)
             if args.dest not in ("on", "off"):
                 raise HostError(f"hosts keys {args.name} on|off")
             hosts.allow_keys(args.name, args.dest == "on")

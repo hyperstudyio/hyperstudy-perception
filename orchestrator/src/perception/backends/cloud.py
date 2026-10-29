@@ -86,6 +86,11 @@ class CloudBackend(SshBackend):
         video_s = video_s or video_seconds((a.type, a.path) for a in inputs.values())
         return Estimate(round(self.hourly_usd * self.deadline(video_s) / 3600, 4))
 
+    def download_refusal(self, manifest: Manifest) -> str:
+        # a machine started for one attempt: whether, and to which kinds of machine, a download secret may go is phase
+        # 10's (RUN_ANYWHERE_PLAN.md: Secure Cloud pods by default, a Community one only with its own yes)
+        return f"its weights are downloaded with {', '.join(manifest.download_secrets)}, which is not sent to cloud machines yet"
+
     def driver_spec(self, attempt_dir: Path) -> dict:
         request = json.loads((attempt_dir / "request.json").read_text())
         return {"host": "the cloud machine", "cloud": {

@@ -380,6 +380,29 @@ def test_only_the_keys_the_steps_declare_are_sent(tmp_path, lab, capsys, monkeyp
     assert starts(tmp_path)[1]["keys"] == {}                          # no step declares one: none goes
 
 
+def test_a_download_secret_goes_with_the_run_to_its_steps_prepare_alone_and_the_steps_read_the_accounts_cache(tmp_path, lab, capsys, monkeypatch):
+    rec = str(tmp_path / "rec")
+    token = "hf_" + "7e1d" * 8   # made up
+    monkeypatch.setenv("HF_TOKEN", token)
+    monkeypatch.setattr(remote_run, "hf_account", lambda t: "tester" if t == token else pytest.fail("another token"))
+    graph = graph_file(tmp_path, [work("a", record_dir=rec),
+                                  {"id": "g", "uses": "test.gated@1.0.0", "inputs": {"a": "$nodes.a.out"}, "config": {"record_dir": rec}}])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--allow-downloads", "--dry-run")
+    plan = of(out, "remote_plan")[0]
+    assert code == 1 and plan["keys"] == {"HF_TOKEN": ["g"]} and any("hosts keys lab on" in p for p in plan["problems"])
+    assert [n["download_secrets"] for n in plan["nodes"]] == [[], ["HF_TOKEN"]]
+    keys_on(tmp_path)
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--allow-downloads")
+    assert code == 0 and of(out, "run.finished")[0]["status"] == "succeeded", out
+    assert starts(tmp_path)[0]["keys"] == {"HF_TOKEN": token} and starts(tmp_path)[0]["hf_account"] == "tester"
+    cache = str((host_root(lab) / "hf" / "tester").resolve())
+    (prepare,), (node,) = executions(Path(rec), "prepare"), executions(Path(rec), "node")
+    assert prepare["sha256"] == hashlib.sha256(token.encode()).hexdigest() and prepare["hf_home"] == cache
+    assert node == {"keys": [], "sha256": None, "hf_home": cache, "offline": "1", "weights": True}
+    assert executions(Path(rec), "a")[0]["keys"] == []
+    assert token not in (lab / "argv.log").read_text() and files_holding(tmp_path, token[3:]) == []
+
+
 # --- import -------------------------------------------------------------------------------------------------------
 
 def test_imported_attempts_get_this_stores_numbers_and_never_replace_its_cache_rows(tmp_path, lab, capsys):

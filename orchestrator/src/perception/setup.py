@@ -51,10 +51,10 @@ def setup_node(m: Manifest, runner: Runner, uv: str | None = None, config: dict 
                secrets: dict[str, str] | None = None) -> list[Step]:
     """Sync the node's environment (native runners) and run its prepare script (its weights) with its settings: a graph's
     for the node when there is one (a setting can choose the model), else its defaults. With the environment a run gives
-    the node (child_env): none of this interpreter's settings, and no credential but the secrets it declares (a gated
-    model's token)."""
+    the node (child_env): none of this interpreter's settings, and no credential but the secrets it declares, its
+    download secrets (a gated model's token) among them."""
     uv = uv or shutil.which("uv") or "uv"
-    env = child_env(m.secrets, secrets or {})
+    env = child_env([*m.secrets, *m.download_secrets], secrets or {})
     if runner.kind == "native" and runner.env:
         env = {**env, **env_vars(runner.env)}   # where a run makes it (the package's: in the store)
     steps: list[Step] = []

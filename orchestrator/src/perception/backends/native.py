@@ -78,11 +78,18 @@ class NativeBackend(Backend):
         return [shutil.which("uv") or "uv", "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev",
                 "python", entry, "--request", str(request)]
 
-    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None) -> dict:
+    def submit(self, manifest: Manifest, runner: Runner, attempt_dir: Path, env: dict[str, str], gpu: int | None = None,
+               prepare_secrets: dict[str, str] | None = None) -> dict:
         request = attempt_dir / "request.json"
         env = {**env, **self.project_env(runner)}
         env.update(gpu_env(gpu))   # the card the scheduler gave it, alone (none on a Mac)
         command = self.command(manifest, runner, request)
+        if prepare_secrets is not None and manifest.download_secrets and self.downloads(manifest, runner):
+            # its prepare first, with them, then the node without them (prepare_first.py)
+            config = json.loads(request.read_text()).get("config", {})
+            command = [sys.executable, "-m", "perception.prepare_first", "--secrets", ",".join(manifest.download_secrets),
+                       "--prepare", json.dumps(self.prepare_command(manifest, runner, config)), "--", *command]
+            env = {**env, **prepare_secrets}
         if gpu is not None and manifest.resources.gpu != "none":   # and held against other runs here (GPU_LEASES)
             command = [*lease_command(str(self.lease_folder()), gpu, manifest.resources.gpu,
                                       holder(json.loads(request.read_text()))), *command]
@@ -97,6 +104,19 @@ class NativeBackend(Backend):
         tmp.write_text(json.dumps(handle))
         os.replace(tmp, attempt_dir / "handle.json")
         return handle
+
+    def downloads(self, manifest: Manifest, runner: Runner) -> bool:
+        """Whether a weight the runner loads is not in this machine's cache yet (plan.model_cached): its prepare fetches it."""
+        from ..plan import fetched, model_cached
+        return any(fetched(x) and not model_cached(x) for x in manifest.models_for(runner))
+
+    def prepare_command(self, manifest: Manifest, runner: Runner, config: dict) -> list[str]:
+        """The node's prepare script with its settings, in its environment, as `perception setup` runs it (setup.py)."""
+        script = str(manifest.directory / manifest.prepare)
+        if self.kind == "self":
+            return [sys.executable, script, json.dumps(config)]
+        return [shutil.which("uv") or "uv", "run", "--project", str(REPO / runner.env), "--frozen", "--no-dev",
+                "python", script, json.dumps(config)]
 
     def project_env(self, runner: Runner) -> dict[str, str]:
         """What the node's environment needs set: for the package, where uv makes it (in the store)."""

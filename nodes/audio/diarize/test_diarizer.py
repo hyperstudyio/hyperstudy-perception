@@ -32,7 +32,8 @@ class LocalEntryNotFoundError(Exception):
 def stubs(monkeypatch):
     """Stand-ins for the modules load() imports; `answer` is what Pipeline.from_pretrained does (a value, or an
     exception to raise)."""
-    state = types.SimpleNamespace(answer=None, metrics_when_imported=None, mps=True, cuda=False)
+    state = types.SimpleNamespace(answer=None, metrics_when_imported=None, mps=True, cuda=False,
+                                  constants=types.SimpleNamespace(HF_HUB_OFFLINE=False))
 
     class Pipeline:
         @staticmethod
@@ -56,7 +57,9 @@ def stubs(monkeypatch):
     audio = types.ModuleType("pyannote.audio")
     audio.__getattr__ = lambda name: import_pyannote().Pipeline if name == "Pipeline" else None
     monkeypatch.setitem(sys.modules, "torch", torch)
-    monkeypatch.setitem(sys.modules, "huggingface_hub", types.ModuleType("huggingface_hub"))
+    hub = types.ModuleType("huggingface_hub")
+    hub.constants = state.constants   # HF_HUB_OFFLINE: whether the node reads the cache alone (its prepare downloads)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
     monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
     monkeypatch.setitem(sys.modules, "pyannote", pyannote)
     monkeypatch.setitem(sys.modules, "pyannote.audio", audio)
@@ -92,6 +95,14 @@ def test_a_refused_or_failed_download_is_a_node_error(stubs, raised, code):
     with pytest.raises(NodeError) as e:
         diarizer.load("hf_x", "cpu")
     assert e.value.code == code
+
+
+def test_a_pipeline_missing_from_the_cache_offline_is_said_so_not_retried_as_a_failed_download(stubs):
+    stubs.constants.HF_HUB_OFFLINE = True   # the node: its prepare downloads (download_secrets)
+    stubs.answer = LocalEntryNotFoundError("offline")
+    with pytest.raises(NodeError, match="not in this machine's Hugging Face cache") as e:
+        diarizer.load(None, "cpu")
+    assert e.value.code == "resources"
 
 
 @pytest.mark.parametrize("accelerator", ["mps", "cuda"])

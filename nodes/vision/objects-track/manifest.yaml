@@ -35,9 +35,9 @@ runners:
 resources: {cpu_cores: 4, memory_gb: 16, gpu: exclusive}
 # Nothing leaves the machine: the crops it makes for the crop check are the objects step's to send
 privacy: {external_upload: []}
-# both models are gated on Hugging Face. The token is a run-time secret for now (check_access and the loads read it), so
-# the step is not run on another machine (backends/remote.py); RUN_ANYWHERE_PLAN.md phase 5 makes it the download's only
-secrets: [HF_TOKEN]
+# both models are gated on Hugging Face: the token of an account that accepted Meta's terms, for its prepare alone,
+# which downloads them; the step reads the cache offline, so it runs on a host too (RUN_ANYWHERE_PLAN.md phase 5)
+download_secrets: [HF_TOKEN]
 # fetches the weights ahead of a run (perception setup)
 prepare: ../objects/prepare.py
 models:

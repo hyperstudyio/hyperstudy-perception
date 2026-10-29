@@ -122,7 +122,7 @@ def log_of(coord, run_id, node, attempt=1) -> str:
 def test_a_node_placed_on_a_host_runs_there_and_its_outputs_come_back(tmp_path, host):
     coord = coordinator(tmp_path, host)
     run_id = start(coord, video_graph(tmp_path, place="ssh-lab:cpu"))
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     t = coord._tasks(run_id)["shots"]
     assert t["runner"] == "ssh-lab:cpu"
     shots = json.loads(Path(json.loads(t["outputs"])["shots"]["path"]).read_text())   # published here, from the host's out/
@@ -143,7 +143,7 @@ def test_the_same_input_and_code_are_sent_to_a_host_once(tmp_path, host, rec):
     coord = coordinator(tmp_path, host)
     for _ in range(2):
         run_id = start(coord, work_graph(tmp_path, rec))
-        assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+        assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
         coord.store.db.execute("DELETE FROM cache")
     assert "copying" not in log_of(coord, run_id, "a")   # the second run found both there
 
@@ -154,7 +154,7 @@ def test_a_node_reads_what_another_node_made_on_the_same_host_without_it_being_s
     doc["nodes"].append({"id": "b", "uses": "test.work@1.0.0", "inputs": {"a": "$nodes.a.out"}, "place": "ssh-lab:cpu",
                          "config": {"record_dir": rec, "add": 10}})
     run_id = start(coord, doc)
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     out = json.loads(Path(json.loads(coord._tasks(run_id)["b"]["outputs"])["out"]["path"]).read_text())
     assert out == {"value": 11}
     assert "[remote] kept out on lab" in log_of(coord, run_id, "a")
@@ -232,7 +232,7 @@ def test_a_remote_node_does_not_take_this_machines_gpu(tmp_path, host, rec):
            "policy": {"retries": 0, "placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS},
            "nodes": [gpu("here", "self:cpu"), gpu("there", "ssh-lab:cpu")]}
     run_id = start(coord, doc)
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     t = coord._tasks(run_id)
     assert t["there"]["started_at"] < t["here"]["finished_at"] and t["here"]["started_at"] < t["there"]["finished_at"]   # overlapped
 
@@ -387,7 +387,7 @@ def test_two_nodes_sending_the_same_input_to_a_host_at_once_both_run(tmp_path, h
     doc = work_graph(tmp_path, rec)
     doc["nodes"] += [{**doc["nodes"][0], "id": f"n{i}"} for i in range(3)]
     run_id = start(coord, doc)
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     objects = host / "home" / ".cache" / "hp" / "objects"
     stored = [p for p in objects.iterdir() if not p.name.startswith(".incoming")]
     # the input, and the one output the four nodes all made (the same content)
@@ -572,13 +572,13 @@ def test_a_host_without_the_output_kept_there_is_sent_it(tmp_path, host, rec):
     doc["nodes"].append({"id": "b", "uses": "test.work@1.0.0", "inputs": {"a": "$nodes.a.out"}, "place": "ssh-lab:cpu",
                          "config": {"record_dir": rec, "add": 10}})
     run_id = start(coord, doc)
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     kept = host / "home" / ".cache" / "hp" / "objects" / json.loads(coord._tasks(run_id)["a"]["outputs"])["out"]["hash"]
     subprocess.run(["chmod", "-R", "u+w", str(kept)], check=True)
     subprocess.run(["rm", "-rf", str(kept)], check=True)
     coord.store.db.execute("DELETE FROM cache WHERE key=?", (coord._tasks(run_id)["b"]["cache_key"],))   # b runs again; a is cached
     run_id = start(coord, doc)
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     assert coord._tasks(run_id)["a"]["state"] == "cached"
     assert "[remote] copying a " in log_of(coord, run_id, "b")
 
@@ -764,7 +764,7 @@ def test_a_result_made_on_a_host_is_reused_on_any_machine_of_its_kind_and_says_w
                         [SelfBackend(), *(SshBackend(h, runner_kind="self", python=sys.executable) for h in (lab(host), again, other))],
                         tick_s=0.02, backoff_s=0.01)
     run_id = start(coord, work_graph(tmp_path, rec, place="ssh-lab:cpu"))
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     made = {"place": "ssh-lab:cpu", "title": "lab (SSH)", "platform": this_platform()}
     assert json.loads(coord._tasks(run_id)["a"]["usage"])["ran_on"] == made
     for place, cached in [("ssh-lab-again:cpu", True), ("self:cpu", True), ("ssh-arm:cpu", False)]:
@@ -981,7 +981,7 @@ def test_a_hosts_root_is_private_to_the_user_and_one_someone_else_owns_is_refuse
     hp.mkdir(parents=True)
     hp.chmod(0o755)                     # opened up since it was added: made private again before anything is sent
     run_id = start(coord, work_graph(tmp_path, rec))
-    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
     assert hp.stat().st_mode & 0o777 == 0o700
 
 
@@ -1833,3 +1833,61 @@ def test_a_fetched_attempt_has_no_holds_left_to_release(tmp_path, host):
     driver.sh = lambda *a, **k: calls.append(a)
     driver.discard_holds()
     assert calls == []
+
+
+# --- download secrets: a gated model's token for its prepare there alone (RUN_ANYWHERE_PLAN.md phase 5) -----------
+
+TOKEN = "hf_" + "test" * 8   # made up
+HOSTS_OWN = "hf_" + "host" * 8   # the host user's own login, exported where sshd's bash reads it
+
+
+def gated_graph(tmp_path, rec) -> dict:
+    doc = work_graph(tmp_path, rec)
+    doc["nodes"][0]["uses"] = "test.gated@1.0.0"
+    return doc
+
+
+def gated_records(rec: str, who: str) -> list[dict]:
+    return [json.loads(p.read_text()) for p in sorted(Path(rec).glob(f"{who}-*"))]
+
+
+def test_a_node_with_download_secrets_runs_on_a_host_only_with_its_consent_and_never_on_a_cloud_machine(tmp_path, host):
+    from perception.backends.cloud import CloudBackend
+    coord = coordinator(tmp_path, host)
+    m = coord.registry.get("test.gated@1.0.0")
+    placement, why = coord.place(m, choice="ssh-lab:cpu")
+    assert placement is None and "its weights are downloaded with HF_TOKEN" in why and "perception hosts keys lab on" in why
+    coord.backends["ssh-lab"].host.keys = True
+    placement, why = coord.place(m, choice="ssh-lab:cpu")
+    assert placement is not None and placement.label == "ssh-lab:cpu", why
+    assert "not sent to cloud machines yet" in CloudBackend().remote_refusal(m)
+
+
+def test_a_hosts_prepare_gets_the_token_over_stdin_and_its_node_none_reading_the_accounts_cache_offline(tmp_path, host, rec, monkeypatch):
+    import hashlib
+    from perception import keycheck
+    monkeypatch.setattr(keycheck, "hf_account", lambda token: "tester" if token == TOKEN else pytest.fail("another token"))
+    # every ssh command line, logged; and the host's own HF_TOKEN in what the commands there inherit
+    argv_log = tmp_path / "argv.log"
+    ssh = tmp_path / "ssh-logged"
+    ssh.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {argv_log}\nHF_TOKEN={HOSTS_OWN} exec {tmp_path / "ssh"} "$@"\n')
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PERCEPTION_SSH", str(ssh))
+    remote = SshBackend(lab(host), runner_kind="self", python=sys.executable)
+    remote.host.keys = True
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [SelfBackend(), remote], {"HF_TOKEN": TOKEN},
+                        tick_s=0.02, backoff_s=0.01)
+    run_id = start(coord, gated_graph(tmp_path, rec))
+    assert asyncio.run(coord.run(run_id)) == "succeeded", coord._tasks(run_id)["a"]["error"]
+
+    cache = f"{remote.host.root}/hf/tester"
+    [prepare], [node] = gated_records(rec, "prepare"), gated_records(rec, "node-1")
+    assert prepare["sha256"] == hashlib.sha256(TOKEN.encode()).hexdigest()   # ours, not the host's own
+    assert (prepare["hf_home"], prepare["offline"]) == (cache, None)
+    assert node == {"keys": [], "sha256": None, "hf_home": cache, "offline": "1", "weights": True}
+    # the token in no command line, no file on the host, and nothing this machine wrote for the attempt
+    assert TOKEN not in argv_log.read_text()
+    for where in (host, coord.store.root):
+        for p in where.rglob("*"):
+            if p.is_file() and not p.is_symlink():
+                assert TOKEN.encode() not in p.read_bytes(), p

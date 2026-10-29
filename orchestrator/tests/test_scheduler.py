@@ -1786,3 +1786,76 @@ def test_a_bundle_names_the_pipeline_version_that_made_it(tmp_path):
     assert status == "succeeded", coord._tasks(run_id)
     manifest = json.loads((export.bundle(coord, run_id, tmp_path / "bundle") / "manifest.json").read_text())
     assert manifest["pipeline"]["version"] == version("hyperstudy-perception")
+
+
+# --- download secrets: a gated model's token for its prepare alone (RUN_ANYWHERE_PLAN.md phase 5) ---------------
+
+TOKEN = "hf_" + "test" * 8   # made up
+
+
+def records(folder: str, who: str) -> list[dict]:
+    return [json.loads(p.read_text()) for p in sorted(Path(folder).glob(f"{who}-*"))]
+
+
+def gated(root: Path, rec: str, **config) -> dict:
+    return graph_doc(root, [{"id": "g", "uses": "test.gated@1.0.0", "inputs": {"a": "$inputs.seed"},
+                             "config": {"record_dir": rec, **config}}])
+
+
+def test_a_node_with_download_secrets_gets_none_and_runs_offline_after_its_prepare_downloads_with_them(tmp_path, rec, monkeypatch):
+    import hashlib
+    monkeypatch.setenv("PERCEPTION_WEIGHTS", str(tmp_path / "weights"))
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [OneGpu()], {"HF_TOKEN": TOKEN},
+                        tick_s=0.02, backoff_s=0.01)
+    run_id, status = run(coord, gated(tmp_path, rec))
+    assert status == "succeeded", coord._tasks(run_id)
+    [prepare], [node] = records(rec, "prepare"), records(rec, "node-1")
+    assert prepare["sha256"] == hashlib.sha256(TOKEN.encode()).hexdigest() and prepare["offline"] is None
+    # the node: started by execve from the process that ran its prepare, with neither the token nor any other key
+    assert node == {"keys": [], "sha256": None, "hf_home": None, "offline": "1", "weights": True}
+    assert TOKEN not in (coord.store.root / "work" / run_id / "g" / "1" / "request.json").read_text()
+
+    # in the cache now: the next run's node starts at once, offline, and its prepare is not run again
+    doc = gated(tmp_path, rec)
+    (tmp_path / "seed.json").write_text('{"value": 1}')   # another input: not a cache hit
+    run_id, status = run(coord, doc)
+    assert status == "succeeded", coord._tasks(run_id)
+    assert len(records(rec, "prepare")) == 1 and len(records(rec, "node-1")) == 2
+
+
+def test_a_prepare_that_fails_fails_the_attempt_for_good_and_the_node_never_starts(tmp_path, rec, monkeypatch):
+    monkeypatch.setenv("PERCEPTION_WEIGHTS", str(tmp_path / "weights"))
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [OneGpu()], {"HF_TOKEN": TOKEN},
+                        tick_s=0.02, backoff_s=0.01)
+    run_id, status = run(coord, gated(tmp_path, rec, fail_prepare=True))
+    t = coord._tasks(run_id)["g"]
+    assert status == "failed" and t["error_code"] == "internal" and "preparing the node failed" in t["error"]
+    assert t["attempt"] == 1 and records(rec, "node-1") == []   # not retried (retries: 2), and never started
+    assert "Hugging Face refused this token" in (coord.store.root / "work" / run_id / "g" / "1" / "log.txt").read_text()
+
+
+def test_a_download_secret_is_missing_only_when_the_node_would_download(tmp_path, rec, monkeypatch):
+    from perception.plan import plan as make_plan
+    monkeypatch.setenv("PERCEPTION_WEIGHTS", str(tmp_path / "weights"))
+    coord = coordinator(tmp_path)   # no HF_TOKEN
+    graph = compile_graph(gated(tmp_path, rec), coord.registry)
+    [n] = make_plan(coord, graph, allow_downloads=True).nodes
+    assert (n.secrets, n.download_secrets, n.missing_secrets) == ([], ["HF_TOKEN"], ["HF_TOKEN"])
+    weights = tmp_path / "weights" / "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    weights.mkdir(parents=True)
+    (weights / "weights.bin").write_text("test")
+    planned = make_plan(coord, graph)
+    assert planned.nodes[0].missing_secrets == [] and planned.ok   # read from the cache, without it
+    run_id, status = run(coord, gated(tmp_path, rec))
+    assert status == "succeeded" and records(rec, "prepare") == []
+
+
+@pytest.mark.parametrize("fields, problem", [
+    ({"download_secrets": ["HF_TOKEN"]}, "go only to a prepare script, and the node has none"),
+    ({"download_secrets": ["HF_TOKEN"], "secrets": ["HF_TOKEN"], "prepare": "prepare.py"}, "in secrets and download_secrets"),
+])
+def test_a_download_secret_needs_a_prepare_and_is_not_a_run_time_secret_too(fields, problem):
+    from perception.manifests import Manifest
+    with pytest.raises(ValueError, match=problem):
+        Manifest(id="test.x", version="1.0.0", outputs={"out": "json.v1"},
+                 runners=[{"kind": "self", "entry": "node.py"}], **fields)
