@@ -5,6 +5,7 @@ run on the host, the node process there, cancel and the coordinator's checks."""
 import asyncio
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -51,6 +52,18 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setenv("PERCEPTION_SSH", str(ssh))
     monkeypatch.setenv("FAKE_HOST", str(fake))
     return fake
+
+
+PKILL = shutil.which("pkill")   # found once: some tests change PATH
+
+
+@pytest.fixture(autouse=True)
+def no_sweeper_left(tmp_path):
+    """A host's sweeper (remote_driver.SWEEP), started by a test's attempts on a fake host in its tmp_path, ends with
+    the test rather than an hour on."""
+    yield
+    if PKILL:
+        subprocess.run([PKILL, "-f", f"sweeper {tmp_path}"], capture_output=True)
 
 
 @pytest.fixture
@@ -1454,6 +1467,7 @@ echo "fake $FAKE_DISK_KB $used $((FAKE_DISK_KB - used)) 50% /"
 def hp(host: Path) -> Path:
     root = host / "home" / ".cache" / "hp"
     root.mkdir(parents=True, exist_ok=True)
+    (root / ".hyperstudy-perception").touch()   # as check_root marks it
     return root
 
 
@@ -1719,3 +1733,67 @@ def test_a_hold_the_disk_had_no_room_for_is_taken_again_after_a_cleanup_that_run
     sent = driver.send_inputs()
     assert old not in objects_on(root)
     assert Path(sent["video"]["object"]).read_bytes() == b"frames"  # sent again: the cleanup had removed it
+
+
+def test_a_full_disk_does_not_stop_the_cleanup_choosing_what_to_remove(tmp_path, host):
+    """No room for a file of the cleanup's own (here holds/ cannot be written): it still chooses and removes, since the
+    recovery from a hold the disk had no room for depends on it."""
+    root = hp(host)
+    old = stored(root, b"old", used_days_ago=30)
+    (root / "holds").chmod(0o500)
+    try:
+        clean(root, keep_days=7)
+    finally:
+        (root / "holds").chmod(0o700)
+    assert old not in objects_on(root)
+
+
+def test_a_disk_df_cannot_read_is_not_taken_for_a_full_one(tmp_path, host):
+    """df failing (no number) must not read as 0 KB free, which would remove every unheld object: the disk's rule is
+    skipped and said to be, and the retention period still applies."""
+    from perception.remote_driver import cleanup_sh, locked
+    root = hp(host)
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "df").write_text("#!/bin/sh\necho 'df: cannot read' >&2\nexit 1\n")
+    (bin_ / "df").chmod(0o755)
+    old, young = stored(root, b"old", used_days_ago=30), stored(root, b"young", used_days_ago=1)
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}"}
+    for gb in (50, None):
+        out = subprocess.run(["sh", "-c", locked(str(root), cleanup_sh(str(root), 7 * 86400, gb, 0))],
+                             capture_output=True, text=True, env=env)
+        assert out.returncode == 0 and "df" in out.stderr, out.stderr
+        assert objects_on(root) == {young}
+
+
+def test_a_host_used_once_is_still_cleaned_by_a_sweeper_of_its_own_and_only_one(tmp_path, host, monkeypatch):
+    """No other attempt may ever come to a host (a node run there once): a sweeper the drivers start there, one per
+    root, runs the cleanup every SWEEP_S with the settings the last driver gave, and ends once nothing is kept there."""
+    import perception.remote_driver as rd
+    monkeypatch.setattr(rd, "SWEEP_S", 1)
+    root = hp(host)
+    for node in ("a", "b"):            # two attempts on a host with nothing kept yet (their inputs come after): one sweeper
+        attempt(tmp_path, host, {}, node=node, keep_s=7 * 86400).send_inputs()
+    time.sleep(1.5)                                                # the sweeper has looked: nothing there yet
+    stored(root, b"old", used_days_ago=30)                         # kept after the attempts: the sweeper removes it
+    young = stored(root, b"young", used_days_ago=1)
+    deadline = time.time() + 20
+    while objects_on(root) != {young}:
+        assert time.time() < deadline, objects_on(root)
+        time.sleep(0.2)
+    sweepers = subprocess.run(["pgrep", "-f", f"sweeper {root} "], capture_output=True, text=True).stdout.split()
+    assert len(sweepers) == 1
+    (root / "holds" / ".retention").write_text("0 -1\n")           # a driver since gave --keep-days 0: nothing stays
+    subprocess.run(["rm", "-rf", str(root / "work")], check=True)  # and the attempts' folders are gone (fetched)
+    while objects_on(root) or subprocess.run(["pgrep", "-f", f"sweeper {root} "], capture_output=True).returncode == 0:
+        assert time.time() < deadline + 20, "the sweeper did not end once nothing was kept"
+        time.sleep(0.2)
+
+
+def test_a_cloud_machine_gets_no_sweeper(tmp_path, host):
+    """Deleted after its attempt, a cloud machine keeps nothing for later: no sweeper is left running there."""
+    root = hp(host)
+    stored(root, b"x", used_days_ago=1)
+    attempt(tmp_path, host, {}, cloud={"provider": "runpod"}).send_inputs()
+    time.sleep(0.5)
+    assert subprocess.run(["pgrep", "-f", f"sweeper {root} "], capture_output=True).returncode == 1

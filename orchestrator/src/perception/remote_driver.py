@@ -175,7 +175,7 @@ CLEANUP = r"""cleanup() {
   last=$(cat "$r/holds/.cleaned" 2>/dev/null)
   case "$last" in ''|*[!0-9]*) last=0;; esac
   [ $((now - last)) -lt "$every" ] && return 0
-  echo "$now" > "$r/holds/.cleaned"
+  echo "$now" > "$r/holds/.cleaned" 2>/dev/null   # (a full disk: then it runs again next time)
   mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
   for d in "$r"/objects/.evicting-*; do [ -e "$d" ] && { chmod -R u+w "$d"; rm -rf "$d"; }; done
   for d in "$r"/objects/.incoming-* "$r"/objects/.keeping-* "$r"/code/.incoming-* "$r"/envs/.incoming-*; do
@@ -206,7 +206,22 @@ CLEANUP = r"""cleanup() {
     done
     return $found
   }
-  list=$(mktemp "$r/holds/.list-XXXXXX") || return 1
+  for d in "$r"/holds/*; do   # holds of objects that are not there (an upload that failed): once no one holds them
+    [ -d "$d" ] && [ ! -e "$r/objects/${d##*/}" ] && ! live "${d##*/}" && rm -rf "$d"
+  done
+  # the disk's rule only with numbers from df: an error is never read as a full disk (or an empty one)
+  free() { df -Pk "$r" 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ {print $4}'; }
+  left=$(free)
+  if [ -z "$left" ]; then
+    echo "cleanup: df gave no free space for $r: only what is unused past the retention period is removed" >&2
+    minfree=0
+  elif [ "$minfree" -lt 0 ]; then
+    total=$(df -Pk "$r" 2>/dev/null | awk 'NR == 2 && $2 ~ /^[0-9]+$/ {print $2}')
+    minfree=$(( ${total:-0} / 10 ))
+    [ "$minfree" -gt DEFAULT_KB ] && minfree=DEFAULT_KB
+  fi
+  # the unheld objects, unused longest first, through a pipe: on a full disk no file of the cleanup's own could be
+  # written, and it must still remove what it can
   for o in "$r"/objects/*; do
     s=${o##*/}
     case "$s" in *[!0-9a-f]*) continue;; esac
@@ -214,30 +229,21 @@ CLEANUP = r"""cleanup() {
     live "$s" && continue
     t=$(mtime "$r/holds/$s/.used")
     [ -n "$t" ] || t=$(mtime "$o/.complete")
-    echo "${t:-0} $s" >> "$list"
-  done
-  for d in "$r"/holds/*; do   # holds of objects that are not there (an upload that failed): once no one holds them
-    [ -d "$d" ] && [ ! -e "$r/objects/${d##*/}" ] && ! live "${d##*/}" && rm -rf "$d"
-  done
-  free() { df -Pk "$r" | awk 'NR == 2 {print $4}'; }
-  if [ "$minfree" -lt 0 ]; then
-    minfree=$(( $(df -Pk "$r" | awk 'NR == 2 {print $2}') / 10 ))
-    [ "$minfree" -gt DEFAULT_KB ] && minfree=DEFAULT_KB
-  fi
-  left=$(free)
-  sort -n "$list" | while read -r t s; do
+    echo "${t:-0} $s"
+  done | sort -n | while read -r t s; do
     age=$((now - t))
     if [ "$age" -ge "$keep" ]; then
       if [ "$age" -ge 86400 ]; then why="unused for $((age / 86400)) days"; else why="unused for $((age / 3600)) hours"; fi
-    elif [ "${left:-0}" -lt "$minfree" ]; then why="the disk had $((left / 1024)) MB free"
+    elif [ "$left" -lt "$minfree" ]; then why="the disk had $((left / 1024)) MB free"
     else break; fi
     kb=$(du -sk "$r/objects/$s" | cut -f1)
     chmod u+w "$r/objects/$s" && mv "$r/objects/$s" "$r/objects/.evicting-$s" || continue
     chmod -R u+w "$r/objects/.evicting-$s"; rm -rf "$r/objects/.evicting-$s" "$r/holds/$s"
     echo "removed $s $kb $why"
     left=$(free)
+    [ -n "$left" ] || left=$minfree   # df failed since: no more for the disk's sake
   done
-  rm -f "$list"
+  return 0
 }"""
 
 # perl (as LEASE: flock(1) is not on a Mac): run a command ($2...) holding an exclusive lock on the file $1, the lock's
@@ -248,6 +254,26 @@ flock($lock, LOCK_EX) or die "perception: objects' lock: $!\n";
 exec { $ARGV[0] } @ARGV or die "perception: cannot run $ARGV[0]: $!\n";
 """
 CLEAN_EVERY_S = 600   # how often a driver's attempt runs the cleanup on its host, at most
+SWEEP_S = 3600        # how often a host's sweeper runs it (SWEEP)
+
+# A host's own sweeper, for a host no attempt may come to again (a node run there once): detached, one per root (ONCE:
+# a lock on holds/.sweeper that a second one cannot take, and so ends), started by every hold (outside the objects'
+# lock, whose descriptor it must not inherit). Every SWEEP_S it runs the cleanup under the objects' lock with the
+# retention the last driver there wrote (holds/.retention: its keep_s and free KB), and it ends when it finds nothing
+# kept there and no attempt's folder (or the root no longer perception's). A host that restarts loses it until the next attempt there.
+SWEEP = r"""r=$1 every=$2
+while sleep "$every"; do
+  # nothing kept, and no attempt there that may yet keep something (the one that started it may not have sent its
+  # inputs yet): done
+  [ -e "$r/.hyperstudy-perception" ] && [ -n "$(ls "$r/objects" "$r/work" 2>/dev/null | grep -v ':$' | grep .)" ] || exit 0
+  read -r keep free < "$r/holds/.retention" 2>/dev/null || continue
+  LOCKED_CLEANUP
+done"""
+ONCE = r"""$^F = 1023;
+open(my $lock, ">>", shift) or exit 0;
+flock($lock, LOCK_EX | LOCK_NB) or exit 0;
+exec { $ARGV[0] } @ARGV or exit 1;
+"""
 
 
 def locked(root: str, script: str) -> str:
@@ -265,6 +291,19 @@ def cleanup_sh(root: str, keep_s: float, min_free_gb: float | None, every_s: flo
     free = -1 if min_free_gb is None else round(min_free_gb * 2**20)
     script = CLEANUP.replace("DEFAULT_KB", str(MIN_FREE_GB << 20))
     return f"{script}\ncleanup {shlex.quote(root)} {int(keep_s)} {free} {int(every_s)} {KEEP_S + 3600}"
+
+
+def sweeper_sh(root: str) -> str:
+    """sh that starts the host's sweeper (SWEEP) in a session of its own, detached, unless it is running already."""
+    from .hosts import MIN_FREE_GB
+    q = shlex.quote
+    body = CLEANUP.replace("DEFAULT_KB", str(MIN_FREE_GB << 20)) + '\ncleanup "$@"'
+    clean = (f'perl -MFcntl=:flock -e {q(LOCK)} "$r/objects.lock" sh -c {q(body)} cleanup "$r" "$keep" "$free" 0 {KEEP_S + 3600}'
+             " > /dev/null 2>&1")
+    sweep = SWEEP.replace("LOCKED_CLEANUP", clean)
+    return ("if command -v setsid >/dev/null 2>&1; then set -- setsid; else set -- perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die'; fi\n"
+            f'nohup "$@" perl -MFcntl=:flock -e {q(ONCE)} {q(root)}/holds/.sweeper sh -c {q(sweep)} sweeper {q(root)} {int(SWEEP_S)}'
+            " > /dev/null 2>&1 < /dev/null &")
 
 
 def removed(said: str, host: str) -> list[str]:
@@ -484,9 +523,13 @@ class Driver:
         now = cleanup_sh(self.root, keep, free, 0).rsplit("\n", 1)[1]
         script = (f"{HOLD}\n{hold}\n{heartbeat_sh(self.attempt)}\n{cleanup_sh(self.root, keep, free, CLEAN_EVERY_S)}\n"
                   f"if [ $held != 0 ]; then\n{now}\n{hold}\nfi\n"
+                  # the retention for the host's sweeper, which then starts (or is running)
+                  f"printf '%s %s\\n' {int(keep)} {-1 if free is None else round(free * 2**20)} > {q(self.root)}/holds/.retention\n"
                   'printf \'%s\\n\' "$out"\n'
                   '[ $held = 0 ] || { echo "could not hold the inputs on the host (is its disk full?)" >&2; exit 1; }')
-        said = self.sh(locked(self.root, script)).stdout.decode(errors="replace")
+        # the host's sweeper, unless it is a cloud machine: deleted after the attempt, it has nothing to keep for later
+        sweeper = "" if self.spec.get("cloud") else sweeper_sh(self.root)
+        said = self.sh(f"{locked(self.root, script)}\nheld=$?\n{sweeper}\nexit $held").stdout.decode(errors="replace")
         for line in removed(said, self.spec["host"]):   # sent again when a node there reads it
             say(line)
         return {x.split()[1] for x in said.splitlines() if x.startswith("there ")}

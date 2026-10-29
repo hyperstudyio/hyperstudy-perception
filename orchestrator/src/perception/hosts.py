@@ -23,9 +23,11 @@ by others:
                          until they are the ones unused longest; never while a step holds them. A removed input is sent
                          again when a node there reads it
     holds/<sha256>/      who holds an object (a file per attempt, naming its folder in work/: released when that
-                         folder is removed) and when it was last used (.used). The drivers' cleanup, on each attempt (at
-                         most every 10 minutes) or `perception hosts clean NAME --expired`, removes only what no
-                         attempt whose folder exists holds, under objects.lock (remote_driver.CLEANUP)
+                         folder is removed) and when it was last used (.used). The cleanup removes only what no attempt
+                         whose folder exists holds, under objects.lock (remote_driver.CLEANUP). It runs on each attempt
+                         (at most every 10 minutes), every hour in a sweeper of the host's own that the attempts start
+                         (so a host used once is cleaned too; it ends once nothing is kept there, and a host that
+                         restarts has none until its next attempt), and with `perception hosts clean NAME --expired`
     work/<run>/<node>/<attempt>/   the request, out/, response.json, log.txt and pid of one attempt, made before its
                          inputs are sent: removed after it, or by the host's watchdog when no driver has asked about it
                          for a while (a finished node's results wait a day for its driver), or by the cleanup when
