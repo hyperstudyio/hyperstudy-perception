@@ -1276,7 +1276,13 @@ def test_two_exclusive_gpu_nodes_on_a_host_with_two_cards_run_together_each_on_i
     run_id = start(coord, doc)
     status = asyncio.run(coord.run(run_id))
     t = coord._tasks(run_id)
-    assert status == "succeeded", {n: (x["state"], x["error_code"], x["error"], log_of(coord, run_id, n)[-1500:]) for n, x in t.items()}
+    if status != "succeeded":   # in full (pytest shortens an assertion's message): seen once on CI, never here
+        for n, x in t.items():
+            print(n, x["state"], x["error_code"], x["error"], x["attempt"])
+            for a in range(1, x["attempt"] + 1):
+                print(log_of(coord, run_id, n, a))
+        print([dict(e) for e in coord.store.db.execute("SELECT node_id, kind, message FROM events WHERE run_id=?", (run_id,))])
+    assert status == "succeeded"
     t = coord._tasks(run_id)
     first, second, third = sorted(t.values(), key=lambda x: x["started_at"])
     assert {first["gpu"], second["gpu"]} == {0, 1}                       # one on each card, at once
