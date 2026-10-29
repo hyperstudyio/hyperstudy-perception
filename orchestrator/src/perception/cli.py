@@ -1047,7 +1047,7 @@ def main(argv: list[str] | None = None) -> int:
     rr_.add_argument("--detach", action="store_true", help="return once it has started there")
     rr_.set_defaults(fn=cmd_remote)
     for name, helptext in (("status", "a run there, or the runs there"), ("attach", "follow a run there until it ends"),
-                           ("fetch", "bring a finished run's bundle back and import the run into this store")):
+                           ("fetch", "import a finished run into this store, and export its bundle here")):
         x = rsub.add_parser(name, help=helptext)
         x.add_argument("host")
         x.add_argument("run_id", nargs="?" if name == "status" else None)

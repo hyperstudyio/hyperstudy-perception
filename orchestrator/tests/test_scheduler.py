@@ -482,9 +482,11 @@ def test_an_adopted_node_caught_between_two_execs_is_still_running(tmp_path, mon
     request = str(tmp_path / "work" / "r" / "a" / "1" / "request.json")
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        for shown, alive in [("", True), ("[perl]", True), ("[python3] <defunct>", True),
-                             (f"python node.py --request {request}", True),
-                             ("python other.py --request /elsewhere/request.json", False)]:
+        for shown, alive in [("  4711", True), ("  4711 [perl]", True), ("  4711 [python3] <defunct>", True),
+                             (f"  4711 python node.py --request {request}", True),
+                             ("  4711 python other.py --request /elsewhere/request.json", False),
+                             # a pid reused by a kernel thread (review of #46): its parent is kthreadd
+                             ("      2 [kworker/3:1-events]", False), ("    0 [kthreadd]", False)]:
             monkeypatch.setattr(native.subprocess, "run", lambda *a, _s=shown, **k: subprocess.CompletedProcess(a, 0, _s + "\n", ""))
             assert native._alive(proc.pid, request) is alive, shown
         # ps finds no such process (it ended between the two checks): gone

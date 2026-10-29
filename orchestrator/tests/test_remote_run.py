@@ -503,10 +503,16 @@ def test_a_dump_naming_another_run_or_nodes_outside_the_run_is_refused(tmp_path,
     assert not list(tmp_path.parent.rglob("escaped"))
 
 
+def test_a_bundle_path_the_host_names_is_never_read(tmp_path, lab, capsys, monkeypatch):
+    """The bundle is exported here from the checked run: a path the host's answer names for one is not used."""
+    rec = str(tmp_path / "rec")
+    run_id = finished_run(tmp_path, capsys, rec)
+    tampered(monkeypatch, lambda d: d.update(bundle="../../../../.."))
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id, "--output", str(tmp_path / "bundle"))
+    assert code == 0 and of(out, "fetched")[0]["path"] is None   # test.work makes no media: no bundle, and nothing read
+
+
 @pytest.mark.parametrize("change", [
-    lambda d: d.update(bundle="../../../../.."),
-    lambda d: d.update(bundle=f"remote/{d['run']['id']}/../../../.."),
-    lambda d: d.update(bundle="/etc"),
     lambda d: d["logs"][0].update(path="../../../../../etc/hosts"),
     lambda d: d["logs"][0].update(path=f"work/{d['run']['id']}/a/1/../../../../../escaped"),
 ])
@@ -607,3 +613,54 @@ def test_events_that_are_not_events_end_an_attach(tmp_path, lab, capsys, monkeyp
         {**real(self, action, *a, **k), "events": [{"id": "x"}]} if action == "events" else real(self, action, *a, **k)))
     code, out = perception(capsys, "remote", "attach", "lab", run_id)
     assert code == 1 and "not one" in of(out, "error")[0]["problems"][0]
+
+
+def test_the_fetched_bundle_is_exported_here_from_the_checked_run_not_taken_from_the_host(tmp_path, lab, capsys):
+    """Review of #46: a bundle the host kept could have been rewritten there after the run (a layer, a licence mode);
+    the one fetch writes is exported here, from the objects it checked against their hashes."""
+    video = tmp_path / "my clip.mp4"
+    video.write_bytes(b"not really a video")
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "policy": {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ["video", "transcript", "faces"]},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    graph = tmp_path / "graph.yaml"
+    graph.write_text(json.dumps(doc))
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    run_id = of(out, "run.created")[0]["run"]
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id, "--output", str(tmp_path / "first"))
+    assert code == 0, out
+    # a bundle the host has (one an earlier fetch had it export, or one written there), rewritten there
+    there = host_root(lab) / "coordinator" / "remote" / run_id / "bundle"
+    there.mkdir(parents=True, exist_ok=True)
+    (there / "layers").mkdir(exist_ok=True)
+    if (there / "layers" / "shots.json").exists():
+        (there / "layers" / "shots.json").chmod(0o644)
+    (there / "layers" / "shots.json").write_text('{"tampered": true}')
+    (there / "manifest.json").write_text('{"tampered": true}')
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id, "--output", str(tmp_path / "bundle"))
+    assert code == 0, out
+    assert "tampered" not in (tmp_path / "bundle" / "layers" / "shots.json").read_text()
+    code, out = perception(capsys, "export", run_id, "--output", str(tmp_path / "here"))
+    assert (tmp_path / "bundle" / "layers" / "shots.json").read_bytes() == (tmp_path / "here" / "layers" / "shots.json").read_bytes()
+
+
+def test_starting_a_run_again_differently_leaves_this_machines_record_of_it(tmp_path, lab, capsys):
+    """Review of #46: `remote run --run-id X` with another --set (or --only) is another run under X's id: refused
+    before anything is sent, and X's record (what fetch checks the host's answer against) is left as it was."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec), work("b", "$nodes.a.out", record_dir=rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    run_id = of(out, "run.created")[0]["run"]
+    before = remote_run.record(run_id).read_text()
+    sent = (lab / "argv.log").read_text()
+    for change in (["--set", "b.add=5"], ["--only", "a"]):
+        code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", run_id, *change)
+        assert code == 1 and "another graph" in of(out, "error")[0]["problems"][0], out
+    assert remote_run.record(run_id).read_text() == before
+    assert (lab / "argv.log").read_text() == sent                       # nothing was asked of the host
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 0 and of(out, "fetched")[0]["cache_refused"] == 0, out
+    # and the same start again is still an attach, which keeps what fetch recorded
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", run_id, "--detach")
+    assert code == 0 and of(out, "remote_started")[0]["started"] is False
+    assert json.loads(remote_run.record(run_id).read_text()).get("imported_events")

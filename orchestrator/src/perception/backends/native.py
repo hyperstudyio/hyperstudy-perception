@@ -160,10 +160,20 @@ def _alive(pid: int, request: str) -> bool:
         return False
     except PermissionError:
         return False
-    # -ww: unlimited width (procps truncates columns to 80 characters when not writing to a terminal, and a long request
-    # path then made a live node look dead)
-    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
-    if out.returncode:   # no such process any more: it ended between the two checks
-        return False
-    command = out.stdout.strip()
-    return request in command or command == "" or command.startswith("[")
+    command = _shown(pid)
+    return command is not None and (request in command or command == "")
+
+
+def _shown(pid: int) -> str | None:
+    """`pid`'s command line as ps shows it, "" while it has none (mid-exec, or a zombie: shown in brackets), or None when
+    there is no such process, or it is a kernel thread (also shown in brackets: a pid reused by one is never a node;
+    their parent is kthreadd, pid 2, or none). -ww: unlimited width (procps truncates columns to 80 characters when not
+    writing to a terminal, and a long request path then made a live node look dead)."""
+    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "command="], capture_output=True, text=True)
+    if out.returncode:   # no such process any more
+        return None
+    ppid, _, command = out.stdout.strip().partition(" ")
+    command = command.strip()
+    if command == "" or command.startswith("["):
+        return None if ppid in ("0", "2") else ""
+    return command

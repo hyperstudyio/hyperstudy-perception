@@ -6,7 +6,7 @@ with its RELEASE.json), with PERCEPTION_HOME set to the host's own store for suc
     python -m perception.remote_coordinator serve RUN             started by `start`, in a session of its own; keys on stdin
     python -m perception.remote_coordinator status [RUN]
     python -m perception.remote_coordinator events RUN [--after N]
-    python -m perception.remote_coordinator dump RUN              what `remote fetch` imports; the bundle exported here
+    python -m perception.remote_coordinator dump RUN              what `remote fetch` imports
 
 Each prints JSON objects, one per line (an internal protocol between two copies of this code: the machine that started
 the run sends its copy before every call).
@@ -135,11 +135,9 @@ def alive(run: str) -> bool:
         os.kill(pid, 0)
     except (OSError, ValueError):
         return False
-    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
-    if out.returncode:
-        return False
-    command = out.stdout.strip()
-    return f"perception.remote_coordinator serve {run}" in command or command == "" or command.startswith("[")
+    from .backends.native import _shown
+    command = _shown(pid)
+    return command is not None and (f"perception.remote_coordinator serve {run}" in command or command == "")
 
 
 def coordinator_state(store: Store, run: str, status: str) -> str:
@@ -150,9 +148,11 @@ def coordinator_state(store: Store, run: str, status: str) -> str:
     return "gone" if status == "running" else "finished"
 
 
-def with_inputs(doc: dict, inputs: dict, run: str) -> dict:
+def with_inputs(doc: dict, inputs: dict, run: str, make: bool = True) -> dict:
     """The graph with each input read through a link under its own name to the object the other machine filed it as
-    (module docstring, Inputs). Nothing of that machine's paths came here: only each input's sha256 and file name."""
+    (module docstring, Inputs). Nothing of that machine's paths came here: only each input's sha256 and file name.
+    `make`: make the links (a run made or resumed); without, only what the graph names them (a run going on, whose links
+    are left as they are: a node may be opening one)."""
     if not isinstance(inputs, dict) or set(inputs) != set(doc.get("inputs", {})):
         raise Refusal("the run's inputs and its graph's do not match")
     out = {**doc, "inputs": {}}
@@ -165,21 +165,24 @@ def with_inputs(doc: dict, inputs: dict, run: str) -> dict:
         if not (obj / ".complete").exists():
             raise Refusal(f"input {name} ({sha[:12]}) was not sent here")
         link = run_folder(run) / "inputs" / name / file
-        link.parent.mkdir(parents=True, exist_ok=True)
-        if link.is_symlink() or link.is_file():
-            link.unlink()
-        elif link.exists():
-            shutil.rmtree(link)
         try:
             shape = artifacts.get(doc["inputs"][name]["type"]).shape
         except KeyError as e:
             raise Refusal(f"input {name}: {e.args[0]}")
-        if shape == "source":   # read where it is (the video): a link
-            link.symlink_to(obj / "data")
-        elif (obj / "data").is_dir():   # published into the store as it is read (Store.publish refuses a link): a copy
-            shutil.copytree(obj / "data", link)
-        else:
-            shutil.copyfile(obj / "data", link)
+        if make:
+            # made beside it and renamed into place: a node of a run being resumed that opens it meanwhile finds it
+            link.parent.mkdir(parents=True, exist_ok=True)
+            tmp = link.parent / f".{file}.{os.getpid()}"
+            shutil.rmtree(tmp, ignore_errors=True) if tmp.is_dir() and not tmp.is_symlink() else tmp.unlink(missing_ok=True)
+            if shape == "source":   # read where it is (the video): a link
+                tmp.symlink_to(obj / "data")
+            elif (obj / "data").is_dir():   # published into the store as it is read (Store.publish refuses a link): a copy
+                shutil.copytree(obj / "data", tmp)
+            else:
+                shutil.copyfile(obj / "data", tmp)
+            if link.is_dir() and not link.is_symlink():
+                shutil.rmtree(link)
+            os.replace(tmp, link)
         out["inputs"][name] = {**doc["inputs"][name], "uri": link.as_uri()}
     return out
 
@@ -222,7 +225,7 @@ def cmd_start(args) -> int:
     with locked(folder / ".lock"):
         store = Store(home())
         reg = registry(nodes)
-        doc = with_inputs(spec["graph"], spec.get("inputs", {}), run)
+        doc = with_inputs(spec["graph"], spec.get("inputs", {}), run, make=False)
         if problems := refused_places(doc):
             raise Refusal(*problems)
         row = store.db.execute("SELECT status, graph FROM runs WHERE id=?", (run,)).fetchone()
@@ -235,8 +238,10 @@ def cmd_start(args) -> int:
             if row["status"] != "running":
                 answer(run=run, started=False, status=row["status"])
                 return 0
-            graph = compile_graph(doc, reg)   # its coordinator is gone: resumed below, with the keys sent now
+            with_inputs(spec["graph"], spec.get("inputs", {}), run)   # its coordinator is gone: resumed below
+            graph = compile_graph(doc, reg)
         else:
+            with_inputs(spec["graph"], spec.get("inputs", {}), run)
             try:
                 graph = compile_graph(doc, reg)
             except GraphError as e:
@@ -330,11 +335,10 @@ def cmd_events(args) -> int:
 
 
 def cmd_dump(args) -> int:
-    """What `remote fetch` reads, once the run has ended: its run, task and event rows, each final attempt's log and the
-    bundle exported here (paths relative to the store). The other machine trusts none of it but what it checks: it
+    """What `remote fetch` reads, once the run has ended: its run, task and event rows and each final attempt's log
+    (relative to the store; the bundle is exported on that machine, from what it checked). The other machine trusts none of it but what it checks: it
     copies the objects the tasks' outputs name from their places in the store (Store.object_dir) and checks each against
     its hash, and makes cache rows only from tasks whose keys it computes itself (remote_run, fetch and import)."""
-    from . import export as export_mod
     store = Store(home())
     run = args.run
     row = store.db.execute("SELECT * FROM runs WHERE id=?", (run,)).fetchone()
@@ -350,19 +354,8 @@ def cmd_dump(args) -> int:
         log = store.root / "work" / run / t["node_id"] / str(t["attempt"]) / "log.txt"
         if t["attempt"] and log.is_file() and not log.is_symlink():
             logs.append({"node": t["node_id"], "attempt": t["attempt"], "path": log.relative_to(store.root).as_posix()})
-    bundle, problem = None, None
-    if row["status"] == "succeeded":
-        out = run_folder(run) / "bundle"
-        if not (out / "manifest.json").exists():
-            try:
-                coord = Coordinator(store, registry(args.nodes or []), backends())
-                export_mod.bundle(coord, run, out)
-            except SystemExit as e:   # export's own refusals (an unfinished node, unrelated writers)
-                problem = str(e)
-        if (out / "manifest.json").exists():
-            bundle = out.relative_to(store.root).as_posix()
     events = [dict(e) for e in store.events(run)]
-    answer(run=dict(row), tasks=tasks, logs=logs, bundle=bundle, bundle_problem=problem, events=events)
+    answer(run=dict(row), tasks=tasks, logs=logs, events=events)
     return 0
 
 

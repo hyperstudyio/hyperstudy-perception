@@ -45,13 +45,14 @@ The run's id is chosen here and said first (`run.created`), so a start whose ans
 `--run-id`: a run already being coordinated there is attached to, not started a second time, and one whose coordinator
 is gone (the host restarted) is resumed.
 
-`fetch` exports the run's bundle there and brings it back, and imports the run into this machine's store: its run,
+`fetch` imports the run into this machine's store: its run,
 task and event rows and every object its results name (copied, then checked against its hash here, as the store
 publishes), and a cache row for each result whose key this machine computes itself for that step (its node's identity
 on HOST, its config, its inputs' hashes). Nothing the host answers is trusted beyond what is checked (the host is
 shared: root or another of the user's processes there could rewrite its store): the graph, nodes and inputs are this
 machine's own record of the run (only runs it started are imported), every name must be a node of that graph and every
-path one of the store's own layouts, and nothing comes back as a link. Imported tasks get attempt numbers of this
+path one of the store's own layouts, and nothing comes back as a link. The bundle is exported here, from the run just
+imported, never taken from the host. Imported tasks get attempt numbers of this
 store's own (one past the last it has for that node), their attempt logs beside them, and where they ran says HOST
 (`ran_on`); a cache row this store already has is never replaced. After a fetch, planning the same steps placed on HOST
 here finds them cached.
@@ -367,10 +368,18 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
         sha = store.source(path, graph.spec.inputs[name].type).hash
         inputs[name] = {"sha256": sha, "filename": path.name}
         here[name] = str(path)
-    record(run).parent.mkdir(parents=True, exist_ok=True)
-    # the graph as this machine ran it (its inputs at their paths here): what an import trusts, never the host's copy
-    record(run).write_text(json.dumps({"host": remote.host.name, "inputs": here, "graph": str(graph.source or ""),
-                                       "graph_doc": doc}))
+    # the graph as this machine ran it (its inputs at their paths here): what an import trusts, never the host's copy.
+    # Written once: a start under the same id with another graph (another --set or --only, other inputs, another host)
+    # is another run, refused before anything is sent, and never changes the record fetch checks the first one against
+    mine = {"host": remote.host.name, "inputs": here, "graph": str(graph.source or ""), "graph_doc": doc}
+    if record(run).exists():
+        had = json.loads(record(run).read_text())
+        if any(had.get(k) != mine[k] for k in ("host", "inputs", "graph_doc")):
+            raise RemoteError(f"run {run} was started with another graph (or other inputs, or on another host): "
+                              "a run's id names one run")
+    else:
+        record(run).parent.mkdir(parents=True, exist_ok=True)
+        record(run).write_text(json.dumps(mine))
     remote.copy, remote.interpreter   # the copy and its environment before the video: a host that cannot run it gets no clip
     for name in graph.spec.inputs:
         remote.send_input(Path(here[name]), inputs[name]["sha256"], run, name)
@@ -533,9 +542,6 @@ def checked(dump: dict, run: str, graph: Graph) -> dict:
             raise RemoteError(f"a log the host named ({entry.get('path') if isinstance(entry, dict) else entry!r}) is not where its "
                               "store keeps an attempt's")
         logs[node] = entry["path"]
-    bundle = dump.get("bundle")
-    if bundle is not None and bundle != f"remote/{run}/bundle":
-        raise RemoteError(f"the bundle the host named ({bundle!r}) is not where its store keeps one")
     events = []
     for e in dump.get("events") or []:
         node = e.get("node_id") if isinstance(e, dict) else "?"
@@ -546,8 +552,7 @@ def checked(dump: dict, run: str, graph: Graph) -> dict:
         events.append({"id": e["id"], "node_id": node, "kind": e["kind"], "message": _text(e.get("message"), "event") or "",
                        "at": _number(e.get("at"), "event time", none=False)})
     run_row = {f: _number(r.get(f), f, none=f == "finished_at") for f in ("created_at", "finished_at", "max_cost_usd", "spent_usd")}
-    return {"run": {**run_row, "status": r["status"]}, "tasks": tasks, "logs": logs, "bundle": bundle, "events": events,
-            "bundle_problem": _text(dump.get("bundle_problem"), "bundle problem", 500)}
+    return {"run": {**run_row, "status": r["status"]}, "tasks": tasks, "logs": logs, "events": events}
 
 
 def fetch(remote: Remote, run: str, output: Path) -> dict:
@@ -574,8 +579,8 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
         objects = sorted({store.object_dir(a["shape"], a["hash"]).relative_to(store.root).as_posix()
                           for t in dump["tasks"].values() for a in t["outputs"].values()})
         wanted = [o for o in objects if not (store.root / o).exists()] + list(dump["logs"].values())
-        if dump["bundle"]:
-            wanted.append(dump["bundle"])
+        if dump["run"]["status"] == "succeeded" and (output / "manifest.json").exists():
+            raise RemoteError(f"{output} already holds a bundle")
         got.mkdir()
         if wanted:
             listing = stage / "files.txt"
@@ -583,24 +588,20 @@ def fetch(remote: Remote, run: str, output: Path) -> dict:
             remote.rsync("--files-from", str(listing), f"{remote.host.dest}:{remote.home}/", f"{got}/", links=False)
             for d in [got, *(p for p in got.rglob("*") if p.is_dir() and not p.is_symlink())]:
                 d.chmod(0o700)   # rsync keeps the host's read-only folders so: they are checked, moved and removed here
-        bundle = None
-        if dump["bundle"]:
-            src = _within(got, dump["bundle"])
-            if not src.is_dir() or special_files(src) or not (src / "manifest.json").is_file():
-                raise RemoteError("the bundle there is missing, or holds a link or a special file: not brought back")
-            if (output / "manifest.json").exists():
-                raise RemoteError(f"{output} already holds a bundle")
         imported = import_run(store, remote.host, run, graph, mine, dump, got, objects)
-        if dump["bundle"]:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(src, output, dirs_exist_ok=True)
-            for f in output.rglob("*"):
-                if f.is_file():
-                    f.chmod(0o644)   # as export writes a bundle
-            bundle = str(output)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-    return {"run": run, "host": remote.host.name, "path": bundle, "bundle_problem": dump["bundle_problem"], **imported}
+    # the bundle, exported here from the run just imported (its objects checked against their hashes), never one the host
+    # kept: that could have been rewritten there after the run (a layer, a licence mode), and is what the annotator reads
+    bundle, problem = None, None
+    if dump["run"]["status"] == "succeeded":
+        from . import export as export_mod
+        from .scheduler import Coordinator
+        try:
+            bundle = str(export_mod.bundle(Coordinator(store, registry, []), run, output))
+        except SystemExit as e:   # export's own refusals (unrelated writers of a layer, no decode node)
+            problem = str(e)
+    return {"run": run, "host": remote.host.name, "path": bundle, "bundle_problem": problem, **imported}
 
 
 def _objects(store: Store, objects: list[str], got: Path) -> int:
