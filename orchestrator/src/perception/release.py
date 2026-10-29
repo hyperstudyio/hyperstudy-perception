@@ -23,7 +23,9 @@ def home() -> Path:
 
 @cache
 def release() -> dict | None:
-    """{"commit": the full hash, "files": every file it carries, relative to REPO}; None in a checkout."""
+    """{"commit": the full hash, "files": every file it carries, relative to REPO}; None in a checkout. A copy a remote
+    coordinator runs from (remote_run.py) also has "copy": the hash of its content, which may differ from the commit's
+    (files changed and not committed yet)."""
     if not RELEASE.exists():
         return None
     data = json.loads(RELEASE.read_text())
@@ -46,8 +48,9 @@ def env_dir(env: str) -> Path | None:
     lock = REPO / env / "uv.lock"
     h = hashlib.sha256(lock.read_bytes() if lock.exists() else b"no lock")
     # the commit too: the SDK is installed editable from this copy, so two builds of one version (PyPI's and a local
-    # one) must not share an environment and point its SDK at each other's files
-    h.update(release()["commit"].encode())
+    # one) must not share an environment and point its SDK at each other's files; for a copy a remote coordinator runs
+    # from, its content (two copies of one commit can differ: files not committed yet)
+    h.update(release().get("copy", release()["commit"]).encode())
     try:
         h.update(version("hyperstudy-perception").encode())
     except PackageNotFoundError:   # the files without the package's metadata (a copy run in place)

@@ -1,0 +1,457 @@
+"""A whole run coordinated on another machine (remote_run.py, remote_coordinator.py), against a stand-in for ssh that
+runs each command on this machine, in a separate home (the "host") and with an empty environment, as ssh gives a remote
+command: nothing of this process's environment (its keys above all) reaches the host but what is sent. Everything else
+is real: the listed copy of the pipeline, rsync, the orchestrator run from that copy there, the detached coordinator, the
+nodes it runs, and the import here."""
+
+import asyncio
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from perception import cli, remote_run
+from perception.backends.base import Capabilities, this_platform
+from perception.backends.native import SelfBackend
+from perception.backends.remote import SshBackend
+from perception.hosts import Host, Hosts
+from perception.ir import compile_graph
+from perception.manifests import Registry
+from perception.plan import plan as make_plan
+from perception.scheduler import Coordinator
+from perception.store import Store
+
+NODES = Path(__file__).parent / "nodes"
+KEY = "sk-test-" + "9f3c1d7e" * 4   # a stand-in key: what must never be found where it does not belong
+ALL_KINDS = ["video", "audio", "frames", "faces", "transcript", "embeddings"]
+
+# ssh [-o OPTION]... DEST COMMAND, run here in the host's home with nothing of this environment but PATH. Each command
+# line is recorded (argv.log); stdin is recorded only for a start (start.stdin, outside the folders searched for the key)
+FAKE_SSH = r"""#!/bin/sh
+while [ $# -gt 0 ]; do case "$1" in -o|-l|-p|-i) shift 2;; -*) shift;; *) break;; esac; done
+shift
+printf '%s\n' "$*" >> "$FAKE_HOST/argv.log"
+if [ -e "$FAKE_HOST/unreachable" ]; then echo "ssh: connect to host lab: Network is unreachable" >&2; exit 255; fi
+case "$*" in
+  *"remote_coordinator start"*)
+    tee -a "$FAKE_RECORD/start.stdin" | env -i HOME="$FAKE_HOST/home" PATH="$PATH" /bin/sh -c "cd \"\$HOME\" && $*"; exit $?;;
+esac
+cd "$FAKE_HOST/home" && exec env -i HOME="$FAKE_HOST/home" PATH="$PATH" /bin/sh -c "$*"
+"""
+
+
+@pytest.fixture
+def lab(tmp_path, monkeypatch):
+    """A host `lab` (its home is tmp_path/host/home), this machine's store in tmp_path/mac, and TEST_API_KEY set here."""
+    fake = tmp_path / "host"
+    (fake / "home").mkdir(parents=True)
+    record = tmp_path.parent / f"{tmp_path.name}-record"   # outside tmp_path: the searches for the key skip it
+    record.mkdir()
+    ssh = tmp_path / "ssh"
+    ssh.write_text(FAKE_SSH)
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PERCEPTION_SSH", str(ssh))
+    monkeypatch.setenv("FAKE_HOST", str(fake))
+    monkeypatch.setenv("FAKE_RECORD", str(record))
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "mac"))
+    monkeypatch.setenv("TEST_API_KEY", KEY)
+    # the host's Python: this interpreter (it has the orchestrator's dependencies), not an environment made there
+    monkeypatch.setattr(remote_run.Remote, "interpreter", property(lambda self: sys.executable))
+    caps = Capabilities(platform=this_platform(), cpu_cores=8, memory_gb=32, accelerators={"cpu"}, vram_gb=0,
+                        tools={"uv": None, "ffmpeg": None, "ffprobe": None})
+    host = Host("lab", "lab", str(fake / "home" / ".cache" / "hp"), caps, time.time())
+    Hosts(tmp_path / "mac").save({"lab": host})
+    return fake
+
+
+def keys_on(tmp_path):
+    Hosts(tmp_path / "mac").allow_keys("lab", True)
+
+
+def graph_file(tmp_path, nodes, **policy) -> Path:
+    seed = tmp_path / "seed.json"
+    seed.write_text('{"value": 0}')
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"seed": {"type": "json.v1", "uri": str(seed)}},
+           "policy": {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ALL_KINDS, "retries": 1, **policy},
+           "nodes": nodes}
+    path = tmp_path / "graph.yaml"
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def work(node_id, a="$inputs.seed", **config):
+    return {"id": node_id, "uses": "test.work@1.0.0", "inputs": {"a": a}, "config": config}
+
+
+def keyed(node_id, a, rec):
+    return {"id": node_id, "uses": "test.keyed@1.0.0", "inputs": {"a": a}, "config": {"record_dir": rec}}
+
+
+def perception(capsys, *argv) -> tuple[int, list[dict]]:
+    """The CLI with --json and this repository's test nodes: its exit code and what it printed."""
+    code = cli.main(["--json", "--nodes", str(NODES), *argv])
+    return code, [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+
+
+def of(lines, type_):
+    return [x for x in lines if x["type"] == type_]
+
+
+def host_root(fake) -> Path:
+    return fake / "home" / ".cache" / "hp"
+
+
+def executions(rec: Path, node: str) -> list[dict]:
+    return [json.loads(p.read_text()) for p in sorted(rec.glob(f"{node}-*")) if not p.name.endswith(".end")]
+
+
+def wait_for(check, timeout=30):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if check():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def starts(tmp_path) -> list[dict]:
+    """What each start was sent on stdin, in order (the stand-in records them one after another)."""
+    text, out, at = (tmp_path.parent / f"{tmp_path.name}-record" / "start.stdin").read_text(), [], 0
+    while at < len(text):
+        doc, at = json.JSONDecoder().raw_decode(text, at)
+        out.append(doc)
+    return out
+
+
+def files_holding(folder: Path, text: str) -> list[Path]:
+    needle = text.encode()
+    return [p for p in folder.rglob("*") if p.is_file() and not p.is_symlink() and needle in p.read_bytes()]
+
+
+# --- a run there ---------------------------------------------------------------------------------------------------
+
+def test_a_run_coordinated_on_a_host_runs_there_detached_and_is_fetched_into_this_store(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec), work("b", "$nodes.a.out", record_dir=rec, add=10)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    run_id = of(out, "run.created")[0]["run"]
+    assert of(out, "remote_started")[0]["started"] is True
+    assert of(out, "run.finished")[0]["status"] == "succeeded"
+    kinds = [e["kind"] for e in of(out, "event")]
+    assert kinds[0] == "run.created" and kinds[-1] == "run.succeeded" and kinds.count("task.succeeded") == 2
+
+    root = host_root(lab)
+    copies = list((root / "pipelines").iterdir())
+    assert len(copies) == 1 and (copies[0] / ".complete").exists()
+    listed = json.loads((copies[0] / "RELEASE.json").read_text())
+    assert "nodes/core/decode/manifest.yaml" in listed["files"] and "orchestrator/tests/nodes/work/node.py" in listed["files"]
+    assert not any(f.startswith(("pipeline/", "docs/", "orchestrator/tests/test_")) for f in listed["files"])
+    assert not (Path(tmp_path / "mac") / "work" / run_id).exists()   # nothing ran here
+
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 0, out
+    fetched = of(out, "fetched")[0]
+    assert (fetched["tasks"], fetched["cache_added"], fetched["cache_kept"]) == (2, 2, 0)
+    store = Store(tmp_path / "mac")
+    tasks = {t["node_id"]: t for t in store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run_id,))}
+    assert {n: (t["state"], t["attempt"], t["runner"]) for n, t in tasks.items()} == \
+        {"a": ("succeeded", 1, "ssh-lab:cpu"), "b": ("succeeded", 1, "ssh-lab:cpu")}
+    b = json.loads(tasks["b"]["outputs"])["out"]
+    assert json.loads(Path(b["path"]).read_text()) == {"value": 11}
+    assert Path(b["path"]).is_relative_to(store.root)                 # this store's object, checked against its hash
+    ran_on = json.loads(tasks["a"]["usage"])["ran_on"]
+    assert (ran_on["place"], ran_on["title"], ran_on["coordinator"]) == ("ssh-lab:cpu", "lab (SSH)", "lab")
+    assert (store.root / "work" / run_id / "a" / "1" / "log.txt").exists()
+    run = store.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+    assert run["status"] == "succeeded"
+    assert json.loads(run["inputs"])["seed"]["hash"] == hashlib.sha256(b'{"value": 0}').hexdigest()
+    # the status and logs commands read it as one of this store's runs
+    code, out = perception(capsys, "status", run_id)
+    assert code == 0 and of(out, "status")[0]["tasks"][0]["ran_on"]["place"] == "ssh-lab:cpu"
+    code, out = perception(capsys, "artifacts", run_id)
+    assert {a["node"]: a["hash"] for a in of(out, "artifacts")[0]["artifacts"]}["b"] == b["hash"]
+
+
+def test_a_fetched_runs_bundle_is_the_one_exported_there_and_this_store_exports_the_same_layers(tmp_path, lab, capsys):
+    video = tmp_path / "my clip.mp4"
+    video.write_bytes(b"not really a video")
+    doc = {"schema_version": 1, "pipeline": "test", "inputs": {"video": {"type": "video.v1", "uri": str(video)}},
+           "policy": {"placement": "hybrid", "privacy": "local-preferred", "allow_upload": ["video", "transcript", "faces"]},
+           "nodes": [{"id": "shots", "uses": "test.layer@1.0.0", "inputs": {"video": "$inputs.video"}}]}
+    graph = tmp_path / "graph.yaml"
+    graph.write_text(json.dumps(doc))
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    run_id = of(out, "run.created")[0]["run"]
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id, "--output", str(tmp_path / "bundle"))
+    assert code == 0 and of(out, "fetched")[0]["path"] == str(tmp_path / "bundle"), out
+    there = json.loads((tmp_path / "bundle" / "manifest.json").read_text())
+    assert there["video"]["filename"] == "my clip.mp4"                  # the name it has here, not the host's object's
+    code, out = perception(capsys, "export", run_id, "--output", str(tmp_path / "here"))
+    assert code == 0, out
+    here = json.loads((tmp_path / "here" / "manifest.json").read_text())
+    assert {k: v["sha256"] for k, v in here["layers"].items()} == {k: v["sha256"] for k, v in there["layers"].items()}
+    store = Store(tmp_path / "mac")
+    run = store.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+    assert json.loads(run["inputs"])["video"]["path"] == str(video)    # the input where it is here
+
+
+def test_a_run_survives_the_machine_that_started_it_going_away(tmp_path, lab, capsys):
+    """--detach returns once it has started; the host is then unreachable from here for a while, and the run ends there
+    anyway. `attach` afterwards shows it finished."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec, sleep=2)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach")
+    assert code == 0, out
+    run_id = of(out, "run.created")[0]["run"]
+    # its input is held there for the run (the host's retention cleanup leaves it), and released when the run ends
+    sha = hashlib.sha256(b'{"value": 0}').hexdigest()
+    hold = host_root(lab) / "holds" / sha / f"{run_id}-remote-seed"
+    assert hold.read_text().strip() == f"coordinator/remote/{run_id}/held"
+    assert (host_root(lab) / "coordinator" / "remote" / run_id / "held").is_dir()
+    (lab / "unreachable").write_text("")                              # this machine is gone
+    assert wait_for(lambda: len(list(Path(rec).glob("a-*.end"))) == 1)  # the node ends there regardless
+    time.sleep(1)
+    (lab / "unreachable").unlink()
+    code, out = perception(capsys, "remote", "attach", "lab", run_id)
+    assert code == 0 and of(out, "run.finished")[0]["status"] == "succeeded", out
+    code, out = perception(capsys, "remote", "status", "lab", run_id)
+    assert of(out, "status")[0]["status"] == "succeeded" and of(out, "status")[0]["coordinator"] == "finished"
+    assert not (host_root(lab) / "coordinator" / "remote" / run_id / "held").exists()   # the hold is stale now
+
+
+def test_starting_a_run_again_attaches_to_it_instead_of_starting_a_second_coordinator(tmp_path, lab, capsys):
+    """The run's id is said first, so a start whose answer was lost can be asked again with --run-id."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec, sleep=3)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    assert of(out, "remote_started")[0]["started"] is True
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach", "--run-id", run_id)
+    assert code == 0, out
+    again = of(out, "remote_started")[0]
+    assert (again["started"], again["status"]) == (False, "running")
+    code, out = perception(capsys, "remote", "attach", "lab", run_id)
+    assert of(out, "run.finished")[0]["status"] == "succeeded"
+    assert len(executions(Path(rec), "a")) == 1                       # one coordinator, one execution
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach", "--run-id", run_id)
+    assert (of(out, "remote_started")[0]["started"], of(out, "remote_started")[0]["status"]) == (False, "succeeded")
+    # the same id with another graph is another run: refused there
+    other = graph_file(tmp_path, [work("a", record_dir=rec, add=5)])
+    code, out = perception(capsys, "remote", "run", "lab", str(other), "--allow-uploads", "--detach", "--run-id", run_id)
+    assert code == 1 and "with another graph" in of(out, "error")[0]["problems"][0]
+
+
+def test_a_run_whose_coordinator_is_gone_is_resumed_by_starting_it_again(tmp_path, lab, capsys):
+    """The host restarted (here: the coordinator is killed while its node runs): attach says so, and the same start
+    resumes it. The node the dead coordinator started is adopted, not run a second time."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec, sleep=4)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    assert wait_for(lambda: executions(Path(rec), "a"))
+    pidfile = host_root(lab) / "coordinator" / "remote" / run_id / "coordinator.pid"
+    os.kill(int(pidfile.read_text()), 9)
+    time.sleep(0.5)
+    code, out = perception(capsys, "hosts", "clean", "lab")   # its node goes on: the host is not cleaned under it
+    assert code == 1 and "a node is running there" in of(out, "error")[0]["problems"][0], out
+    code, out = perception(capsys, "remote", "attach", "lab", run_id)
+    assert code == 1 and "is gone" in of(out, "error")[0]["problems"][0]
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--run-id", run_id)
+    assert code == 0, out
+    assert of(out, "remote_started")[0]["resumed"] is True and of(out, "run.finished")[0]["status"] == "succeeded"
+    assert len(executions(Path(rec), "a")) == 1
+
+
+# --- what may go there --------------------------------------------------------------------------------------------
+
+def nothing_sent(fake) -> bool:
+    return not (fake / "home" / ".cache").exists()
+
+
+def test_a_graph_that_keeps_its_nodes_here_is_refused_before_anything_is_sent(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    for policy in ({"privacy": "local-only"}, {"placement": "local"}):
+        code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("a", record_dir=rec)], **policy)),
+                               "--allow-uploads")
+        assert code == 1
+        plan = of(out, "remote_plan")[0]
+        assert not plan["ok"] and any("keeps its nodes on this machine" in p for p in plan["problems"])
+    assert nothing_sent(lab)
+
+
+def test_a_run_is_refused_when_the_host_would_hold_a_kind_the_policy_does_not_let_leave(tmp_path, lab, capsys):
+    """Every kind in the inputs and every kind the steps make, with the host as the destination: here a json.v1
+    output could hold anything, so only every kind allowed lets it go."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec)], allow_upload=["video", "transcript"])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    plan = of(out, "remote_plan")[0]
+    assert code == 1 and not plan["ok"]
+    assert any("would hold audio (from input seed, a)" in p and "embeddings" in p for p in plan["problems"]), plan["problems"]
+    # and without the run's consent, even a policy that allows it all
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("a", record_dir=rec)])))
+    assert code == 1 and any("--allow-uploads" in p for p in of(out, "remote_plan")[0]["problems"])
+    assert nothing_sent(lab)
+
+
+def test_cloud_and_other_hosts_places_are_refused_here_and_there(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    for place, why in (("runpod:cuda", "RunPod key and AWS credentials never leave"), ("cloud:cuda", "never leave"),
+                       ("ssh-other:cuda", "runs every step there")):
+        node = {**work("a", record_dir=rec), "place": place}
+        code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [node])), "--allow-uploads")
+        assert code == 1 and any(why in p for p in of(out, "remote_plan")[0]["problems"]), out
+    assert nothing_sent(lab)
+    # the coordinator there refuses them too, whatever it is sent
+    remote = remote_run.Remote(Hosts(tmp_path / "mac").load()["lab"], nodes=[str(NODES)])
+    seed = tmp_path / "seed.json"
+    sha = Store(tmp_path / "mac").source(seed, "json.v1").hash
+    remote.send_input(seed, sha, "20261029-120000-abcdef", "seed")
+    doc = json.loads(graph_file(tmp_path, [{**work("a", record_dir=rec), "place": "runpod:cuda"}]).read_text())
+    doc["inputs"]["seed"]["uri"] = "seed.json"
+    spec = {"run": "20261029-120000-abcdef", "graph": doc, "inputs": {"seed": {"sha256": sha, "filename": "seed.json"}},
+            "allow_uploads": True, "nodes": remote.nodes, "keys": {}}
+    with pytest.raises(remote_run.RemoteError, match="never leave the machine that starts the run"):
+        remote.call("start", data=json.dumps(spec).encode())
+
+
+# --- keys ----------------------------------------------------------------------------------------------------------
+
+def test_a_host_holds_no_keys_until_the_user_says_it_may(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    assert Hosts(tmp_path / "mac").load()["lab"].keys is False                  # off by default
+    old = json.loads((tmp_path / "mac" / "hosts.json").read_text())
+    del old["lab"]["keys"]                                                       # a hosts.json from before it was recorded
+    (tmp_path / "mac" / "hosts.json").write_text(json.dumps(old))
+    assert Hosts(tmp_path / "mac").load()["lab"].keys is False
+    graph = graph_file(tmp_path, [work("a", record_dir=rec), keyed("k", "$nodes.a.out", rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    plan = of(out, "remote_plan")[0]
+    assert code == 1 and plan["keys"] == {"TEST_API_KEY": ["k"]} and plan["keys_allowed"] is False
+    assert any("k need TEST_API_KEY" in p and "hosts keys lab on" in p for p in plan["problems"])
+    assert nothing_sent(lab)
+    code, out = perception(capsys, "hosts", "keys", "lab", "on")
+    assert code == 0 and of(out, "hosts")[0]["hosts"][0]["keys"] is True
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--dry-run")
+    assert code == 0 and of(out, "remote_plan")[0]["ok"] and nothing_sent(lab)
+    code, out = perception(capsys, "hosts", "keys", "lab", "off")
+    assert of(out, "hosts")[0]["hosts"][0]["keys"] is False
+
+
+def test_keys_reach_only_the_steps_that_declare_them_and_no_file_command_line_or_log(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    keys_on(tmp_path)
+    graph = graph_file(tmp_path, [work("a", record_dir=rec), keyed("k", "$nodes.a.out", rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0 and of(out, "run.finished")[0]["status"] == "succeeded", out
+    run_id = of(out, "run.created")[0]["run"]
+    (k,), (a,) = executions(Path(rec), "k"), executions(Path(rec), "a")
+    assert k["sha256"] == hashlib.sha256(KEY.encode()).hexdigest() and k["keys"] == ["TEST_API_KEY"]   # given to k
+    assert a["keys"] == []                                            # not to a, which does not declare it
+    argv = (lab / "argv.log").read_text()
+    assert KEY not in argv and KEY[8:] not in argv                     # no command line carried it
+    started = (tmp_path.parent / f"{tmp_path.name}-record" / "start.stdin").read_text()
+    assert KEY in started                                              # the start's stdin did, and only it
+    assert files_holding(tmp_path, KEY[8:]) == []                      # no file here or there: stores, logs, requests
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 0 and files_holding(tmp_path, KEY[8:]) == []
+
+
+def test_only_the_keys_the_steps_declare_are_sent(tmp_path, lab, capsys, monkeypatch):
+    rec = str(tmp_path / "rec")
+    keys_on(tmp_path)
+    monkeypatch.setenv("OTHER_API_KEY", "sk-other-" + "5a" * 16)
+    graph = graph_file(tmp_path, [work("a", record_dir=rec), keyed("k", "$nodes.a.out", rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    assert starts(tmp_path)[0]["keys"] == {"TEST_API_KEY": KEY}
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("b", record_dir=rec)])), "--allow-uploads")
+    assert code == 0
+    assert starts(tmp_path)[1]["keys"] == {}                          # no step declares one: none goes
+
+
+# --- import -------------------------------------------------------------------------------------------------------
+
+def test_imported_attempts_get_this_stores_numbers_and_never_replace_its_cache_rows(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    # a retried on the host (its second attempt succeeds there): here it is this store's first attempt of a
+    graph = graph_file(tmp_path, [work("a", record_dir=rec, fail="transient", fail_until=1), work("b", "$nodes.a.out", record_dir=rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    run_id = of(out, "run.created")[0]["run"]
+    host_store = Store(host_root(lab) / "coordinator")
+    host_tasks = {t["node_id"]: t for t in host_store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run_id,))}
+    assert host_tasks["a"]["attempt"] == 2
+    # this store already has b's result under its key, from a run of its own: kept as it is
+    store = Store(tmp_path / "mac")
+    store.db.execute("INSERT INTO cache VALUES (?,?,?,?,?)", (host_tasks["b"]["cache_key"], "test.work@1.0.0", "{}", '{"mine": 1}', 1.0))
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    fetched = of(out, "fetched")[0]
+    assert (fetched["tasks"], fetched["cache_added"], fetched["cache_kept"]) == (2, 1, 1)
+    assert store.db.execute("SELECT usage FROM cache WHERE key=?", (host_tasks["b"]["cache_key"],)).fetchone()["usage"] == '{"mine": 1}'
+    tasks = {t["node_id"]: t for t in store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run_id,))}
+    assert (tasks["a"]["attempt"], tasks["b"]["attempt"]) == (1, 1)
+    assert (store.root / "work" / run_id / "a" / "1" / "log.txt").exists()   # the attempt that succeeded there: its log
+    # fetched again: nothing new, nothing renumbered
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id, "--output", str(tmp_path / "again"))
+    assert of(out, "fetched")[0]["tasks"] == 0
+    assert store.db.execute("SELECT attempt FROM tasks WHERE run_id=? AND node_id='a'", (run_id,)).fetchone()[0] == 1
+    # a run of this store's own under the same id is never imported over
+    store.db.execute("DELETE FROM events WHERE run_id=? AND kind='run.imported'", (run_id,))
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id, "--output", str(tmp_path / "third"))
+    assert code == 1 and "another run" in of(out, "error")[0]["problems"][0]
+
+
+def test_a_running_run_is_not_fetched(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("a", record_dir=rec, sleep=3)])),
+                           "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 1 and "still running" in of(out, "error")[0]["problems"][0]
+    perception(capsys, "remote", "attach", "lab", run_id)
+
+
+def test_the_coordinator_there_computes_the_cache_keys_this_machine_does_and_imported_results_are_hits(tmp_path, lab, capsys):
+    """The copy lists its files (RELEASE.json) as this checkout's git does, so a node's identity there (native: the
+    host runs it itself) is the one this machine computes for it placed on that host (ssh-lab): after a fetch, a plan
+    here with the nodes placed on the host finds every one cached."""
+    rec = str(tmp_path / "rec")
+    graph = graph_file(tmp_path, [work("a", record_dir=rec), work("b", "$nodes.a.out", record_dir=rec)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    run_id = of(out, "run.created")[0]["run"]
+    perception(capsys, "remote", "fetch", "lab", run_id)
+    host = Hosts(tmp_path / "mac").load()["lab"]
+    coord = Coordinator(Store(tmp_path / "mac"), Registry.load(NODES),
+                        [SelfBackend(), SshBackend(host, runner_kind="self", python=sys.executable)])
+    doc = json.loads(graph.read_text())
+    for n in doc["nodes"]:
+        n["place"] = "ssh-lab:cpu"
+    p = make_plan(coord, compile_graph(doc, coord.registry))
+    assert [(n.id, n.cached) for n in p.nodes] == [("a", True), ("b", True)]
+    host_keys = {t["node_id"]: t["cache_key"] for t in Store(host_root(lab) / "coordinator").db.execute(
+        "SELECT * FROM tasks WHERE run_id=?", (run_id,))}
+    local_keys = {t["node_id"]: t["cache_key"] for t in coord.store.db.execute("SELECT * FROM tasks WHERE run_id=?", (run_id,))}
+    assert host_keys == local_keys
+
+
+def test_a_host_is_not_cleaned_while_a_run_is_coordinated_there_and_then_its_copies_and_store_go(tmp_path, lab, capsys):
+    rec = str(tmp_path / "rec")
+    code, out = perception(capsys, "remote", "run", "lab", str(graph_file(tmp_path, [work("a", record_dir=rec, sleep=3)])),
+                           "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    code, out = perception(capsys, "hosts", "clean", "lab")
+    assert code == 1 and f"a run is being coordinated there (run {run_id})" in of(out, "error")[0]["problems"][0]
+    perception(capsys, "remote", "attach", "lab", run_id)
+    root = host_root(lab)
+    assert (root / "pipelines").exists() and (root / "coordinator").exists()
+    code, out = perception(capsys, "hosts", "clean", "lab")
+    assert code == 0, out
+    assert not any((root / d).exists() for d in ("pipelines", "coordinator", "objects", "envs"))

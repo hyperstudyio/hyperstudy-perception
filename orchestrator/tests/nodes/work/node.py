@@ -18,7 +18,9 @@ with Node() as node:
     # versions of the code must not hold its own: test_remote)
     (record / f"{node.request['node']}-{node.request['attempt']}-{os.getpid()}").write_text(json.dumps(
         {"start": time.time(), "cuda": os.environ.get("CUDA_VISIBLE_DEVICES"), "order": os.environ.get("CUDA_DEVICE_ORDER"),
-         "sdk": __import__("perception_node").__file__}))
+         "sdk": __import__("perception_node").__file__,
+         # the key-like names its environment had (never values): a node that declares none gets none (test_remote_run)
+         "keys": sorted(k for k in os.environ if k.endswith(("_KEY", "_TOKEN")))}))
     total = c["add"]
     for name in sorted(node.request["inputs"]):
         p = node.input(name)
