@@ -1920,8 +1920,8 @@ def test_the_launcher_syncs_without_the_secrets_prepares_with_them_marks_and_sta
                            *step("node"), "--request", str(request)], env=env, capture_output=True, text=True, cwd=tmp_path)
     assert done.returncode == 0, done.stderr
     sync, prepare, node = (json.loads((tmp_path / n).read_text()) for n in ("sync", "prepare", "node"))
-    assert sync["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN"]                     # no token for a build step
-    assert prepare["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_TOKEN"]      # online, with the token it was given alone
+    assert sync["keys"] == []                                                    # no token for a build step
+    assert prepare["keys"] == ["HF_TOKEN"]      # online, with the token it was given (implicit: transformers' config needs it)
     assert node["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_OFFLINE"]   # offline, without it
     assert sync["t"] <= prepare["t"] <= node["t"] and mark.is_file()
 

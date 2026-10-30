@@ -496,7 +496,7 @@ class Driver:
         from this code's own folder, and only the card the scheduler gave it (CUDA_VISIBLE_DEVICES). A node with download
         secrets reads its account's cache there (hf_home), offline and without them, as does its prepare without the ones
         it was not sent: the host's own (a login's HF_TOKEN in .bashrc, which bash reads under sshd) are never used."""
-        from .backends.base import OFFLINE, SENT_TOKEN_ONLY, gpu_env, hf_cache_env
+        from .backends.base import OFFLINE, PREPARE_UNSET, gpu_env, hf_cache_env
         from .backends.remote import SDK_SOURCE
         q, s = shlex.quote, self.spec
         env = gpu_env(s.get("gpu"))
@@ -504,9 +504,11 @@ class Driver:
             env.update(hf_cache_env(s["hf_home"]))
         unset = [k for k in s.get("download_secrets") or [] if not (prepare and k in self.download)]
         if s.get("download_secrets"):
-            # the node offline; its prepare online, whatever the host's own profile says, with the token it was sent
-            env.update(SENT_TOKEN_ONLY if prepare else OFFLINE)
-            unset += ["HF_HUB_OFFLINE"] if prepare else []
+            # the node offline; its prepare online, whatever the host's own profile says, with the token it was sent as
+            # HF_TOKEN (an assignment that replaces the host's), which huggingface_hub takes over any login there
+            if not prepare:
+                env.update(OFFLINE)
+            unset += list(PREPARE_UNSET) if prepare else []
         if s["runner_kind"] == "self":
             python = q(s["python"])
         else:

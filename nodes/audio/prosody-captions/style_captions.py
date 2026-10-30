@@ -137,13 +137,23 @@ def cost(model: str, prompt_tokens: int, audio_tokens: int | None, completion_to
 
 
 def parse_caption(arguments: str) -> dict:
-    """The function call's arguments -> {description, tags, emphasized_words}; ValueError when they are not that."""
+    """The function call's arguments -> {description, tags, emphasized_words}; ValueError when they are not that. Its tags
+    are those of the list only: gpt-audio-1.5 does not hold a function call to the schema's enum (strict or not), so a tag
+    outside it is dropped here (outside_tags says which; the side file keeps the reply as it came)."""
     import json
     out = json.loads(arguments)
     if not (isinstance(out, dict) and set(out) == {"description", "tags", "emphasized_words"}):
         raise ValueError(f"the caption is not {{description, tags, emphasized_words}}: {sorted(out) if isinstance(out, dict) else type(out).__name__}")
-    check_tags(out["tags"])
-    return out
+    if not isinstance(out["tags"], list):
+        check_tags(out["tags"])   # not a list: said as such
+    return {**out, "tags": [t for t in out["tags"] if t in ALL_TAGS]}
+
+
+def outside_tags(arguments: str) -> list[str]:
+    """The tags a caption's reply gave that are not in the list (dropped by parse_caption)."""
+    import json
+    tags = json.loads(arguments).get("tags")
+    return [t for t in tags if t not in ALL_TAGS] if isinstance(tags, list) else []
 
 
 def parse_tags(content: str) -> list[str]:

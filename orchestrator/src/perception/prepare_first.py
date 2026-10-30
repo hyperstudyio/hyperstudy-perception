@@ -49,8 +49,10 @@ def main(argv: list[str]) -> int:
     secrets = [s for s in opts["--secrets"].split(",") if s]
     offline = json.loads(opts["--offline"])
     request = Path(node[-1])
-    # online, for the download, and with the token it was sent alone (SENT_TOKEN_ONLY stays)
-    env = {k: v for k, v in os.environ.items() if k != "HF_HUB_OFFLINE"}
+    # online, for the download, with the token it was sent (as HF_TOKEN, which huggingface_hub takes over any login the
+    # machine has), and implicit tokens on: transformers fetches a model's config without the token it is given when
+    # they are off (base.PREPARE_UNSET, which this script cannot import)
+    env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "HF_HUB_DISABLE_IMPLICIT_TOKEN")}
     if "--sync" in opts:
         print("syncing the node's environment", flush=True)
         done = subprocess.run(json.loads(opts["--sync"]), env={k: v for k, v in env.items() if k not in secrets},

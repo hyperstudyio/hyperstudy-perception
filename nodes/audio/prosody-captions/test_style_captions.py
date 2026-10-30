@@ -68,8 +68,13 @@ def test_cost_is_the_bakeoffs_at_its_prices():
 def test_replies_must_be_the_schemas_with_tags_from_the_list():
     ok = {"description": "Calm.", "tags": ["calm", "falling-end"], "emphasized_words": []}
     assert sc.parse_caption(json.dumps(ok)) == ok
-    with pytest.raises(ValueError, match="outside the vocabulary"):
-        sc.parse_caption(json.dumps({**ok, "tags": ["calm", "grumpy"]}))
+    # gpt-audio-1.5 does not hold its function call to the schema's tag list (strict or not: "friendly" on an OOO
+    # held-out clip, 2026-10-30): a tag outside it is dropped from that caption and said, not the step's failure
+    assert sc.parse_caption(json.dumps({**ok, "tags": ["calm", "grumpy", "falling-end"]})) == ok
+    assert sc.outside_tags(json.dumps({**ok, "tags": ["calm", "grumpy", "falling-end"]})) == ["grumpy"]
+    assert sc.outside_tags(json.dumps(ok)) == []
+    with pytest.raises(ValueError, match="outside the vocabulary"):   # the tagger's json_schema holds it to the list
+        sc.parse_tags('{"tags": ["neutral", "grumpy"]}')
     with pytest.raises(ValueError, match="not {description, tags, emphasized_words}"):
         sc.parse_caption(json.dumps({"description": "x"}))
     assert sc.parse_tags('{"tags": ["neutral"]}') == ["neutral"]

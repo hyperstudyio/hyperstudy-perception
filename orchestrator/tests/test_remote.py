@@ -1884,9 +1884,9 @@ def test_a_hosts_prepare_gets_the_token_over_stdin_and_its_node_none_reading_the
     cache = f"{remote.host.root}/hf/tester"
     [prepare], [node] = gated_records(rec, "prepare"), gated_records(rec, "node-1")
     assert prepare["sha256"] == hashlib.sha256(TOKEN.encode()).hexdigest()   # ours, not the host's own
-    # the account's cache, not the one the host's profile names for everyone (HF_HUB_CACHE); the prepare online, with
-    # only the token it was sent
-    assert (prepare["hf_home"], prepare["hub_cache"], prepare["offline"], prepare["implicit_token"]) == (cache, cache + "/hub", None, False)
+    # the account's cache, not the one the host's profile names for everyone (HF_HUB_CACHE); the prepare online, its
+    # implicit token (what transformers' config fetch uses) its HF_TOKEN: the one it was sent, above
+    assert (prepare["hf_home"], prepare["hub_cache"], prepare["offline"], prepare["implicit_token"]) == (cache, cache + "/hub", None, True)
     assert node == {"keys": [], "sha256": None, "hf_home": cache, "hub_cache": cache + "/hub", "offline": "1",
                     "implicit_token": False, "weights": True}
     # the token in no command line, no file on the host, and nothing this machine wrote for the attempt
