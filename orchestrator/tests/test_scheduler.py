@@ -1867,6 +1867,17 @@ def test_a_download_secret_is_missing_only_when_the_node_would_download(tmp_path
     assert status == "succeeded" and records(rec, "prepare") == []
 
 
+def test_a_step_that_would_download_without_its_token_is_refused_here_even_unplanned(tmp_path, rec, monkeypatch):
+    """A run started without planning (a resume) reaches submit with no token: refused there, as on a host, never
+    prepared with whatever login this machine has."""
+    monkeypatch.setenv("PERCEPTION_WEIGHTS", str(tmp_path / "weights"))   # nothing cached
+    coord = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [OneGpu()], {}, tick_s=0.02, backoff_s=0.01)
+    run_id, status = run(coord, gated(tmp_path, rec))   # no HF_TOKEN, and no plan
+    t = coord._tasks(run_id)["g"]
+    assert status == "failed" and t["error_code"] == "input" and "HF_TOKEN, which is not set here" in t["error"]
+    assert records(rec, "prepare") == [] and t["attempt"] == 1
+
+
 @pytest.mark.parametrize("fields, problem", [
     ({"download_secrets": ["HF_TOKEN"]}, "go only to a prepare script, and the node has none"),
     ({"download_secrets": ["HF_TOKEN"], "secrets": ["HF_TOKEN"], "prepare": "prepare.py"}, "in secrets and download_secrets"),

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..manifests import Manifest, Runner
 from ..store import Artifact
-from .base import GPU_LEASES, LEASE_FOLDER, OFFLINE, Backend, Capabilities, LeaseRefused, gpu_env, holder, lease_command
+from .base import GPU_LEASES, LEASE_FOLDER, OFFLINE, Backend, Capabilities, LeaseRefused, SubmitRefused, gpu_env, holder, lease_command
 from .probe import probe
 
 from ..release import REPO, env_vars
@@ -88,6 +88,11 @@ class NativeBackend(Backend):
             command = [*lease_command(str(self.lease_folder()), gpu, manifest.resources.gpu,
                                       holder(json.loads(request.read_text()))), *command]
         if prepare_secrets is not None and manifest.download_secrets and self.downloads(manifest, runner):
+            if missing := [k for k in manifest.download_secrets if not (prepare_secrets.get(k) or "").strip()]:
+                # refused, not prepared with whatever login this machine has: the plan says so first (missing_secrets),
+                # but a resumed run is not planned again (as a host's submit, remote.py)
+                raise SubmitRefused("input", f"its weights are downloaded with {', '.join(missing)}, which is not set here "
+                                             f"(perception keys set {missing[0]})")
             # its prepare first, with them, then the node (with its lease: no card is held while weights download)
             # without them (prepare_first.py)
             from .. import prepare_first
