@@ -498,7 +498,7 @@ def test_a_download_secret_goes_with_the_run_to_its_steps_prepare_alone_and_the_
     cache = str((host_root(lab) / "hf" / "tester").resolve())
     (prepare,), (node,) = executions(Path(rec), "prepare"), executions(Path(rec), "node")
     assert prepare["sha256"] == hashlib.sha256(token.encode()).hexdigest() and prepare["hf_home"] == cache
-    assert prepare["implicit_token"] is False   # the token it was sent, never the host's own login
+    assert prepare["implicit_token"] is True   # its HF_TOKEN, the token it was sent (above), never the host's own login
     assert node == {"keys": [], "sha256": None, "hf_home": cache, "hub_cache": cache + "/hub", "offline": "1",
                     "implicit_token": False, "weights": True}
     assert executions(Path(rec), "a")[0]["keys"] == []
