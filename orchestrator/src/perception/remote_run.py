@@ -1,4 +1,4 @@
-"""A whole run coordinated on a lab server (`perception remote run | status | attach | fetch`), for runs that go on with
+"""A whole run coordinated on a lab server (`perception remote run | status | attach | fetch | cancel`), for runs that go on with
 this machine asleep or gone: run-anywhere phase 7. The other half, which runs there, is remote_coordinator.py.
 
     perception remote run HOST GRAPH --input video=PATH [--only ...] [--set ...] [--place ...] [--max-cost-usd N]
@@ -6,6 +6,7 @@ this machine asleep or gone: run-anywhere phase 7. The other half, which runs th
     perception remote status HOST [RUN]
     perception remote attach HOST RUN
     perception remote fetch HOST RUN [--output DIR]
+    perception remote cancel HOST RUN
 
 What leaves this machine, and when. Nothing before the checks below pass, and then, in this order:
 

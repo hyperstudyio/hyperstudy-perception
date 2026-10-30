@@ -272,6 +272,82 @@ def test_a_run_whose_coordinator_is_gone_is_resumed_by_starting_it_again(tmp_pat
     assert len(executions(Path(rec), "a")) == 1
 
 
+def node_pids(rec: Path, node: str) -> list[int]:
+    """The process of each execution of the node (the test node names its record by its pid)."""
+    return [int(p.name.rsplit("-", 1)[1]) for p in sorted(rec.glob(f"{node}-*")) if not p.name.endswith(".end")]
+
+
+def gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    # a zombie (its parent, the coordinator there, has not reaped it yet) has ended
+    return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip().startswith("Z")
+
+
+def test_a_run_there_is_canceled_from_here_and_its_running_step_stopped(tmp_path, lab, capsys):
+    """`remote cancel` records the run canceled there and stops the step running: its coordinator starts nothing more and
+    ends, the run's inputs are no longer held, and the run can be fetched (canceled, with no bundle). A second cancel
+    changes nothing."""
+    rec = tmp_path / "rec"
+    graph = graph_file(tmp_path, [work("a", record_dir=str(rec), sleep=60), work("b", "$nodes.a.out", record_dir=str(rec))])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach")
+    assert code == 0, out
+    run_id = of(out, "run.created")[0]["run"]
+    assert wait_for(lambda: node_pids(rec, "a"))
+    code, out = perception(capsys, "remote", "cancel", "lab", run_id)
+    assert code == 0, out
+    assert of(out, "canceled")[0] == {"type": "canceled", "v": 1, "run": run_id, "host": "lab", "canceled": True, "status": "canceled"}
+    assert wait_for(lambda: gone(node_pids(rec, "a")[0]), timeout=10)          # stopped now, not in 60 s
+    pidfile = host_root(lab) / "coordinator" / "remote" / run_id / "coordinator.pid"
+    assert wait_for(lambda: not pidfile.exists(), timeout=15)                 # its coordinator ended
+    code, out = perception(capsys, "remote", "status", "lab", run_id)
+    status = of(out, "status")[0]
+    assert (status["status"], status["coordinator"]) == ("canceled", "finished")
+    assert {t["node"]: t["state"] for t in status["tasks"]} == {"a": "canceled", "b": "canceled"}
+    assert not node_pids(rec, "b")                                           # nothing more started
+    assert not (host_root(lab) / "coordinator" / "remote" / run_id / "held").exists()
+    code, out = perception(capsys, "remote", "cancel", "lab", run_id)       # once is enough
+    assert code == 0 and of(out, "canceled")[0]["canceled"] is False and of(out, "canceled")[0]["status"] == "canceled"
+    code, out = perception(capsys, "remote", "fetch", "lab", run_id)
+    assert code == 0, out
+    assert of(out, "fetched")[0]["path"] is None
+    assert Store(tmp_path / "mac").db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()["status"] == "canceled"
+
+
+def test_a_run_whose_coordinator_is_gone_is_canceled_and_not_resumed(tmp_path, lab, capsys):
+    """The host restarted (the coordinator is killed while its step runs): a cancel then stops the step it left
+    running, releases the run's inputs (no coordinator will), and a start under its id finds it ended."""
+    rec = tmp_path / "rec"
+    graph = graph_file(tmp_path, [work("a", record_dir=str(rec), sleep=60)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    assert wait_for(lambda: node_pids(rec, "a"))
+    folder = host_root(lab) / "coordinator" / "remote" / run_id
+    assert wait_for(lambda: Store(host_root(lab) / "coordinator").db.execute(
+        "SELECT handle FROM tasks WHERE run_id=? AND node_id='a'", (run_id,)).fetchone()["handle"])
+    os.kill(int((folder / "coordinator.pid").read_text()), 9)
+    time.sleep(0.5)
+    code, out = perception(capsys, "remote", "cancel", "lab", run_id)
+    assert code == 0 and of(out, "canceled")[0]["canceled"] is True, out
+    assert wait_for(lambda: gone(node_pids(rec, "a")[0]), timeout=10)
+    assert not (folder / "held").exists()
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach", "--run-id", run_id)
+    assert code == 0 and (of(out, "remote_started")[0]["started"], of(out, "remote_started")[0]["status"]) == (False, "canceled")
+    assert len(node_pids(rec, "a")) == 1
+
+
+def test_a_run_the_host_does_not_have_is_not_canceled(tmp_path, lab, capsys):
+    graph = graph_file(tmp_path, [work("a", record_dir=str(tmp_path / "rec"))])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
+    assert code == 0, out
+    code, out = perception(capsys, "remote", "cancel", "lab", "20260101-000000-abcdef")
+    assert code == 1 and "no run 20260101-000000-abcdef" in of(out, "error")[0]["problems"][0], out
+    code, out = perception(capsys, "remote", "cancel", "lab", "../x")
+    assert code == 1 and "not a run id" in of(out, "error")[0]["problems"][0], out
+
+
 # --- what may go there --------------------------------------------------------------------------------------------
 
 def nothing_sent(fake) -> bool:
