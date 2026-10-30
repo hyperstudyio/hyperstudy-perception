@@ -369,6 +369,18 @@ def test_a_run_canceled_from_another_process_ends_canceled_not_failed(tmp_path, 
     assert "run.canceled" in kinds and "run.failed" not in kinds
 
 
+def test_a_cancel_after_the_last_look_for_one_is_not_overwritten_by_the_runs_end(tmp_path, rec, monkeypatch):
+    """Another process (`perception cancel`, a host's `remote cancel`) cancels the run after its coordinator last looked
+    for a cancel, as every task has ended: the run stays canceled, as the cancel answered, not succeeded or failed."""
+    coord = coordinator(tmp_path)
+    run_id = start(coord, graph_doc(tmp_path, [work("a", record_dir=rec)]))
+    coordinator(tmp_path).cancel(run_id)                         # every task ends canceled, the run with them
+    monkeypatch.setattr(coord, "_canceled", lambda run_id: False)  # ... after this coordinator last looked
+    assert asyncio.run(coord.run(run_id)) == "canceled"
+    assert coord.store.db.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()[0] == "canceled"
+    assert "run.failed" not in [e["kind"] for e in coord.store.events(run_id)]
+
+
 def test_after_a_cancel_nothing_more_runs_even_a_node_that_looked_ready_or_retryable(tmp_path, rec):
     """The coordinator works from snapshots: a task it read before the cancel (a killed node's transient failure, a
     node it found ready) must not be retried or started after it."""

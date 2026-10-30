@@ -825,7 +825,8 @@ def cmd_remote(args):
     import subprocess
     try:
         remote = remote_run.Remote(host, nodes=args.nodes)
-        if action in ("status", "attach", "fetch", "cancel"):   # from the copy the run started with: nothing sent to read it
+        # from the copy the run started with: nothing sent to read a run (a cancel too, unless that copy has none)
+        if action in ("status", "attach", "fetch", "cancel"):
             remote.use_copy_of(args.run_id)
         if action == "run":
             if args.run_id and not RUN_ID.match(args.run_id):
@@ -895,7 +896,15 @@ def cmd_remote(args):
                     print(shown(f"{r['run']}  {r['pipeline']:20s} {r['status']:10s} coordinator {r['coordinator']}"))
             return 0
         if action == "cancel":
-            got = remote.call("cancel", args.run_id)
+            try:
+                got = remote.call("cancel", args.run_id)
+            except remote_run.RemoteError as e:
+                # a run started by a pipeline from before `remote cancel`: its copy there has no cancel, so this
+                # machine's copy cancels it (sent first, as for a start: a cancel changes the run, it is not a read)
+                if "invalid choice: 'cancel'" not in str(e):
+                    raise
+                remote.own_copy()
+                got = remote.call("cancel", args.run_id)
             if args.json:
                 emit("canceled", run=args.run_id, host=host.name, canceled=got["canceled"], status=got["status"])
             else:

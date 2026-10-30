@@ -242,7 +242,11 @@ class Coordinator:
                 if self._canceled(run_id):   # canceled since the top of this pass
                     return self._stop_canceled(run_id)
                 status = "succeeded" if all(t["state"] in DONE for t in tasks.values()) else "failed"
-                self.store.db.execute("UPDATE runs SET status=?, finished_at=? WHERE id=?", (status, time.time(), run_id))
+                # only a run still running: one canceled since that look (by another process) stays canceled, as the
+                # cancel said
+                if not self.store.db.execute("UPDATE runs SET status=?, finished_at=? WHERE id=? AND status='running'",
+                                             (status, time.time(), run_id)).rowcount:
+                    return self._stop_canceled(run_id)
                 self.store.event(run_id, None, f"run.{status}")
                 return status
             await asyncio.sleep(self.tick_s)   # the loop's own pace: node processes run independently of it

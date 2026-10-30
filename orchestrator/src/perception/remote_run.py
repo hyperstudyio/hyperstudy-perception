@@ -357,6 +357,11 @@ class Remote:
             self.__dict__["interpreter"] = interpreter
             return
 
+    def own_copy(self):
+        """Call the host from this machine's copy (sent first, as for a start), not the one use_copy_of found."""
+        self.__dict__.pop("copy", None)
+        self.__dict__.pop("interpreter", None)
+
     def send_input(self, path: Path, sha: str, run: str, name: str):
         """A graph input as objects/<sha256>/data there, once per host, checked there against its hash and published in
         one step, read-only (remote_driver.send_inputs files a step's inputs so: the same folder serves both). Held for

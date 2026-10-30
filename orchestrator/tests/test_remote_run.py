@@ -338,6 +338,30 @@ def test_a_run_whose_coordinator_is_gone_is_canceled_and_not_resumed(tmp_path, l
     assert len(node_pids(rec, "a")) == 1
 
 
+def test_a_run_started_by_a_pipeline_from_before_remote_cancel_is_canceled_with_this_ones_copy(tmp_path, lab, capsys):
+    """The copy a run started with answers its status, attach and fetch; one from before `remote cancel` has no cancel,
+    so this machine's copy cancels it (sent as for a start: a cancel changes the run, it is not a read)."""
+    import shutil
+    rec = tmp_path / "rec"
+    graph = graph_file(tmp_path, [work("a", record_dir=str(rec), sleep=60)])
+    code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads", "--detach")
+    run_id = of(out, "run.created")[0]["run"]
+    assert wait_for(lambda: node_pids(rec, "a"))
+    # the run's record names an older copy there: this one's, without the cancel action
+    mine = json.loads(remote_run.record(run_id).read_text())
+    old = mine["copy"][:-20] + "0" * 20
+    shutil.copytree(mine["copy"], old, symlinks=True)
+    module = Path(old) / "orchestrator/src/perception/remote_coordinator.py"
+    module.chmod(0o644)
+    module.write_text(module.read_text().replace('("cancel", cmd_cancel)', ""))
+    remote_run.record(run_id).write_text(json.dumps({**mine, "copy": old}))
+    code, out = perception(capsys, "remote", "status", "lab", run_id)       # read with the run's own copy
+    assert code == 0 and of(out, "status")[0]["status"] == "running"
+    code, out = perception(capsys, "remote", "cancel", "lab", run_id)
+    assert code == 0 and of(out, "canceled")[0]["canceled"] is True, out
+    assert wait_for(lambda: gone(node_pids(rec, "a")[0]), timeout=10)
+
+
 def test_a_run_the_host_does_not_have_is_not_canceled(tmp_path, lab, capsys):
     graph = graph_file(tmp_path, [work("a", record_dir=str(tmp_path / "rec"))])
     code, out = perception(capsys, "remote", "run", "lab", str(graph), "--allow-uploads")
