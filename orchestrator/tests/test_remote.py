@@ -1867,11 +1867,15 @@ def test_a_hosts_prepare_gets_the_token_over_stdin_and_its_node_none_reading_the
     import hashlib
     from perception import keycheck
     monkeypatch.setattr(keycheck, "hf_account", lambda token: "tester" if token == TOKEN else pytest.fail("another token"))
-    # every ssh command line, logged; and the host's own HF_TOKEN in what the commands there inherit
+    # every ssh command line, logged; and the host's own login in what the commands there inherit: HF_TOKEN,
+    # HUGGING_FACE_HUB_TOKEN and a stored token (HF_TOKEN_PATH)
     argv_log = tmp_path / "argv.log"
+    stored = tmp_path / "hosts-stored-token"
+    stored.write_text(HOSTS_OWN)
     ssh = tmp_path / "ssh-logged"
     ssh.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {argv_log}\n'
-                   f'HF_TOKEN={HOSTS_OWN} HF_HUB_CACHE={tmp_path / "shared-hub"} exec {tmp_path / "ssh"} "$@"\n')
+                   f'HF_TOKEN={HOSTS_OWN} HUGGING_FACE_HUB_TOKEN={HOSTS_OWN} HF_TOKEN_PATH={stored} '
+                   f'HF_HUB_CACHE={tmp_path / "shared-hub"} exec {tmp_path / "ssh"} "$@"\n')
     ssh.chmod(0o755)
     monkeypatch.setenv("PERCEPTION_SSH", str(ssh))
     remote = SshBackend(lab(host), runner_kind="self", python=sys.executable)
@@ -1887,6 +1891,8 @@ def test_a_hosts_prepare_gets_the_token_over_stdin_and_its_node_none_reading_the
     # the account's cache, not the one the host's profile names for everyone (HF_HUB_CACHE); the prepare online, its
     # implicit token (what transformers' config fetch uses) its HF_TOKEN: the one it was sent, above
     assert (prepare["hf_home"], prepare["hub_cache"], prepare["offline"], prepare["implicit_token"]) == (cache, cache + "/hub", None, True)
+    # and no other login it could fall back to: none of the host's in its environment, no stored token where it looks
+    assert prepare["keys"] == ["HF_TOKEN"] and prepare["token_path"] != str(stored) and prepare["stored_token"] is False
     assert node == {"keys": [], "sha256": None, "hf_home": cache, "hub_cache": cache + "/hub", "offline": "1",
                     "implicit_token": False, "weights": True}
     # the token in no command line, no file on the host, and nothing this machine wrote for the attempt

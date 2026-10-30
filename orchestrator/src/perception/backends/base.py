@@ -336,6 +336,8 @@ OFFLINE = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
 # given when implicit tokens are off (SAM 3's prepare got a 401 on liquidswords2, 2026-10-30), and the token implicit
 # there is the one it was sent
 PREPARE_UNSET = ("HF_HUB_OFFLINE", "HF_HUB_DISABLE_IMPLICIT_TOKEN")
+# where a prepare on another machine looks for a stored token: a path that cannot exist (below /dev/null)
+NO_STORED_TOKEN = "/dev/null/no-stored-token"
 
 
 def hf_cache_env(home: str) -> dict[str, str]:
