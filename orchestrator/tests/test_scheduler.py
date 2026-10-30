@@ -1855,6 +1855,9 @@ def test_a_download_secret_is_missing_only_when_the_node_would_download(tmp_path
     graph = compile_graph(gated(tmp_path, rec), coord.registry)
     [n] = make_plan(coord, graph, allow_downloads=True).nodes
     assert (n.secrets, n.download_secrets, n.missing_secrets) == ([], ["HF_TOKEN"], ["HF_TOKEN"])
+    coord.secrets["HF_TOKEN"] = "  "   # an empty key is none: never given to the prepare, so missing too
+    assert make_plan(coord, graph, allow_downloads=True).nodes[0].missing_secrets == ["HF_TOKEN"]
+    del coord.secrets["HF_TOKEN"]
     weights = tmp_path / "weights" / "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
     weights.mkdir(parents=True)
     (weights / "weights.bin").write_text("test")
@@ -1920,10 +1923,30 @@ def test_the_launcher_syncs_without_the_secrets_prepares_with_them_marks_and_sta
                            *step("node"), "--request", str(request)], env=env, capture_output=True, text=True, cwd=tmp_path)
     assert done.returncode == 0, done.stderr
     sync, prepare, node = (json.loads((tmp_path / n).read_text()) for n in ("sync", "prepare", "node"))
-    assert sync["keys"] == []                                                    # no token for a build step
-    assert prepare["keys"] == ["HF_TOKEN"]      # online, with the token it was given (implicit: transformers' config needs it)
+    assert sync["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN"]                     # no token for a build step
+    assert prepare["keys"] == ["HF_TOKEN", "HF_TOKEN_PATH"]   # online, with the token it was given (implicit: transformers' config needs it), no stored one
     assert node["keys"] == ["HF_HUB_DISABLE_IMPLICIT_TOKEN", "HF_HUB_OFFLINE"]   # offline, without it
     assert sync["t"] <= prepare["t"] <= node["t"] and mark.is_file()
+
+
+def test_the_launchers_prepare_reaches_no_login_but_the_token_it_was_sent(tmp_path):
+    """Implicit tokens are on for the prepare only with a token sent; no OIDC identity and no stored token in reach."""
+    from perception import prepare_first
+    from perception.backends.base import OFFLINE
+    request = tmp_path / "request.json"
+    request.write_text("{}")
+    say = ("import json, os, sys; open(sys.argv[1], 'w').write(json.dumps({k: os.environ.get(k) for k in "
+           "('HF_TOKEN', 'HF_HUB_DISABLE_IMPLICIT_TOKEN', 'HF_TOKEN_PATH', 'HF_OIDC_RESOURCE')}))")
+    for sent in (TOKEN, ""):
+        env = {**{k: v for k, v in os.environ.items() if "HF" not in k}, "HF_TOKEN": sent, "HF_OIDC_RESOURCE": "identity",
+               **OFFLINE}
+        done = subprocess.run([sys.executable, "-I", prepare_first.__file__, "--secrets", "HF_TOKEN", "--offline", json.dumps(OFFLINE),
+                               "--prepare", json.dumps([sys.executable, "-c", say, str(tmp_path / "prepare")]), "--",
+                               sys.executable, "-c", "pass", "--request", str(request)], env=env, capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+        got = json.loads((tmp_path / "prepare").read_text())
+        assert got["HF_OIDC_RESOURCE"] is None and got["HF_TOKEN_PATH"] == "/dev/null/no-stored-token"
+        assert got["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == (None if sent else "1")   # on only with the token it was sent
 
 
 def native_launcher() -> str:

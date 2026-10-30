@@ -146,6 +146,8 @@ def parse_caption(arguments: str) -> dict:
         raise ValueError(f"the caption is not {{description, tags, emphasized_words}}: {sorted(out) if isinstance(out, dict) else type(out).__name__}")
     if not isinstance(out["tags"], list):
         check_tags(out["tags"])   # not a list: said as such
+    if not all(isinstance(t, str) for t in out["tags"]):
+        raise ValueError(f"the caption's tags are not strings: {[t for t in out['tags'] if not isinstance(t, str)][:5]}")
     return {**out, "tags": [t for t in out["tags"] if t in ALL_TAGS]}
 
 

@@ -238,7 +238,9 @@ def plan(coord: Coordinator, graph: Graph, allow_downloads: bool = False, allow_
             np.estimates[p.label] = {"estimate_s": seconds, "estimate_basis": basis,
                                      "cost_usd": p.backend.estimate(m, p.runner, {}, video_s).cost_usd, "uploads": sent, "upload_to": to}
         # a download secret is needed only for a download: weights already in the cache are read without it
-        np.missing_secrets = [s for s in (*m.secrets, *(m.download_secrets if np.downloads else ())) if s not in coord.secrets]
+        # an empty value is no key: it is never given to a step (download_for, child_env)
+        np.missing_secrets = [s for s in (*m.secrets, *(m.download_secrets if np.downloads else ()))
+                              if not (coord.secrets.get(s) or "").strip()]
         if placement and not np.cached:
             chosen = np.estimates[placement.label]
             np.estimate_s, np.estimate_basis = chosen["estimate_s"], chosen["estimate_basis"]

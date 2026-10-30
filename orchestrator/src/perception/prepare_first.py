@@ -49,10 +49,14 @@ def main(argv: list[str]) -> int:
     secrets = [s for s in opts["--secrets"].split(",") if s]
     offline = json.loads(opts["--offline"])
     request = Path(node[-1])
-    # online, for the download, with the token it was sent (as HF_TOKEN, which huggingface_hub takes over any login the
-    # machine has), and implicit tokens on: transformers fetches a model's config without the token it is given when
-    # they are off (base.PREPARE_UNSET, which this script cannot import)
-    env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "HF_HUB_DISABLE_IMPLICIT_TOKEN")}
+    # online, for the download, with the token it was sent as HF_TOKEN, and implicit tokens on only then: transformers
+    # fetches a model's config without the token it is given when they are off. Its implicit token is then that one: no
+    # OIDC identity (which huggingface_hub takes first) and no stored token (its path where there is none). As
+    # base.PREPARE_UNSET, OIDC_LOGINS and NO_STORED_TOKEN, which this script cannot import
+    env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "HF_OIDC_RESOURCE", "HF_OIDC_ID_TOKEN")}
+    implicit = bool((env.get("HF_TOKEN") or "").strip())
+    prepare_env = {**{k: v for k, v in env.items() if not (implicit and k == "HF_HUB_DISABLE_IMPLICIT_TOKEN")},
+                   "HF_TOKEN_PATH": "/dev/null/no-stored-token", **({} if implicit else {"HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"})}
     if "--sync" in opts:
         print("syncing the node's environment", flush=True)
         done = subprocess.run(json.loads(opts["--sync"]), env={k: v for k, v in env.items() if k not in secrets},
@@ -60,7 +64,7 @@ def main(argv: list[str]) -> int:
         if done.returncode:
             return fail(request, f"syncing the node's environment failed (exit {done.returncode}): see the end of the log")
     print("preparing the node (its weights, into the cache it reads)", flush=True)
-    done = subprocess.run(json.loads(opts["--prepare"]), env=env, stdin=subprocess.DEVNULL)   # its output: the log
+    done = subprocess.run(json.loads(opts["--prepare"]), env=prepare_env, stdin=subprocess.DEVNULL)   # its output: the log
     if done.returncode:
         return fail(request, f"preparing the node failed (exit {done.returncode}): see the end of the log")
     for mark in json.loads(opts.get("--marks", "[]")):

@@ -73,6 +73,8 @@ def test_replies_must_be_the_schemas_with_tags_from_the_list():
     assert sc.parse_caption(json.dumps({**ok, "tags": ["calm", "grumpy", "falling-end"]})) == ok
     assert sc.outside_tags(json.dumps({**ok, "tags": ["calm", "grumpy", "falling-end"]})) == ["grumpy"]
     assert sc.outside_tags(json.dumps(ok)) == []
+    with pytest.raises(ValueError, match="not strings"):   # not a tag at all: the reply is not the schema's
+        sc.parse_caption(json.dumps({**ok, "tags": ["calm", 3, None]}))
     with pytest.raises(ValueError, match="outside the vocabulary"):   # the tagger's json_schema holds it to the list
         sc.parse_tags('{"tags": ["neutral", "grumpy"]}')
     with pytest.raises(ValueError, match="not {description, tags, emphasized_words}"):

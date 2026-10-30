@@ -496,7 +496,7 @@ class Driver:
         from this code's own folder, and only the card the scheduler gave it (CUDA_VISIBLE_DEVICES). A node with download
         secrets reads its account's cache there (hf_home), offline and without them, as does its prepare without the ones
         it was not sent: the host's own (a login's HF_TOKEN in .bashrc, which bash reads under sshd) are never used."""
-        from .backends.base import NO_STORED_TOKEN, OFFLINE, PREPARE_UNSET, gpu_env, hf_cache_env
+        from .backends.base import NO_STORED_TOKEN, OFFLINE, OIDC_LOGINS, PREPARE_UNSET, gpu_env, hf_cache_env
         from .backends.remote import SDK_SOURCE
         q, s = shlex.quote, self.spec
         env = gpu_env(s.get("gpu"))
@@ -505,17 +505,17 @@ class Driver:
         unset = [k for k in s.get("download_secrets") or [] if not (prepare and k in self.download)]
         if s.get("download_secrets") and not prepare:
             env.update(OFFLINE)   # the node offline, with no token: none sent, and not the host's own login either
-            unset.append("HUGGING_FACE_HUB_TOKEN")
+            unset += ["HUGGING_FACE_HUB_TOKEN", *OIDC_LOGINS]
         elif s.get("download_secrets") and "HF_TOKEN" in self.download:
             # its prepare online, whatever the host's own profile says, with implicit tokens on (PREPARE_UNSET): the
             # token huggingface_hub takes is the HF_TOKEN it was sent (an assignment that replaces the host's), and no
-            # other login is in reach, should that ever not hold: the host's HUGGING_FACE_HUB_TOKEN unset, and its
-            # stored token's path (HF_TOKEN_PATH) one where there is none
-            unset += [*PREPARE_UNSET, "HUGGING_FACE_HUB_TOKEN"]
+            # other login is in reach: the host's OIDC identity (which huggingface_hub would take first) and
+            # HUGGING_FACE_HUB_TOKEN unset, and its stored token's path (HF_TOKEN_PATH) one where there is none
+            unset += [*PREPARE_UNSET, "HUGGING_FACE_HUB_TOKEN", *OIDC_LOGINS]
             env["HF_TOKEN_PATH"] = NO_STORED_TOKEN
         elif s.get("download_secrets"):
             # sent no HF_TOKEN: online, with implicit tokens off, so none of the host's is used
-            unset.append("HF_HUB_OFFLINE")
+            unset += ["HF_HUB_OFFLINE", *OIDC_LOGINS]
             env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
         if s["runner_kind"] == "self":
             python = q(s["python"])
