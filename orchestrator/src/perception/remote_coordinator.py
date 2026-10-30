@@ -7,6 +7,7 @@ with its RELEASE.json), with PERCEPTION_HOME set to the host's own store for suc
     python -m perception.remote_coordinator status [RUN]
     python -m perception.remote_coordinator events RUN [--after N]
     python -m perception.remote_coordinator dump RUN              what `remote fetch` imports
+    python -m perception.remote_coordinator cancel RUN            `remote cancel`: the run canceled, its steps stopped
     python -m perception.remote_coordinator sweep --keep-s S      started by `serve` as it ends: prune, hourly
 
 Each prints JSON objects, one per line (an internal protocol between two copies of this code: the machine that started
@@ -601,6 +602,29 @@ def cmd_events(args) -> int:
     return 0
 
 
+def cmd_cancel(args) -> int:
+    """`perception remote cancel`: the run recorded canceled here, then its running steps stopped (Coordinator.cancel, as
+    `perception cancel` does on one machine). Its coordinator, which looks for a cancel before each step it starts and
+    between its passes, starts nothing more and ends, releasing the run's inputs. A run whose coordinator is gone is
+    canceled too, the steps it left running stopped, and its inputs released here (no coordinator will): a start under
+    its id then finds it ended. A run that has ended is left as it was."""
+    store = Store(home())
+    run = args.run
+    if store.db.execute("SELECT 1 FROM runs WHERE id=?", (run,)).fetchone() is None:
+        raise Refusal(f"no run {run} on this host")
+    # under the run's lock: not between a start's look at the run and its coordinator's pid recorded
+    with locked(run_folder(run) / ".lock"):
+        status = store.db.execute("SELECT status FROM runs WHERE id=?", (run,)).fetchone()["status"]
+        if status != "running":
+            answer(run=run, canceled=False, status=status)
+            return 0
+        Coordinator(store, registry(args.nodes or []), backends(), {}).cancel(run)
+        if not alive(run):
+            release(run)
+    answer(run=run, canceled=True, status="canceled")
+    return 0
+
+
 def cmd_dump(args) -> int:
     """What `remote fetch` reads, once the run has ended: its run, task and event rows and each final attempt's log
     (relative to the store; the bundle is exported on that machine, from what it checked). The other machine trusts none of it but what it checks: it
@@ -635,7 +659,8 @@ def main(argv: list[str] | None = None) -> int:
     sw.add_argument("--keep-s", type=float, required=True)
     sw.add_argument("--min-free-gb", type=float)
     sw.set_defaults(fn=cmd_sweep)
-    for name, fn in (("serve", cmd_serve), ("status", cmd_status), ("events", cmd_events), ("dump", cmd_dump)):
+    for name, fn in (("serve", cmd_serve), ("status", cmd_status), ("events", cmd_events), ("dump", cmd_dump),
+                     ("cancel", cmd_cancel)):
         p = sub.add_parser(name)
         p.add_argument("run", nargs="?" if name == "status" else None)
         p.add_argument("--nodes", action="append")

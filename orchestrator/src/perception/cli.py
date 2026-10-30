@@ -825,7 +825,8 @@ def cmd_remote(args):
     import subprocess
     try:
         remote = remote_run.Remote(host, nodes=args.nodes)
-        if action in ("status", "attach", "fetch"):   # from the copy the run started with: nothing sent to read it
+        # from the copy the run started with: nothing sent to read a run (a cancel too, unless that copy has none)
+        if action in ("status", "attach", "fetch", "cancel"):
             remote.use_copy_of(args.run_id)
         if action == "run":
             if args.run_id and not RUN_ID.match(args.run_id):
@@ -893,6 +894,22 @@ def cmd_remote(args):
             else:
                 for r in got["runs"]:
                     print(shown(f"{r['run']}  {r['pipeline']:20s} {r['status']:10s} coordinator {r['coordinator']}"))
+            return 0
+        if action == "cancel":
+            try:
+                got = remote.call("cancel", args.run_id)
+            except remote_run.RemoteError as e:
+                # a run started by a pipeline from before `remote cancel`: its copy there has no cancel, so this
+                # machine's copy cancels it (sent first, as for a start: a cancel changes the run, it is not a read)
+                if "invalid choice: 'cancel'" not in str(e):
+                    raise
+                remote.own_copy()
+                got = remote.call("cancel", args.run_id)
+            if args.json:
+                emit("canceled", run=args.run_id, host=host.name, canceled=got["canceled"], status=got["status"])
+            else:
+                print(f"run {args.run_id}: canceled on {host.name}" if got["canceled"] else
+                      shown(f"run {args.run_id} had ended on {host.name}: {got['status']}"))
             return 0
         if action == "fetch":
             out = Path(args.output) if args.output else home() / "bundles" / args.run_id
@@ -1064,7 +1081,8 @@ def main(argv: list[str] | None = None) -> int:
     rr_.add_argument("--detach", action="store_true", help="return once it has started there")
     rr_.set_defaults(fn=cmd_remote)
     for name, helptext in (("status", "a run there, or the runs there"), ("attach", "follow a run there until it ends"),
-                           ("fetch", "import a finished run into this store, and export its bundle here")):
+                           ("fetch", "import a finished run into this store, and export its bundle here"),
+                           ("cancel", "cancel a run there: its running steps are stopped, and nothing more starts")):
         x = rsub.add_parser(name, help=helptext)
         x.add_argument("host")
         x.add_argument("run_id", nargs="?" if name == "status" else None)

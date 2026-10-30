@@ -1,4 +1,4 @@
-"""A whole run coordinated on a lab server (`perception remote run | status | attach | fetch`), for runs that go on with
+"""A whole run coordinated on a lab server (`perception remote run | status | attach | fetch | cancel`), for runs that go on with
 this machine asleep or gone: run-anywhere phase 7. The other half, which runs there, is remote_coordinator.py.
 
     perception remote run HOST GRAPH --input video=PATH [--only ...] [--set ...] [--place ...] [--max-cost-usd N]
@@ -6,6 +6,7 @@ this machine asleep or gone: run-anywhere phase 7. The other half, which runs th
     perception remote status HOST [RUN]
     perception remote attach HOST RUN
     perception remote fetch HOST RUN [--output DIR]
+    perception remote cancel HOST RUN
 
 What leaves this machine, and when. Nothing before the checks below pass, and then, in this order:
 
@@ -355,6 +356,11 @@ class Remote:
             self.__dict__["copy"] = copy
             self.__dict__["interpreter"] = interpreter
             return
+
+    def own_copy(self):
+        """Call the host from this machine's copy (sent first, as for a start), not the one use_copy_of found."""
+        self.__dict__.pop("copy", None)
+        self.__dict__.pop("interpreter", None)
 
     def send_input(self, path: Path, sha: str, run: str, name: str):
         """A graph input as objects/<sha256>/data there, once per host, checked there against its hash and published in
