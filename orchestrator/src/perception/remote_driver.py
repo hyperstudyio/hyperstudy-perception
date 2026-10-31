@@ -46,20 +46,18 @@ import threading
 import time
 from pathlib import Path
 
+# defined with the pod's lifecycle, which raises them too: one class each, whether this module runs as __main__ (the
+# driver) or is imported
+from .pod_session import (SWEEP_GRACE_S, GuardRefused, LaunchFailed, PodSession, Refused, Unreachable,  # noqa: F401
+                          removal_at_boot)
+
 POLL_S = 3.0
 # exit codes the scripts here use for a refusal that would happen again: the node's error code for each
 REFUSALS = {3: "input", 5: "input"}
-# how long past its deadline a perception pod is left before a RunPod launch deletes it: its own driver deletes it before
-# its deadline, and it removes itself at it (guard.sh)
-SWEEP_GRACE_S = 10 * 60
 KEEP_S = 24 * 3600   # how long a finished node's results wait on the host for a driver that lost touch (WATCHDOG)
 
 
 class Canceled(Exception):
-    pass
-
-
-class Unreachable(Exception):
     pass
 
 
@@ -69,24 +67,8 @@ class PrepareFailed(Exception):
     pays for a machine. The log says why; a run started again tries once more."""
 
 
-class Refused(Exception):
-    """The host answered, and the attempt cannot go on: the same would happen again (an input that changed since the run
-    read it, a root that is not the user's). It fails as the node's own error, not a crash to retry."""
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-
-
 class Deadline(Exception):
     pass
-
-
-class GuardRefused(Exception):
-    pass
-
-
-class LaunchFailed(Exception):
-    """The cloud machine did not start (no capacity, a setup that failed or hung): worth another attempt."""
 
 
 # Publish a folder in one step: rename $1 to $2 unless $2 exists, in which case $1 is dropped (the same content, by its
@@ -348,16 +330,6 @@ def heartbeat_sh(attempt: str) -> str:
     return f"date +%s > {a}/alive.tmp 2>/dev/null && mv -f {a}/alive.tmp {a}/alive 2>/dev/null"
 
 
-def removal_at_boot(at: int, start: str) -> str:
-    """A pod's start command: its removal at `at` (a Unix time), set before anything else runs on it and asked again
-    until RunPod does it (runpodctl, with the pod's own key, scoped to that pod), then the image's own start (sshd).
-    The backstop for a pod whose driver never comes back, from its first moment; perception-deadline names it (guard.sh)."""
-    # asked every 30 s until it happens, whatever runpodctl's exit says: the pod's removal ends this loop with it
-    removal = (f"until [ $(date +%s) -ge {int(at)} ]; do sleep 15; done; "
-               'while :; do RUNPOD_NO_UPDATE_CHECK=1 runpodctl pod delete "$RUNPOD_POD_ID"; sleep 30; done')
-    return f"nohup sh -c {shlex.quote(removal)} perception-deadline > /dev/null 2>&1 & exec {start}"
-
-
 def running_sh(pid: int, request: str) -> str:
     """sh that succeeds while the node `pid` runs: its process is there, and its command line names its request (pids
     are reused), or is empty for the moment: Linux shows no command line while a process execs (measured on
@@ -390,11 +362,7 @@ class Driver:
         self.phases: dict[str, float] = {}   # seconds each part of the attempt took (in the response's usage, and the log)
         self.deadline_set = False   # the machine's own OS shutdown is scheduled (guard.sh): it cannot outlive its deadline
         self.launch_unstopped = False   # a launch whose cancel on SkyPilot's server was not confirmed: it may still make a machine
-        # a RunPod pod: its id once created, the price RunPod gave it, and whether a create was sent without an answer
-        self.pod: str | None = None
-        self.pod_name: str | None = None
-        self.pod_usd: float | None = None
-        self.pod_unknown = False
+        self.session: PodSession | None = None   # a RunPod pod (pod_session.py), once its launch began
         # the account key, for this process alone: out of the environment its ssh and rsync commands inherit
         self.runpod_key = os.environ.pop("RUNPOD_API_KEY", None)
         # the node's download secrets (a gated model's token), likewise: for its prepare there alone, over stdin (prepare)
@@ -1157,173 +1125,30 @@ echo $pid
 
     # --- a RunPod pod ---------------------------------------------------------------------------------------------
 
-    def runpod_api(self, c: dict):
-        from .runpod import RunPod
-        return RunPod(self.runpod_key or "", c["api"], timeout=c.get("api_s", 60))
-
     def runpod_launch(self, c: dict):
-        """Create the pod (any GPU of the list, in any of the US, Canadian and European datacenters: whichever RunPod
-        has free), wait for its SSH port, probe it like a host and run guard.sh there before anything is sent. The pod's name carries its
-        deadline, so a later launch can delete it if this driver never does (runpod_sweep)."""
-        from .hosts import HostError, probe, ssh_command
-        from .runpod import RunPodError
+        """Create the pod and check it before anything is sent (pod_session.PodSession.launch), then use it as the host."""
+        from .runpod import RunPod
         if not self.runpod_key:
             raise Refused("input", "no RunPod API key (RUNPOD_API_KEY in ~/.config/hyperstudy/runpod.env): perception cloud on runpod checks for it")
-        api = self.runpod_api(c)
-        self.runpod_sweep(api)
-        deadline_at = int(time.time() + c["deadline_s"] - (time.monotonic() - self.started))
-        self.pod_name = f"{c['name']}-d{deadline_at}"
-        say(f"starting a RunPod pod, {self.pod_name} (at most {c['deadline_s'] / 60:.0f} min, at most ${c['hourly_usd']}/h)")
-        keys = self.local / "ssh"   # a key made for this pod alone: the user's own keys are never offered to it
-        keys.mkdir(mode=0o700, exist_ok=True)
-        key = keys / "id_ed25519"
-        if not key.exists():
-            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "perception", "-f", str(key)],
-                           check=True, capture_output=True, stdin=subprocess.DEVNULL)
-        body = {"name": self.pod_name, "imageName": c["image"], "gpuTypeIds": c["gpus"], "gpuTypePriority": "custom",
-                "gpuCount": 1, "cloudType": "SECURE", "dataCenterIds": c["datacenters"], "dataCenterPriority": "availability",
-                # its own disk only: no volume, so nothing (the inputs above all) outlives the pod
-                "containerDiskInGb": c["disk_gb"], "volumeInGb": 0, "ports": ["22/tcp"],
-                "env": {"PUBLIC_KEY": (keys / "id_ed25519.pub").read_text().strip()},
-                # no allowedCudaVersions: its values stop at 13.0 and match a host's exactly, so it excludes the hosts that
-                # report 13.2 (driver 595; checked 2026-10-25). guard.sh checks the driver instead
-                "dockerStartCmd": ["bash", "-c", removal_at_boot(deadline_at - 60, c["start"])]}
-        self.pod_unknown = True   # until RunPod answers, a pod may exist that only its name can find
-        try:
-            pod = api.create_pod(body)
-        except RunPodError as e:
-            # only a 4xx, a create never sent (this laptop offline) and RunPod's answer when none of the GPUs is free (a
-            # 500) prove no pod was made; any other failure may come after it was made (a gateway's 502): teardown looks
-            # for it by its name
-            if e.nothing_done or "no instances currently available" in str(e):
-                self.pod_unknown = False
-            if e.nothing_done and e.sent:   # RunPod refused it: the same would happen again
-                raise Refused("internal", f"RunPod refused to create the pod: {e}")
-            raise LaunchFailed(f"RunPod did not start a pod: {e}")
-        self.pod, self.pod_unknown = pod["id"], False
-        self.pod_usd = float(pod.get("costPerHr") or c["hourly_usd"])
-        say(f"pod {self.pod}: ${self.pod_usd}/h")
-        if self.pod_usd > c["hourly_usd"]:   # its price rose past the list's: the run's reservation would not cover it
-            raise Refused("internal", f"RunPod's price for pod {self.pod} is ${self.pod_usd}/h, above the ${c['hourly_usd']}/h "
-                                      "reserved for it: perception's RunPod price list needs updating")
-        while True:
-            try:
-                p = api.pod(self.pod)
-            except RunPodError as e:
-                if e.status:
-                    raise LaunchFailed(f"RunPod could not say how pod {self.pod} is: {e}")
-                p = {}   # no answer this time: the launch's time limit still applies
-            if p is None:
-                raise LaunchFailed(f"pod {self.pod} went away while it was starting")
-            if p.get("publicIp") and (p.get("portMappings") or {}).get("22"):
-                break
-            if time.monotonic() - self.started > c["launch_s"]:
-                raise LaunchFailed(f"pod {self.pod} had no SSH address after {c['launch_s'] / 60:.0f} min")
-            time.sleep(POLL_S)
-        # its host key is new: accepted the first time, in a file of this attempt's own, and held to after that
-        # (quoted: ssh reads an unquoted path with a space as two files). None of the user's ssh config applies (-F none:
-        # its IdentityFiles would be offered too), and nothing of this machine's is forwarded to it (an agent, ports, X11)
-        self.spec["ssh"] = [*ssh_command(), "-F", "none", "-i", str(key), "-p", str(int(p["portMappings"]["22"])), "-o", "IdentitiesOnly=yes",
-                            "-o", f'UserKnownHostsFile="{keys / "known_hosts"}"', "-o", "StrictHostKeyChecking=accept-new",
-                            "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-o", "ForwardX11=no"]
-        dest = f"root@{p['publicIp']}"
-        self.dest = dest
-        while True:   # its sshd starts a moment after the port is mapped
-            try:
-                if self.sh("true", check=False, timeout=60).returncode == 0:
-                    break
-            except (Unreachable, subprocess.TimeoutExpired):
-                pass
-            if time.monotonic() - self.started > c["launch_s"]:
-                raise LaunchFailed(f"pod {self.pod}'s SSH did not answer within {c['launch_s'] / 60:.0f} min")
-            time.sleep(POLL_S)
-        try:
-            caps, root = probe(dest, ssh=self.spec["ssh"])
-        except HostError as e:
-            raise LaunchFailed(f"pod {self.pod} started but could not be probed: {e}")
-        self.at(dest, root)
+        self.session = PodSession(RunPod(self.runpod_key, c["api"], timeout=c.get("api_s", 60)), c, self.local / "ssh", self.started)
+        caps, root = self.session.launch(c["name"])
+        self.spec["ssh"] = self.session.ssh
+        self.at(self.session.dest, root)
         self.spec.update(uv=caps.tools.get("uv"), path=sorted({str(Path(t).parent) for t in caps.tools.values() if t}))
-        if "cuda" not in caps.accelerators:
-            raise Refused("resources", f"pod {self.pod} has no NVIDIA GPU that nvidia-smi can see")
-        self.check_clock(f"pod {self.pod}")   # it removes itself at its deadline, a moment by this laptop's clock
-        # its removal at the deadline is running (its start command), and it holds no key to the account
-        result = self.sh(f"bash -s {int(c['min_driver'])}", check=False, data=Path(c["guard"]).read_bytes())
-        sys.stdout.buffer.write(result.stdout + result.stderr)
-        if result.returncode == 75:   # not this pod (an old driver), or its checks could not be made: another may do
-            why = (result.stderr.decode(errors="replace").strip().splitlines() or ["see the log"])[-1]
-            raise LaunchFailed(f"pod {self.pod} was not used: {why.removeprefix('guard: ')}")
-        if result.returncode:
-            raise GuardRefused(f"guard.sh refused pod {self.pod} (exit {result.returncode}): nothing was sent; see the log")
         self.deadline_set = True
 
-    def runpod_sweep(self, api):
-        """Delete any perception pod past its deadline (by its name): one a driver never came back to (a laptop that died)
-        whose own removal at the deadline (guard.sh) did not happen either. A pod still within its deadline may be another
-        run's, and is left alone."""
-        from .runpod import POD_NAME, RunPodError
-        try:
-            pods = api.pods()
-        except RunPodError as e:
-            say(f"WARNING: could not list RunPod pods to delete any left past their deadline ({e})")
-            return
-        for p in pods:
-            m = POD_NAME.match(p.get("name") or "")
-            if m and int(m.group(1)) + SWEEP_GRACE_S < time.time():
-                say(f"deleting {p['name']}: a perception pod past its deadline that was never deleted")
-                try:
-                    api.delete_pod(p["id"])
-                except RunPodError as e:
-                    say(f"WARNING: could not delete {p['name']} ({e}): delete it at https://console.runpod.io/pods")
+    @property
+    def pod(self) -> str | None:
+        return self.session.pod if self.session else None
 
     def runpod_teardown(self, c: dict):
-        """Delete the pod through the API and wait until RunPod no longer has it (404), within down_s; charged at its
-        price for the time it existed. A create with no clear answer may have made one a moment later: looked for by its
-        name for up to unknown_s, and taken as never made (charged nothing) if it does not appear."""
-        from .runpod import RunPodError
+        """Delete the pod (PodSession.teardown), charged at its price for the time it existed."""
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # deleting the pod must not be interrupted
-        if self.pod is None and not self.pod_unknown:
-            return   # none was made (RunPod refused, or no key): nothing to delete or charge
-        api = self.runpod_api(c)
-        say(f"deleting pod {self.pod or self.pod_name}")
-        start = time.monotonic()
-        end = start + c["down_s"]
-        gone, problem = False, ""
-        while not gone and time.monotonic() < end:
-            try:   # deleting is idempotent: asked again until RunPod no longer has the pod or the time is up
-                if self.pod is None:
-                    found = [p["id"] for p in api.pods() if p.get("name") == self.pod_name]
-                    if not found:
-                        if time.monotonic() - start < min(c.get("unknown_s", 180), c["down_s"]):
-                            time.sleep(2)
-                            continue
-                        say(f"no pod named {self.pod_name} appeared in {c.get('unknown_s', 180):.0f} s: none was made. If one "
-                            "appears at https://console.runpod.io/pods, delete it (the next RunPod run does, after its deadline)")
-                        self.pod_unknown = False
-                        return
-                    self.pod = found[0]   # names are the attempt's own: one at most
-                api.delete_pod(self.pod)
-                while time.monotonic() < end and api.pod(self.pod) is not None:
-                    time.sleep(2)
-                gone = api.pod(self.pod) is None
-            except RunPodError as e:
-                problem = str(e)
-                say(f"RunPod: {e}")
-                time.sleep(min(5.0, max(0.0, end - time.monotonic())))
-        price = self.pod_usd or c["hourly_usd"]
-        seconds = time.monotonic() - self.started
-        if gone:   # its time; never more than its deadline once its own removal was set (it cannot outlive it then)
-            self.extra_usd = round(price * (min(seconds, c["deadline_s"]) if self.deadline_set else seconds) / 3600, 4)
-        elif self.deadline_set:   # it removes itself at its deadline at most (guard.sh), and is charged that
-            self.extra_usd = round(price * c["deadline_s"] / 3600, 4)
-            say(f"WARNING: could not delete pod {self.pod} ({problem or 'still there'}): it removes itself at its deadline; "
-                "or delete it at https://console.runpod.io/pods")
-        else:   # nothing ends it but someone: no other attempt starts another one
-            self.extra_usd = round(price * c["deadline_s"] / 3600, 4)
-            message = (f"pod {self.pod or self.pod_name} could not be deleted ({problem or 'still there'}), and its removal at "
-                       "its deadline was not confirmed: it may still be running. Delete it at https://console.runpod.io/pods")
-            say(f"WARNING: {message}")
+        if self.session is None:
+            return   # none was made (no key): nothing to delete or charge
+        gone, self.extra_usd, message = self.session.teardown()
+        if message:   # nothing ends it but someone: no other attempt starts another one
             self.fail("internal", message)
-        say(f"the pod cost about ${self.extra_usd:.2f}" + ("" if gone else " (at least)"))
 
     def run(self) -> int:
         cloud = self.spec.get("cloud")

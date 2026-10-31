@@ -132,6 +132,40 @@ Each phase is PR-sized; verification runs on the lab server or RunPod.
 Phases 1–3 and 6 are independent and can go first. A3 is where requirement 1 reaches users; 11 completes requirement 3.
 4b's comparison needs 7 (a full run on the lab), so the default for the names is chosen after the lab coordinator works.
 
+## Phase 10: a RunPod pod as the run's coordinator (design, 2026-10-31)
+
+Phase 7's whole run (`remote run`), with a pod made for the run as the host. The pod's lifecycle (create it, wait
+for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved out of `remote_driver.Driver` into
+`pod_session.py` so both use one implementation.
+
+- **Surface.** `perception remote run runpod GRAPH ...` (`runpod` is a reserved host name: `hosts add` refuses it),
+  and `remote status | attach | fetch | cancel runpod RUN`, which reach the pod through the run's record
+  (`remote/<run>.json` gains `pod`: its id, name, deadline, address, ssh port and price). The pod's ssh key and
+  known-hosts file are the run's own (`remote/<run>.pod/`, 0700): pods reuse addresses, so nothing goes in the user's
+  `~/.ssh`.
+- **Consent.** `perception cloud on runpod` (the account key, as for per-step pods), and for the run's keys a yes of
+  their own: `perception cloud keys runpod on` (off by default; the app's A2). Without it a run whose steps need keys
+  is refused, naming them, as on a lab server. The keys go on ssh's stdin to the coordinator there, as in phase 7; the
+  RunPod account key never leaves this machine (guard.sh checks the pod holds none).
+- **Deadline.** Set at creation (in the pod's name and its start command): setup (the orchestrator's and nodes'
+  environments, the gated weights: 30 min until measured) + 1.5 × the plan's estimate of every step on a RunPod GPU
+  (RunPodBackend.caps) + the linger window (`--linger-min`, 30 by default), rounded up to 5 minutes.
+- **One spending cap.** The pod is reserved at the dearest listed GPU's price for its whole deadline. The run's
+  `max_cost_usd` minus that reservation is the cap the coordinator there is given for its API steps; a run whose
+  remainder is below the plan's API estimate is refused before a pod is made. The pod is charged for the time it
+  existed at the price RunPod gave it, recorded with the run.
+- **Linger and removal.** When the run ends there, the coordinator writes the time the pod is to go
+  (`/perception-remove-at`: the end plus the linger window); the removal its start command set (removal_at_boot) acts
+  at whichever is sooner, that or the deadline. `fetch` deletes the pod through the API once the run is imported;
+  `cancel` cancels the run and deletes it. A pod never fetched goes at the end of its linger window, and a stray past
+  its deadline is deleted by the next RunPod launch (runpod_sweep), as now.
+- **Weights.** Downloaded in the session with the user's token (decided 2026-10-28), into the pod's disk (100 GB
+  until measured). Then, measured on real runs: a RunPod network volume, an R2 bucket and an image with the weights,
+  against downloading each time (time to ready, cost, bandwidth), once each model's licence is checked for a private copy.
+- **Verify.** Tests with RunPod's API stood in (test_runpod's FakeRunPod) and the pod a stand-in host; then a short
+  clip on a real pod: one pod in the console, killing this machine's side leaves the run going and the pod removed at
+  its linger window; deleted after fetch.
+
 ## Decided 2026-10-28
 
 1. **Unattended runs:** the machine running the whole pipeline gets the keys (over stdin, held in memory).
