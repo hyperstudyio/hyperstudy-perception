@@ -808,6 +808,19 @@ def cmd_setup(args):
     return 0 if result.ok else 1
 
 
+def minutes(text: str) -> float:
+    """--linger-min: a number of minutes from 0 to a day (review of #53: a negative window would shorten a pod's deadline
+    below what its run needs, and nan or inf are no time)."""
+    import math
+    try:
+        value = float(text)
+    except ValueError:
+        value = math.nan
+    if not (0 <= value <= 24 * 60):
+        raise argparse.ArgumentTypeError(f"a number of minutes from 0 to {24 * 60}: {text!r}")
+    return value
+
+
 def cmd_remote(args):
     """A whole run coordinated on a lab server (remote_run.py): `run` checks it may go there, sends it and follows it;
     `status`, `attach` and `fetch` reach a run there from this machine, whether or not this machine started it."""
@@ -901,7 +914,9 @@ def cmd_remote(args):
                 emit("run.created", run=run_id, store=f"{host.name}:{store}", host=host.name)
             else:
                 print(f"run {run_id}  (on {host.name}, store {store})")
-            if on_pod:
+            if on_pod:   # a start under this id with another graph is refused now, before a pod is paid for (review of #53)
+                if conflict := remote_run.record_conflict(run_id, remote_run.run_record(pod_run.NAME, graph, doc)):
+                    return problem(conflict)
                 remote, made = _pod_for(args, run_id, rp["pod"], secrets)
                 host = remote.host
             try:
@@ -1322,7 +1337,7 @@ def main(argv: list[str] | None = None) -> int:
     rr_.add_argument("--run-id", help="the run's id (the one a start whose answer was lost said): attaches if it is running there")
     rr_.add_argument("--dry-run", action="store_true", help="say what would be sent and to which steps the keys would go; send nothing")
     rr_.add_argument("--detach", action="store_true", help="return once it has started there")
-    rr_.add_argument("--linger-min", type=float, default=30,
+    rr_.add_argument("--linger-min", type=minutes, default=30,
                      help="runpod: how long its pod waits for a fetch after the run ends, then removes itself")
     rr_.set_defaults(fn=cmd_remote)
     for name, helptext in (("status", "a run there, or the runs there"), ("attach", "follow a run there until it ends"),

@@ -37,6 +37,7 @@ SETUP_S = 30 * 60
 PER_VIDEO_S = 12
 LINGER_S = 30 * 60
 MIN_DEADLINE_S = 60 * 60
+UNKNOWN_LENGTH_S = 60 * 60   # a run whose length is not known (an input that is not a video): its steps' time and units
 # a whole run's pod: the RunPod backend's GPUs up to $0.60/h, so the reservation of a short clip's run leaves room for
 # its API steps under the full graph's $1.50; of those, the ones with the memory the run's steps need (gpus_for)
 GPUS = {name: usd for name, usd in RunPodBackend.gpus.items() if usd <= 0.60}
@@ -63,16 +64,16 @@ def hourly_usd(gpus: dict[str, float] | None = None) -> float:
 def deadline_s(video_s: float | None, linger_s: float = LINGER_S) -> int:
     """How long the pod may exist: setup, the steps (by the video's length; an hour when it is not known) and the linger
     window, in whole 5 minutes, at least an hour."""
-    steps = PER_VIDEO_S * video_s if video_s else 60 * 60
+    steps = PER_VIDEO_S * (video_s or UNKNOWN_LENGTH_S / PER_VIDEO_S)
     return max(MIN_DEADLINE_S, math.ceil((SETUP_S + steps + linger_s) / 300) * 300)
 
 
 def unknown_units_usd(cost, config: dict, video_s: float | None) -> float | None:
     """An API step's estimate when its units are not known yet (manifests.Cost: per shot, utterance or minute), from
-    the video's length (UNITS_PER_S); None without one."""
+    the video's length (UNITS_PER_S), or the hour deadline_s assumes when it is not known (review of #53)."""
     if cost.per == "run":
         return cost.unit_usd(config)
-    return None if video_s is None else cost.unit_usd(config) * UNITS_PER_S[cost.per] * video_s
+    return cost.unit_usd(config) * UNITS_PER_S[cost.per] * (video_s or UNKNOWN_LENGTH_S)
 
 
 def reservation_usd(deadline: float, gpus: dict[str, float] | None = None) -> float:

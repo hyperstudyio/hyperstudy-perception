@@ -328,7 +328,6 @@ def test_api_steps_whose_units_are_not_known_yet_are_estimated_from_the_videos_l
     assert pod_run.unknown_units_usd(Cost(usd=0.008, per="utterance", input="transcript"), {}, 100) == pytest.approx(0.8)
     assert pod_run.unknown_units_usd(Cost(usd=0.04, per="minute", input="media"), {}, 120) == pytest.approx(0.08)
     assert pod_run.unknown_units_usd(Cost(usd={"a": 0.1}, by="model", per="shot", input="shots"), {"model": "a"}, 10) == pytest.approx(0.5)
-    assert pod_run.unknown_units_usd(Cost(usd=0.01, per="shot", input="shots"), {}, None) is None
 
 
 def test_a_pod_that_could_not_be_deleted_is_charged_to_its_run_once(tmp_path, runpod, capsys, monkeypatch):
@@ -346,3 +345,30 @@ def test_a_pod_that_could_not_be_deleted_is_charged_to_its_run_once(tmp_path, ru
     runpod.flags.discard("delete-fails")
     perception(capsys, "remote", "cancel", "runpod", run)   # clean up: deleted now
     assert not runpod.pods
+
+
+def test_a_run_id_recorded_on_another_host_is_refused_before_a_pod_is_made(tmp_path, runpod, capsys):
+    """Review of #53: a run's id names one run (its host, graph and inputs); the record's refusal comes before a pod
+    is made, not after one is paid for."""
+    run = "20261031-120000-abc123"
+    remote_run.record(run).parent.mkdir(parents=True, exist_ok=True)
+    remote_run.record(run).write_text(json.dumps({"host": "lab", "inputs": {}, "input_sha256": {}, "graph_doc": {}}))
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
+                           "--allow-uploads", "--max-cost-usd", "5", "--run-id", run)
+    assert code == 1 and not runpod.bodies
+    assert "another graph" in of(out, "error")[0]["problems"][0]
+
+
+@pytest.mark.parametrize("linger", ["-5", "nan", "inf", "100000"])
+def test_a_linger_window_that_is_not_a_number_of_minutes_is_refused(tmp_path, runpod, capsys, linger):
+    """Review of #53: a negative window would shorten the deadline below what the run needs; nan and inf are no time."""
+    with pytest.raises(SystemExit):
+        perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
+                   "--allow-uploads", "--max-cost-usd", "5", "--linger-min", linger)
+    assert not runpod.bodies
+
+
+def test_without_the_videos_length_api_units_are_estimated_for_the_hour_the_deadline_assumes():
+    """Review of #53: no length (an input that is not a video) is not $0 of API steps: the hour deadline_s assumes."""
+    from perception.manifests import Cost
+    assert pod_run.unknown_units_usd(Cost(usd=0.01, per="shot", input="shots"), {}, None) == pytest.approx(0.01 * 0.5 * 3600)
