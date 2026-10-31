@@ -148,16 +148,19 @@ for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved 
   is refused, naming them, as on a lab server. The keys go on ssh's stdin to the coordinator there, as in phase 7; the
   RunPod account key never leaves this machine (guard.sh checks the pod holds none).
 - **Deadline.** Set at creation (in the pod's name and its start command): setup (the orchestrator's and nodes'
-  environments, the gated weights: 30 min until measured) + 1.5 × the plan's estimate of every step on a RunPod GPU
-  (RunPodBackend.caps) + the linger window (`--linger-min`, 30 by default), rounded up to 5 minutes.
+  environments, the gated weights: 30 min until measured) + 12 × the video's length (an hour when it is not known) +
+  the linger window (`--linger-min`, 30 by default), rounded up to 5 minutes, at least an hour (pod_run.deadline_s).
+  Not the plan's estimates: they come from a place's own runs, and a pod made for a run has none.
 - **One spending cap.** The pod is reserved at the dearest listed GPU's price for its whole deadline. The run's
   `max_cost_usd` minus that reservation is the cap the coordinator there is given for its API steps; a run whose
   remainder is below the plan's API estimate is refused before a pod is made. The pod is charged for the time it
   existed at the price RunPod gave it, recorded with the run.
 - **Linger and removal.** When the run ends there, the coordinator writes the time the pod is to go
   (`/perception-remove-at`: the end plus the linger window); the removal its start command set (removal_at_boot) acts
-  at whichever is sooner, that or the deadline. `fetch` deletes the pod through the API once the run is imported;
-  `cancel` cancels the run and deletes it. A pod never fetched goes at the end of its linger window, and a stray past
+  at whichever is sooner, that or the deadline. `fetch` deletes the pod through the API once the run is imported,
+  whether it succeeded or not; `cancel` cancels the run there, imports it, and deletes the pod through the API
+  whatever the pod answered (one that cannot be reached is deleted too, ending its run). A start whose answer was lost
+  leaves the pod to the run that may be going there (`attach` follows it, `cancel` ends it). A pod never fetched goes at the end of its linger window, and a stray past
   its deadline is deleted by the next RunPod launch (runpod_sweep), as now.
 - **Weights.** Downloaded in the session with the user's token (decided 2026-10-28), into the pod's disk (100 GB
   until measured). Then, measured on real runs: a RunPod network volume, an R2 bucket and an image with the weights,

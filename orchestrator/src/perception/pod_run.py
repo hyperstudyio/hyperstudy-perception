@@ -21,6 +21,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -40,8 +41,13 @@ MIN_DEADLINE_S = 60 * 60
 # its API steps under the full graph's $1.50; of those, the ones with the memory the run's steps need (gpus_for)
 GPUS = {name: usd for name, usd in RunPodBackend.gpus.items() if usd <= 0.60}
 DISK_GB = 100   # every step's environment and the gated weights, with the video and what the steps make (estimate)
-# the run's keys a pod is never given, whatever its steps declare: the accounts' own (they make and delete machines)
+# the run's keys a pod is never given, whatever its steps declare: the accounts' own (they make and delete machines);
+# a step that declares one is refused before any pod is made
 NEVER_SENT = ("RUNPOD_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
+# an API step's units before the steps that make them have run (a fresh run's shots and utterances), per second of
+# video, for the check before a pod is made: more than OOO's clips have (0.30-0.36 shots and 0.55-0.72 utterances a
+# second, clips 3, 4 and 5_2, 2026-10-31)
+UNITS_PER_S = {"shot": 0.5, "utterance": 1.0, "minute": 1 / 60}
 
 
 def gpus_for(vram_gb: float) -> dict[str, float]:
@@ -59,6 +65,14 @@ def deadline_s(video_s: float | None, linger_s: float = LINGER_S) -> int:
     window, in whole 5 minutes, at least an hour."""
     steps = PER_VIDEO_S * video_s if video_s else 60 * 60
     return max(MIN_DEADLINE_S, math.ceil((SETUP_S + steps + linger_s) / 300) * 300)
+
+
+def unknown_units_usd(cost, config: dict, video_s: float | None) -> float | None:
+    """An API step's estimate when its units are not known yet (manifests.Cost: per shot, utterance or minute), from
+    the video's length (UNITS_PER_S); None without one."""
+    if cost.per == "run":
+        return cost.unit_usd(config)
+    return None if video_s is None else cost.unit_usd(config) * UNITS_PER_S[cost.per] * video_s
 
 
 def reservation_usd(deadline: float, gpus: dict[str, float] | None = None) -> float:
@@ -108,11 +122,11 @@ def host(pod: dict, keys: bool) -> PodHost:
                    keys=keys, pod_keys=pod["keys"])
 
 
-def launch(run: str, api, deadline: float, gpus: list[str] | None = None) -> tuple[PodSession, PodHost, dict]:
+def launch(run: str, api, deadline: float, gpus: list[str] | None = None, log=None) -> tuple[PodSession, PodHost, dict]:
     """Make the run's pod and check it (PodSession.launch), and remember it in the run's record before anything is sent
     to it. Returns the session (to delete the pod if what follows fails), the pod as a host, and what the record holds."""
     from .remote_run import record
-    session = PodSession(api, spec(deadline, gpus), keys_folder(run))
+    session = PodSession(api, spec(deadline, gpus), keys_folder(run), log=log or sys.stderr)
     made_at = time.time()
     try:
         caps, root = session.launch(f"perception-{run.rsplit('-', 1)[-1]}-run")
@@ -134,21 +148,20 @@ def set_up(session: PodSession) -> str:
     """What the run needs on the pod, after guard.sh and before anything is sent (cloud/skypilot/node-setup.sh, as a
     step's pod has it: ffmpeg, rsync, and uv, which the image keeps off PATH in ~/.perception-uv). The uv it says."""
     import subprocess
-    import sys
     from .pod_session import LaunchFailed, say
-    say("checking ffmpeg, rsync and uv on the pod")
+    say("checking ffmpeg, rsync and uv on the pod", session.log)
     try:
         done = session.sh("bash -s", check=False, data=Path(session.c["setup"]).read_bytes(), timeout=900)
     except subprocess.TimeoutExpired:
         raise LaunchFailed(f"setting up pod {session.pod} took more than 15 min")
-    sys.stdout.buffer.write(done.stderr)
+    session.log.write(done.stderr.decode(errors="replace"))
     uv = done.stdout.decode().strip().splitlines()[-1] if done.stdout.strip() else ""
     if done.returncode or not uv:
         raise LaunchFailed(f"setting up pod {session.pod} failed (exit {done.returncode})" + ("" if uv else ": it did not say where uv is"))
     return uv
 
 
-def delete(run: str, api) -> dict:
+def delete(run: str, api, log=None) -> dict:
     """Delete the run's pod (PodSession.teardown) and record what it cost: its time at its price, from when it was made.
     Asked again after it is gone, it says so and changes nothing."""
     from .remote_run import record
@@ -158,7 +171,8 @@ def delete(run: str, api) -> dict:
         raise RuntimeError(f"run {run} has no pod of its own")
     if pod.get("deleted"):
         return pod
-    session = PodSession(api, spec(pod["deadline_s"], pod.get("gpus")), Path(pod["keys"]), started=time.monotonic() - (time.time() - pod["made_at"]))
+    session = PodSession(api, spec(pod["deadline_s"], pod.get("gpus")), Path(pod["keys"]),
+                         started=time.monotonic() - (time.time() - pod["made_at"]), log=log or sys.stderr)
     session.pod, session.name, session.usd, session.deadline_set = pod["id"], pod["name"], pod["hourly_usd"], True
     gone, usd, _ = session.teardown()
     pod = {**pod, "deleted": gone, "cost_usd": usd}

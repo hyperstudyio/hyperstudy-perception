@@ -141,8 +141,9 @@ def caption_reply(ask) -> dict:
     None when it made none; its usage, as cost() gives it; its raw reply). gpt-audio does not hold its function call to
     the schema (strict or not), so a reply that is not the schema's JSON (one was cut short of a comma on a pod's run,
     2026-10-31) is asked again, once: {parsed, arguments, raw (the last reply's), usage (both calls', summed),
-    asked_again (the first's problem, or nothing)}. ValueError when the second is not the schema's either."""
-    problems, usages = [], []
+    asked_again ([the first reply's {problem, finish_reason, arguments}], or nothing: kept to find out why, review of
+    #53)}. ValueError when the second is not the schema's either."""
+    rejected, usages = [], []
     for _ in range(2):
         arguments, usage, raw = ask()
         usages.append(usage)
@@ -151,11 +152,12 @@ def caption_reply(ask) -> dict:
                 raise ValueError(f"no function call in the reply (finish_reason {raw.get('finish_reason')})")
             parsed = parse_caption(arguments)
         except ValueError as e:
-            problems.append(str(e))
+            rejected.append({"problem": str(e), "finish_reason": raw.get("finish_reason"), "arguments": arguments})
             continue
-        return {"parsed": parsed, "arguments": arguments, "raw": raw, "asked_again": problems,
+        return {"parsed": parsed, "arguments": arguments, "raw": raw, "asked_again": rejected,
                 "usage": {k: sum(u[k] for u in usages) for k in usages[0]}}
-    raise ValueError(f"asked twice, and neither reply was the schema's: {'; '.join(problems)}")
+    raise ValueError("asked twice, and neither reply was the schema's: " + "; ".join(
+        f"{r['problem']} (finish_reason {r['finish_reason']}, arguments {str(r['arguments'])[:300]!r})" for r in rejected))
 
 def parse_caption(arguments: str) -> dict:
     """The function call's arguments -> {description, tags, emphasized_words}; ValueError when they are not that. Its tags

@@ -15,7 +15,7 @@ from perception.backends.cloud import Cloud
 from perception.pod_session import removal_at_boot
 
 from test_cloud import GUARD_OK, GUARD_REFUSES, SETUP_OK, script
-from test_remote_run import KEY, files_holding, graph_file, keyed, of, perception, starts
+from test_remote_run import KEY, files_holding, graph_file, keyed, of, perception, starts, wait_for
 from test_remote_run import work as remote_work
 from test_runpod import KEY as RUNPOD_KEY, FakeRunPod
 
@@ -26,9 +26,15 @@ while [ $# -gt 0 ]; do case "$1" in -o|-l|-p|-i|-F) shift 2;; -*) shift;; *) bre
 echo "ssh $1: $2" | head -c 300 >> "$FAKE_HOST/events"; echo >> "$FAKE_HOST/events"
 shift
 printf '%s\n' "$*" >> "$FAKE_HOST/argv.log"
+# the pod out of reach (sshd gone, the network down): every command, while $FAKE_HOST/unreachable exists
+if [ -e "$FAKE_HOST/unreachable" ]; then echo "ssh: connect to host pod: Connection timed out" >&2; exit 255; fi
 case "$*" in
   *"remote_coordinator start"*)
-    tee -a "$FAKE_RECORD/start.stdin" | env -i FAKE_HOST="$FAKE_HOST" HOME="$FAKE_HOST/home" PATH="$FAKE_HOST/home/.local/bin:$PATH" PERCEPTION_REMOVE_AT="$FAKE_HOST/remove-at" /bin/sh -c "cd \"\$HOME\" && $*"; exit $?;;
+    tee -a "$FAKE_RECORD/start.stdin" | env -i FAKE_HOST="$FAKE_HOST" HOME="$FAKE_HOST/home" PATH="$FAKE_HOST/home/.local/bin:$PATH" PERCEPTION_REMOVE_AT="$FAKE_HOST/remove-at" /bin/sh -c "cd \"\$HOME\" && $*" > "$FAKE_HOST/start.out"
+    code=$?
+    # its answer lost on the way back, the run started there all the same
+    if [ -e "$FAKE_HOST/lose-start-answer" ]; then echo "Connection reset by peer" >&2; exit 255; fi
+    cat "$FAKE_HOST/start.out"; exit $code;;
 esac
 cd "$FAKE_HOST/home" && exec env -i FAKE_HOST="$FAKE_HOST" HOME="$FAKE_HOST/home" PATH="$FAKE_HOST/home/.local/bin:$PATH" PERCEPTION_REMOVE_AT="$FAKE_HOST/remove-at" /bin/sh -c "$*"
 """
@@ -243,3 +249,100 @@ def test_the_full_graph_needs_what_its_sounds_step_does():
     reg = Registry.load(Path(pod_run.__file__).resolve().parents[3] / "nodes")
     sounds = reg.get("audio.sounds@1.1.0")
     assert max(r.minimum_vram_gb for r in sounds.runners if r.accelerator == "cuda") == 23
+
+
+
+def detached(tmp_path, capsys, sleep=30) -> str:
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a", sleep=sleep)])),
+                           "--allow-uploads", "--max-cost-usd", "5", "--detach")
+    assert code == 0, out
+    return of(out, "run.created")[0]["run"]
+
+
+def test_canceling_a_pod_run_that_cannot_be_reached_still_deletes_its_pod(tmp_path, runpod, capsys):
+    """Review of #53: cancel is "stop spending", and RunPod's API deletes the pod without reaching it."""
+    run = detached(tmp_path, capsys)
+    (tmp_path / "host" / "unreachable").touch()
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert of(out, "pod_deleted")[0]["deleted"] and not runpod.pods and record_of(run)["pod"]["deleted"]
+    assert code == 1 and "deleting it ended the run" in of(out, "error")[0]["problems"][0]
+
+
+def test_a_canceled_pod_run_is_imported_with_what_it_spent(tmp_path, runpod, capsys):
+    """Review of #53: the run there has ended, so it is brought back (no bundle) before its pod goes, and what it and
+    its pod cost are this store's."""
+    run = detached(tmp_path, capsys)
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert code == 0 and of(out, "canceled")[0]["canceled"] and of(out, "fetched")[0]["run"] == run
+    pod = of(out, "pod_deleted")[0]
+    code, out = perception(capsys, "status", run)
+    [st] = of(out, "status")
+    assert st["status"] == "canceled" and st["spent_usd"] >= pod["cost_usd"] and st["max_cost_usd"] == 5
+    assert record_of(run)["pod"]["charged_usd"] == pod["cost_usd"]
+
+
+def test_every_line_a_json_pod_run_prints_is_json(tmp_path, runpod, capsys):
+    """Review of #53: the pod's progress (its launch, guard.sh, setup, deletion) goes to stderr, never into the --json
+    stream (docs/cli-json.md: every line on stdout is one JSON object)."""
+    from perception import cli
+    code = cli.main(["--json", "--nodes", str(Path(__file__).parent / "nodes"), "remote", "run", "runpod",
+                     str(graph_file(tmp_path, [work(tmp_path, "a")])), "--allow-uploads", "--max-cost-usd", "5"])
+    captured = capsys.readouterr()
+    assert code == 0
+    for line in captured.out.splitlines():
+        json.loads(line)
+    assert "starting a RunPod pod" in captured.err and "guard: ok" in captured.err
+
+
+def test_a_start_whose_answer_was_lost_keeps_its_pod_for_the_run_there(tmp_path, runpod, capsys):
+    """Review of #53: the run may have started there; its pod is left to it (attach follows it, cancel ends it), never
+    deleted with it half done."""
+    (tmp_path / "host" / "lose-start-answer").touch()
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
+                           "--allow-uploads", "--max-cost-usd", "5")
+    run = of(out, "run.created")[0]["run"]
+    assert code == 1 and not of(out, "pod_deleted") and runpod.pods
+    assert "remote attach runpod" in of(out, "error")[0]["problems"][-1]
+    (tmp_path / "host" / "lose-start-answer").unlink()
+    code, out = perception(capsys, "remote", "attach", "runpod", run)   # it ran there: followed, imported, deleted
+    assert code == 0 and of(out, "fetched") and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods
+
+
+def test_a_step_that_needs_a_key_a_pod_is_never_given_is_refused_before_a_pod(tmp_path, runpod, capsys, monkeypatch):
+    """Review of #53: refused up front, naming the step and the key, not started without it on a pod already paid for."""
+    monkeypatch.setattr(pod_run, "NEVER_SENT", (*pod_run.NEVER_SENT, "TEST_API_KEY"))
+    perception(capsys, "cloud", "keys", "runpod", "on")
+    rec = tmp_path / "keyed-record"
+    rec.mkdir()
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [keyed("k", "$inputs.seed", str(rec))])),
+                           "--allow-uploads", "--max-cost-usd", "5")
+    assert code == 1 and not runpod.bodies
+    assert any("k needs TEST_API_KEY" in p and "never sent to a pod" in p for p in of(out, "remote_plan")[0]["problems"])
+
+
+def test_api_steps_whose_units_are_not_known_yet_are_estimated_from_the_videos_length():
+    """Review of #53: a fresh run's shots and utterances are known only after its steps run; the check before a pod is
+    made counts them from the video (more than OOO's: 0.30-0.36 shots and 0.55-0.72 utterances a second)."""
+    from perception.manifests import Cost
+    assert pod_run.unknown_units_usd(Cost(usd=0.01, per="shot", input="shots"), {}, 100) == pytest.approx(0.5)
+    assert pod_run.unknown_units_usd(Cost(usd=0.008, per="utterance", input="transcript"), {}, 100) == pytest.approx(0.8)
+    assert pod_run.unknown_units_usd(Cost(usd=0.04, per="minute", input="media"), {}, 120) == pytest.approx(0.08)
+    assert pod_run.unknown_units_usd(Cost(usd={"a": 0.1}, by="model", per="shot", input="shots"), {"model": "a"}, 10) == pytest.approx(0.5)
+    assert pod_run.unknown_units_usd(Cost(usd=0.01, per="shot", input="shots"), {}, None) is None
+
+
+def test_a_pod_that_could_not_be_deleted_is_charged_to_its_run_once(tmp_path, runpod, capsys, monkeypatch):
+    """Review of #53: its whole deadline is charged when RunPod would not delete it; a fetch asked again adds nothing."""
+    spec = pod_run.spec
+    monkeypatch.setattr(pod_run, "spec", lambda deadline, gpus=None: {**spec(deadline, gpus), "down_s": 2})
+    run = detached(tmp_path, capsys, sleep=0)
+    runpod.flags.add("delete-fails")
+    assert wait_for(lambda: perception(capsys, "remote", "status", "runpod", run)[1][0].get("status") == "succeeded")
+    code, out = perception(capsys, "remote", "fetch", "runpod", run)
+    assert code == 0 and not of(out, "pod_deleted")[0]["deleted"]
+    spent = of(perception(capsys, "status", run)[1], "status")[0]["spent_usd"]
+    code, out = perception(capsys, "remote", "fetch", "runpod", run)
+    assert of(perception(capsys, "status", run)[1], "status")[0]["spent_usd"] == spent
+    runpod.flags.discard("delete-fails")
+    perception(capsys, "remote", "cancel", "runpod", run)   # clean up: deleted now
+    assert not runpod.pods

@@ -1328,10 +1328,10 @@ def test_an_ended_run_is_kept_a_while_whatever_the_retention(tmp_path, monkeypat
     assert rc.prune(store, 0, None) == ["20261029-120000-bbbbbb"]
 
 
-def test_the_orchestrators_environment_there_has_this_machines_python(tmp_path, monkeypatch):
-    """Made with the Python this orchestrator runs on (its minor version), whose wheels its requirements have: not
-    whatever is newest there (a RunPod pod has no Python of its own, and uv would download the newest it knows, for
-    which av had no wheel and failed to build: 2026-10-31)."""
+def test_the_orchestrators_environment_there_has_a_python_no_newer_than_this_machines(tmp_path, monkeypatch):
+    """Made with a Python from the package's oldest to this machine's minor version, whose wheels its requirements have:
+    one already there if it has one (a lab server may have no internet), never one newer (a RunPod pod has no Python of
+    its own, and uv downloaded the newest it knew, for which av had no wheel: 2026-10-31; review of #53)."""
     import subprocess as sp
     caps = Capabilities(platform=this_platform(), cpu_cores=8, memory_gb=32, accelerators={"cpu"}, vram_gb=0,
                         tools={"uv": "/opt/uv/uv", "ffmpeg": None, "ffprobe": None})
@@ -1344,4 +1344,4 @@ def test_the_orchestrators_environment_there_has_this_machines_python(tmp_path, 
         return sp.CompletedProcess(script, 1 if script.startswith("test -e") else 0, b"", b"")
     monkeypatch.setattr(remote, "sh", sh)
     assert remote.interpreter.endswith("/bin/python")
-    assert f"--python {sys.version_info.major}.{sys.version_info.minor} " in sent[-1]
+    assert f"--python '>=3.12,<{sys.version_info.major}.{sys.version_info.minor + 1}' " in sent[-1]

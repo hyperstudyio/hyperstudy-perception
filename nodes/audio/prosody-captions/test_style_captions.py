@@ -183,7 +183,9 @@ def test_a_caption_reply_that_is_not_the_schemas_json_is_asked_again_once():
     got = sc.caption_reply(asker('{"description": "Calm" "tags": []}', GOOD))
     assert got["parsed"]["description"] == "Calm." and got["arguments"] == GOOD
     assert got["usage"] == {"text_in": 20, "audio_in": 10, "out": 6, "usd": 0.02}
-    assert len(got["asked_again"]) == 1 and "delimiter" in got["asked_again"][0]
+    [first] = got["asked_again"]
+    assert "delimiter" in first["problem"] and first["arguments"] == '{"description": "Calm" "tags": []}'
+    assert first["finish_reason"] == "tool_calls"
     assert sc.caption_reply(asker(GOOD))["asked_again"] == []
 
 

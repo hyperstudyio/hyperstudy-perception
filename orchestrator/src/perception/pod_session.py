@@ -46,8 +46,8 @@ class LaunchFailed(Exception):
     """The cloud machine did not start (no capacity, a setup that failed or hung): worth another attempt."""
 
 
-def say(msg: str):
-    print(f"[remote] {msg}", flush=True)
+def say(msg: str, log=None):
+    print(f"[remote] {msg}", file=log or sys.stdout, flush=True)
 
 
 def removal_at_boot(at: int, start: str, remove_at: str = REMOVE_AT) -> str:
@@ -69,10 +69,11 @@ class PodSession:
     spec (RunPodBackend.driver_spec's "cloud", or remote_run's for a whole run): api, image, start, gpus, datacenters,
     disk_gb, min_driver, guard, hourly_usd, launch_s, down_s, api_s, unknown_s, deadline_s. `keys`: a private folder
     of this job's own, for the pod's ssh key and known hosts. `started`: when the job began (time.monotonic()), from
-    which its deadline and its time limits count."""
+    which its deadline and its time limits count. `log`: where its progress goes (stdout, the attempt's log, for a
+    step's driver; stderr for the CLI, whose stdout may be --json's)."""
 
-    def __init__(self, api, c: dict, keys: Path, started: float | None = None):
-        self.api, self.c, self.keys = api, c, keys
+    def __init__(self, api, c: dict, keys: Path, started: float | None = None, log=None):
+        self.api, self.c, self.keys, self.log = api, c, keys, log or sys.stdout
         self.started = time.monotonic() if started is None else started
         # its id once created, the price RunPod gave it, and whether a create was sent without an answer
         self.pod: str | None = None
@@ -95,7 +96,7 @@ class PodSession:
         self.sweep()
         self.deadline_at = int(time.time() + c["deadline_s"] - (time.monotonic() - self.started))
         self.name = f"{name}-d{self.deadline_at}"
-        say(f"starting a RunPod pod, {self.name} (at most {c['deadline_s'] / 60:.0f} min, at most ${c['hourly_usd']}/h)")
+        say(f"starting a RunPod pod, {self.name} (at most {c['deadline_s'] / 60:.0f} min, at most ${c['hourly_usd']}/h)", self.log)
         self.keys.mkdir(mode=0o700, parents=True, exist_ok=True)   # a key made for this pod alone: the user's own are never offered to it
         key = self.keys / "id_ed25519"
         if not key.exists():
@@ -123,7 +124,7 @@ class PodSession:
             raise LaunchFailed(f"RunPod did not start a pod: {e}")
         self.pod, self.unknown = pod["id"], False
         self.usd = float(pod.get("costPerHr") or c["hourly_usd"])
-        say(f"pod {self.pod}: ${self.usd}/h")
+        say(f"pod {self.pod}: ${self.usd}/h", self.log)
         if self.usd > c["hourly_usd"]:   # its price rose past the list's: the reservation would not cover it
             raise Refused("internal", f"RunPod's price for pod {self.pod} is ${self.usd}/h, above the ${c['hourly_usd']}/h "
                                       "reserved for it: perception's RunPod price list needs updating")
@@ -165,8 +166,8 @@ class PodSession:
                                       "clock (its deadline is a moment by it)")
         # its removal at the deadline is running (its start command), and it holds no key to the account
         result = self.sh(f"bash -s {int(c['min_driver'])}", check=False, data=Path(c["guard"]).read_bytes())
-        sys.stdout.buffer.write(result.stdout + result.stderr)
-        sys.stdout.flush()
+        self.log.write((result.stdout + result.stderr).decode(errors="replace"))
+        self.log.flush()
         if result.returncode == 75:   # not this pod (an old driver), or its checks could not be made: another may do
             why = (result.stderr.decode(errors="replace").strip().splitlines() or ["see the log"])[-1]
             raise LaunchFailed(f"pod {self.pod} was not used: {why.removeprefix('guard: ')}")
@@ -192,16 +193,16 @@ class PodSession:
         try:
             pods = self.api.pods()
         except RunPodError as e:
-            say(f"WARNING: could not list RunPod pods to delete any left past their deadline ({e})")
+            say(f"WARNING: could not list RunPod pods to delete any left past their deadline ({e})", self.log)
             return
         for p in pods:
             m = POD_NAME.match(p.get("name") or "")
             if m and int(m.group(1)) + SWEEP_GRACE_S < time.time():
-                say(f"deleting {p['name']}: a perception pod past its deadline that was never deleted")
+                say(f"deleting {p['name']}: a perception pod past its deadline that was never deleted", self.log)
                 try:
                     self.api.delete_pod(p["id"])
                 except RunPodError as e:
-                    say(f"WARNING: could not delete {p['name']} ({e}): delete it at https://console.runpod.io/pods")
+                    say(f"WARNING: could not delete {p['name']} ({e}): delete it at https://console.runpod.io/pods", self.log)
 
     # --- deleting it ------------------------------------------------------------------------------------------------
 
@@ -215,7 +216,7 @@ class PodSession:
         c = self.c
         if self.pod is None and not self.unknown:
             return True, 0.0, None   # none was made (RunPod refused, or no key): nothing to delete or charge
-        say(f"deleting pod {self.pod or self.name}")
+        say(f"deleting pod {self.pod or self.name}", self.log)
         start = time.monotonic()
         end = start + c["down_s"]
         gone, problem = False, ""
@@ -228,7 +229,7 @@ class PodSession:
                             time.sleep(2)
                             continue
                         say(f"no pod named {self.name} appeared in {c.get('unknown_s', 180):.0f} s: none was made. If one "
-                            "appears at https://console.runpod.io/pods, delete it (the next RunPod run does, after its deadline)")
+                            "appears at https://console.runpod.io/pods, delete it (the next RunPod run does, after its deadline)", self.log)
                         self.unknown = False
                         return True, 0.0, None
                     self.pod = found[0]   # names are the job's own: one at most
@@ -238,7 +239,7 @@ class PodSession:
                 gone = self.api.pod(self.pod) is None
             except RunPodError as e:
                 problem = str(e)
-                say(f"RunPod: {e}")
+                say(f"RunPod: {e}", self.log)
                 time.sleep(min(5.0, max(0.0, end - time.monotonic())))
         price = self.usd or c["hourly_usd"]
         seconds = time.monotonic() - self.started
@@ -248,13 +249,13 @@ class PodSession:
         elif self.deadline_set:   # it removes itself at its deadline at most (guard.sh), and is charged that
             usd = round(price * c["deadline_s"] / 3600, 4)
             say(f"WARNING: could not delete pod {self.pod} ({problem or 'still there'}): it removes itself at its deadline; "
-                "or delete it at https://console.runpod.io/pods")
+                "or delete it at https://console.runpod.io/pods", self.log)
         else:   # nothing ends it but someone
             usd = round(price * c["deadline_s"] / 3600, 4)
             message = (f"pod {self.pod or self.name} could not be deleted ({problem or 'still there'}), and its removal at "
                        "its deadline was not confirmed: it may still be running. Delete it at https://console.runpod.io/pods")
-            say(f"WARNING: {message}")
-        say(f"the pod cost about ${usd:.2f}" + ("" if gone else " (at least)"))
+            say(f"WARNING: {message}", self.log)
+        say(f"the pod cost about ${usd:.2f}" + ("" if gone else " (at least)"), self.log)
         return gone, usd, message
 
 

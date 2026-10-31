@@ -144,7 +144,8 @@ with Node() as node:
         {"file": captions_raw.FILE, "format": "parquet", "description": captions_raw.DESCRIPTION}))
     # tags the audio model gave outside the list, dropped from their captions: utterance -> tags
     outside = {u["id"]: c["outside"] for u, c in zip(units, captions) if c["outside"]}
-    # replies that were not the schema's JSON, asked again once (style_captions.caption_reply): utterance -> problem
+    # replies that were not the schema's JSON, asked again once (style_captions.caption_reply): utterance -> the first
+    # reply as it came (its problem, finish_reason and arguments), to find out why
     asked_again = {u["id"]: c["asked_again"][0] for u, c in zip(units, captions) if c["asked_again"]}
     node.usage(utterances=len(units), workers=sc.WORKERS, tags_outside_list=outside, asked_again=asked_again,
                usd_by_model={sc.GPT_MODEL: round(sum(c["usage"]["usd"] for c in captions), 4),

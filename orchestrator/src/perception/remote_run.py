@@ -168,6 +168,7 @@ class Remote:
         self.root = host.root
         self.home = f"{self.root}/coordinator"
         self.ssh = host.ssh()   # every command to a host goes through it (its overrides: hosts.Host.ssh)
+        self.start_sent = False   # a run's start was sent: from then on it may be running there, answered or not
         # node folders given with --nodes, as the copy names them: only ones inside the pipeline's files are sent
         self.nodes = []
         for n in nodes or []:
@@ -288,10 +289,11 @@ class Remote:
         uv = self.host.caps.tools.get("uv")
         if not uv:
             raise RemoteError(f"{self.host.name} has no uv (perception hosts check {self.host.name} after installing it)")
-        # the Python this orchestrator runs on, whose wheels its requirements have: never the newest there (a pod has
-        # none of its own, and uv would download the newest it knows, for which av had no wheel: 2026-10-31). Part of
-        # the environment's name: one made with another Python is another environment
-        python = f"{sys.version_info.major}.{sys.version_info.minor}"
+        # a Python from the package's oldest to the one this orchestrator runs on, whose wheels its requirements have:
+        # one already there if it has one (a lab server may have no internet: review of #53), never one newer (a pod
+        # has none of its own, and uv downloaded the newest it knew, for which av had no wheel: 2026-10-31). Part of
+        # the environment's name: one made under another rule is another environment
+        python = f"'>=3.12,<{sys.version_info.major}.{sys.version_info.minor + 1}'"
         key = hashlib.sha256(f"{COPY_LAYOUT}\n{python}\n{self.requirements}".encode()).hexdigest()[:20]
         env = f"{self.root}/envs/orchestrator-{key}"
         if self.sh(f"test -e {q(env)}/.complete", check=False).returncode:
@@ -456,6 +458,7 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
             **({"linger_s": linger_s} if linger_s is not None else {})}
     data = json.dumps(spec).encode()
     del keys, spec
+    remote.start_sent = True
     return remote.call("start", data=data)
 
 
