@@ -372,3 +372,40 @@ def test_without_the_videos_length_api_units_are_estimated_for_the_hour_the_dead
     """Review of #53: no length (an input that is not a video) is not $0 of API steps: the hour deadline_s assumes."""
     from perception.manifests import Cost
     assert pod_run.unknown_units_usd(Cost(usd=0.01, per="shot", input="shots"), {}, None) == pytest.approx(0.01 * 0.5 * 3600)
+
+
+def test_a_pod_whose_launch_failed_and_could_not_be_deleted_is_recorded_for_cancel(tmp_path, runpod, capsys, monkeypatch):
+    """Review of #53: refused by guard.sh (its removal at the deadline not confirmed) and then not deleted, the pod
+    is the run's record's, the error says it may still be running, and cancel deletes it."""
+    spec = pod_run.spec
+    guard = script(tmp_path / "refuses.sh", GUARD_REFUSES)
+    monkeypatch.setattr(pod_run, "spec", lambda deadline, gpus=None: {**spec(deadline, gpus), "guard": str(guard), "down_s": 2})
+    runpod.flags.add("delete-fails")
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
+                           "--allow-uploads", "--max-cost-usd", "5")
+    run = of(out, "run.created")[0]["run"]
+    assert code == 1 and runpod.pods
+    problems = " ".join(of(out, "error")[0]["problems"])
+    assert "may still be running" in problems and f"remote cancel runpod {run}" in problems
+    assert record_of(run)["pod"]["id"] == "pod1" and not record_of(run)["pod"]["deleted"]
+    code, out = perception(capsys, "remote", "status", "runpod")
+    assert [p["pod"] for p in of(out, "pods")[0]["pods"]] == ["pod1"]
+    runpod.flags.discard("delete-fails")
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert code == 0 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods
+
+
+def test_a_pods_cost_is_charged_once_when_a_cancel_follows_a_fetch_whose_delete_failed(tmp_path, runpod, capsys, monkeypatch):
+    """Review of #53: what was charged already (charged_usd) is not charged again by a cancel that imports nothing."""
+    spec = pod_run.spec
+    monkeypatch.setattr(pod_run, "spec", lambda deadline, gpus=None: {**spec(deadline, gpus), "down_s": 2})
+    run = detached(tmp_path, capsys, sleep=0)
+    assert wait_for(lambda: perception(capsys, "remote", "status", "runpod", run)[1][0].get("status") == "succeeded")
+    runpod.flags.add("delete-fails")
+    perception(capsys, "remote", "fetch", "runpod", run)
+    spent = of(perception(capsys, "status", run)[1], "status")[0]["spent_usd"]
+    runpod.flags.discard("delete-fails")
+    runpod.pods.clear()   # it removed itself at the end of its linger window
+    (tmp_path / "host" / "unreachable").touch()
+    perception(capsys, "remote", "cancel", "runpod", run)
+    assert of(perception(capsys, "status", run)[1], "status")[0]["spent_usd"] == spent

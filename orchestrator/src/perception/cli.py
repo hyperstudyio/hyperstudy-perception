@@ -853,6 +853,12 @@ def cmd_remote(args):
         if pod.get("deleted"):
             return problem(f"run {args.run_id}'s pod was deleted" + (" after its run was fetched" if pod.get("fetched") else "")
                            + f" (it cost about ${pod.get('cost_usd', 0):.2f})")
+        if pod.get("launch_failed"):   # never used: nothing ran there, and only RunPod's API reaches it
+            if action != "cancel":
+                return problem(f"run {args.run_id}'s pod failed to start, and was not deleted: `perception remote cancel "
+                               f"runpod {args.run_id}` deletes it")
+            pod = _pod_delete(args, args.run_id, load_secrets())
+            return 0 if pod["deleted"] else 1
         host = pod_run.host(pod, Cloud(home()).runpod_keys)
     else:
         host = Hosts(home()).load().get(args.host)
@@ -1002,7 +1008,10 @@ def cmd_remote(args):
             return 0
     except remote_run.RemoteError as e:
         return problem(*e.problems)
-    except (LaunchFailed, Refused, GuardRefused) as e:   # the pod (pod_session.py): none is left behind
+    except (LaunchFailed, Refused, GuardRefused) as e:   # the pod (pod_session.py): deleted, or said to be left
+        if left := getattr(e, "pod_left", None):
+            return problem(f"the run's pod could not be used: {e}", f"{left}; `perception remote cancel runpod "
+                           f"{getattr(args, 'run_id', None) or run_id}` deletes it")
         return problem(f"no pod for the run: {e}")
     except Unreachable as e:
         return problem(f"{host.name} cannot be reached: {e}")
@@ -1105,7 +1114,7 @@ def _pod_fetch(args, remote, run_id: str, secrets: dict) -> int:
     except remote_run.RemoteError as e:
         raise remote_run.RemoteError(*e.problems, f"the pod stays until its linger window ends: `perception remote fetch "
                                                   f"{pod_run.NAME} {run_id}` tries again") from None
-    _pod_charge(run_id, _pod_delete(args, run_id, secrets))
+    _pod_charge(run_id, _pod_delete(args, run_id, secrets), imported=True)
     return 0
 
 
@@ -1124,18 +1133,19 @@ def _pod_import(args, remote, run_id: str):
     rec.write_text(json.dumps({**mine, "pod": {**mine["pod"], "fetched": True}}))
 
 
-def _pod_charge(run_id: str, pod: dict):
+def _pod_charge(run_id: str, pod: dict, imported: bool):
     """What the pod cost, in the run's spend here, against the run's own cap (the coordinator there had that less the
-    pod's reservation: review of #53). Only after an import, which sets the run's spend from the pod's store (so a
-    fetch asked again adds it once); `charged_usd` in the record says it was."""
+    pod's reservation: review of #53), charged once: an import just now set the run's spend from the pod's store, so
+    all of it is added; otherwise only what is more than was charged before (`charged_usd` in the record)."""
     from . import remote_run
     if not Store(home()).db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone():
         return   # never imported (a pod that could not be reached): its cost is the record's (remote status runpod)
-    Store(home()).db.execute("UPDATE runs SET spent_usd = spent_usd + ?, max_cost_usd = COALESCE(?, max_cost_usd) WHERE id=?",
-                             (pod["cost_usd"], pod.get("run_max_cost_usd"), run_id))
     rec = remote_run.record(run_id)
+    charged = 0.0 if imported else json.loads(rec.read_text())["pod"].get("charged_usd") or 0.0
+    Store(home()).db.execute("UPDATE runs SET spent_usd = spent_usd + ?, max_cost_usd = COALESCE(?, max_cost_usd) WHERE id=?",
+                             (max(0.0, pod["cost_usd"] - charged), pod.get("run_max_cost_usd"), run_id))
     mine = json.loads(rec.read_text())
-    rec.write_text(json.dumps({**mine, "pod": {**mine["pod"], "charged_usd": pod["cost_usd"]}}))
+    rec.write_text(json.dumps({**mine, "pod": {**mine["pod"], "charged_usd": max(charged, pod["cost_usd"])}}))
 
 
 def _pod_cancel(args, remote, run_id: str) -> int:
@@ -1144,7 +1154,7 @@ def _pod_cancel(args, remote, run_id: str) -> int:
     #53: cancel is "stop spending")."""
     from . import remote_run
     from .remote_driver import Unreachable
-    problems = []
+    problems, imported = [], False
     try:
         got = remote.call("cancel", run_id)
         if args.json:
@@ -1152,12 +1162,13 @@ def _pod_cancel(args, remote, run_id: str) -> int:
         else:
             print(f"run {run_id}: canceled on its pod" if got["canceled"] else shown(f"run {run_id} had ended on its pod: {got['status']}"))
         _pod_import(args, remote, run_id)
+        imported = True
     except (remote_run.RemoteError, Unreachable) as e:
         problems.append(f"the pod could not be asked ({'; '.join(e.problems) if isinstance(e, remote_run.RemoteError) else e}): "
                         "deleting it ended the run, and what the run spent there is not known here")
     finally:
         pod = _pod_delete(args, run_id, load_secrets())
-    _pod_charge(run_id, pod)
+    _pod_charge(run_id, pod, imported)
     if problems:
         if args.json:
             emit("error", problems=problems)

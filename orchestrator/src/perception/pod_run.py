@@ -138,17 +138,29 @@ def launch(run: str, api, deadline: float, gpus: list[str] | None = None, log=No
     try:
         caps, root = session.launch(f"perception-{run.rsplit('-', 1)[-1]}-run")
         caps = dataclasses.replace(caps, tools={**caps.tools, "uv": set_up(session)})
-    except BaseException:
-        session.teardown()
+    except BaseException as e:
+        gone, usd, message = session.teardown()
+        if not gone:   # still there: the run's record holds it, for `remote status` and `remote cancel` (review of #53)
+            remember(run, {"id": session.pod, "name": session.name, "deadline_at": session.deadline_at, "deadline_s": deadline,
+                           "gpus": gpus, "keys": str(keys_folder(run)), "hourly_usd": session.usd or session.c["hourly_usd"],
+                           "made_at": made_at, "deleted": False, "cost_usd": usd, "launch_failed": True})
+            e.pod_left = message or (f"pod {session.pod or session.name} could not be deleted: it removes itself at its "
+                                     f"deadline ({time.strftime('%H:%M', time.localtime(session.deadline_at))})")
         raise
     pod = {"id": session.pod, "name": session.name, "deadline_at": session.deadline_at, "deadline_s": deadline, "gpus": gpus,
            "dest": session.dest, "port": int(session.ssh[session.ssh.index("-p") + 1]), "root": root,
            "caps": caps.to_json(),
            "keys": str(keys_folder(run)), "hourly_usd": session.usd, "made_at": made_at}
+    remember(run, pod)
+    return session, host(pod, keys=False), pod
+
+
+def remember(run: str, pod: dict):
+    """The run's pod, in its record (remote_run.record)."""
+    from .remote_run import record
     mine = json.loads(record(run).read_text()) if record(run).exists() else {}
     record(run).parent.mkdir(parents=True, exist_ok=True)
     record(run).write_text(json.dumps({**mine, "pod": pod}))
-    return session, host(pod, keys=False), pod
 
 
 def set_up(session: PodSession) -> str:
