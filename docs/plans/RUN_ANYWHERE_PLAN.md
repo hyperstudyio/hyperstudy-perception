@@ -176,6 +176,25 @@ for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved 
   clip on a real pod: one pod in the console, killing this machine's side leaves the run going and the pod removed at
   its linger window; deleted after fetch.
 
+### Phase 10 on real pods (2026-10-31)
+
+The full graph on OOO clip 3 (92 s), `remote run runpod`, from a throwaway store:
+
+- **Ready in about 2 minutes:** pod requested, made, guard.sh, setup, the pipeline's copy, the orchestrator's
+  environment and the video sent, the first steps started. Pods got: RTX 4000 Ada and RTX PRO 4000 Blackwell
+  (EU-RO-1), RTX 3090 (EU-CZ-1), at $0.28-0.57/h.
+- **The run in 19.5-20 minutes** on an RTX PRO 4000 Blackwell; objects_track 591 s with SAM 3 and DINOv3 downloaded in
+  the session (the token to its prepare alone); diarize's gated weights the same way. The pod cost $0.21-0.22 and the
+  API steps about $0.32: $0.53 of the run's $1.50. The deadline (80 min: setup 30, 12x the video, linger 30) was a
+  quarter used: PER_VIDEO_S and SETUP_S can come down once longer clips are measured.
+- **What the first pods found, each fixed and then passing on a pod:** the image keeps uv off PATH (the pod runs
+  node-setup.sh); uv picked a Python without av's wheels (this machine's Python, in the environment's name); facing's
+  MediaPipe needs libEGL and libGLESv2 (in the image); sounds ran out of memory on 24 GB cards (expandable segments,
+  and its measured 23 GB: whole-run pods get GPUs with what the graph's CUDA steps need); one malformed reply from
+  gpt-audio failed prosody_captions (asked again once).
+- **Lifecycle:** a failed run is fetched and its pod deleted; no pod left on the account after six; three that failed
+  before the run started cost $0.00-0.04 each.
+
 ## Decided 2026-10-28
 
 1. **Unattended runs:** the machine running the whole pipeline gets the keys (over stdin, held in memory).
