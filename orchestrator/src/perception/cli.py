@@ -846,10 +846,13 @@ def cmd_remote(args):
     if on_pod and action == "run":
         host = pod_run.planned_host(Cloud(home()).runpod_keys)
     elif on_pod:
-        rec = remote_run.record(args.run_id)
-        pod = (json.loads(rec.read_text()) if rec.exists() else {}).get("pod")
+        from .runpod import RunPod
+        pod = pod_run.seen(args.run_id, RunPod(load_secrets().get("RUNPOD_API_KEY") or ""))
         if not pod:
             return problem(f"this machine made no RunPod pod for run {args.run_id}")
+        if pod.get("removed_itself"):
+            return problem(f"run {args.run_id}'s pod removed itself (the end of its linger window, or its deadline) before "
+                           f"anyone fetched the run: its results went with it (it cost about ${pod.get('cost_usd', 0):.2f})")
         if pod.get("deleted"):
             return problem(f"run {args.run_id}'s pod was deleted" + (" after its run was fetched" if pod.get("fetched") else "")
                            + f" (it cost about ${pod.get('cost_usd', 0):.2f})")
@@ -1185,17 +1188,20 @@ def _pod_cancel(args, remote, run_id: str) -> int:
 
 def _pods(args) -> int:
     """The pods this machine made for runs (`remote status runpod`): each run's, from its record."""
-    from . import remote_run
+    from . import pod_run, remote_run
+    from .runpod import RunPod
+    api = RunPod(load_secrets().get("RUNPOD_API_KEY") or "")
     rows = []
     for rec in sorted(remote_run.record("x").parent.glob("*.json")):
-        pod = json.loads(rec.read_text()).get("pod")
+        pod = pod_run.seen(rec.stem, api)   # one RunPod no longer has removed itself (review of #53)
         if pod:
             rows.append({"run": rec.stem, "pod": pod["id"], "deadline_at": pod["deadline_at"], "hourly_usd": pod["hourly_usd"],
-                         "fetched": bool(pod.get("fetched")), "deleted": bool(pod.get("deleted")), "cost_usd": pod.get("cost_usd")})
+                         "fetched": bool(pod.get("fetched")), "deleted": bool(pod.get("deleted")),
+                         "removed_itself": bool(pod.get("removed_itself")), "cost_usd": pod.get("cost_usd")})
     if args.json:
         emit("pods", pods=rows)
     for r in rows if not args.json else []:
-        print(f"{r['run']}  pod {r['pod']}  " + (f"deleted, ${r['cost_usd']:.2f}" if r["deleted"] else
+        print(f"{r['run']}  pod {r['pod']}  " + (f"{'removed itself' if r['removed_itself'] else 'deleted'}, ${r['cost_usd']:.2f}" if r["deleted"] else
               f"until {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['deadline_at']))} at most, ${r['hourly_usd']}/h"))
     return 0
 

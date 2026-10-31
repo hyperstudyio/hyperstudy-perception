@@ -437,3 +437,16 @@ def test_a_start_that_failed_before_it_was_sent_can_be_asked_again(tmp_path, run
     code, out = perception(capsys, "remote", "run", "runpod", graph, "--allow-uploads", "--max-cost-usd", "5", "--run-id", run)
     assert code == 0, out
     assert of(out, "run.finished")[-1]["status"] == "succeeded" and len(runpod.bodies) == 2 and not runpod.pods
+
+
+def test_a_pod_that_removed_itself_is_seen_gone(tmp_path, runpod, capsys):
+    """Review of #53: nobody fetched it, and it went at the end of its linger window: status and fetch say so, from
+    RunPod's answer, with what it cost (at most its deadline) in its record."""
+    run = detached(tmp_path, capsys, sleep=0)
+    runpod.pods.clear()   # it removed itself
+    code, out = perception(capsys, "remote", "status", "runpod")
+    [row] = of(out, "pods")[0]["pods"]
+    assert row["deleted"] and row["cost_usd"] is not None
+    assert record_of(run)["pod"]["removed_itself"]
+    code, out = perception(capsys, "remote", "fetch", "runpod", run)
+    assert code == 1 and "removed itself" in of(out, "error")[0]["problems"][0]

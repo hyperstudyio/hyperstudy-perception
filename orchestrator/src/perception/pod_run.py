@@ -182,6 +182,26 @@ def set_up(session: PodSession) -> str:
     return uv
 
 
+def seen(run: str, api) -> dict | None:
+    """The run's pod as RunPod has it now: one it no longer has removed itself (the end of its linger window, or its
+    deadline) with nobody fetching it, and is recorded so (removed_itself), charged its time up to now, never past its
+    deadline (review of #53). A pod RunPod cannot be asked about is left as recorded."""
+    from .remote_run import record
+    from .runpod import RunPodError
+    pod = json.loads(record(run).read_text()).get("pod") if record(run).exists() else None
+    if not pod or pod.get("deleted") or not pod.get("id"):
+        return pod
+    try:
+        if api.pod(pod["id"]) is not None:
+            return pod
+    except RunPodError:
+        return pod
+    lived = min(time.time() - pod["made_at"], pod["deadline_s"])
+    pod = {**pod, "deleted": True, "removed_itself": True, "cost_usd": round(pod["hourly_usd"] * lived / 3600, 4)}
+    remember(run, pod)
+    return pod
+
+
 def delete(run: str, api, log=None) -> dict:
     """Delete the run's pod (PodSession.teardown) and record what it cost: its time at its price, from when it was made.
     Asked again after it is gone, it says so and changes nothing."""
