@@ -1,0 +1,91 @@
+# The full graph (full.yaml) with the objects' names from the captions call (run-anywhere 1b, B): the captions step
+# (vlm.shot-captions-objects) also names the things on screen in each shot's call and writes the vocabulary the
+# objects' track step reads, so there is no names step of its own. Measured against full.yaml (A) on held-out clips;
+# whichever is better becomes full.yaml's way (RUN_ANYWHERE_PLAN.md 1b).
+#   perception remote run HOST graphs/full-captions-objects.yaml --input video=PATH --allow-uploads
+schema_version: 1
+pipeline: perception-full-captions-objects
+inputs:
+  video: {type: video.v1, uri: '../data/video.mp4'}
+policy:
+  placement: hybrid
+  privacy: local-preferred
+  allow_upload: [video, audio, frames, faces, transcript, embeddings]
+  # OOO clip 1's estimates: shot captions $0.13, objects $0.10 (the names $0.02, the crop check $0.08), delivery captions
+  # $0.69 (86 utterances; about $0.35 spent in the bake-off)
+  max_cost_usd: 1.50
+  retries: 1
+nodes:
+  - id: decode
+    uses: core.decode@1.1.0
+    inputs: {video: $inputs.video}
+  - id: asr
+    uses: audio.asr@1.1.0
+    inputs: {audio: $nodes.decode.audio, shots: $nodes.decode.shots}
+  # refines asr's transcript: the same words and utterances, with their voices (pyannote; gated, HF_TOKEN)
+  - id: diarize
+    uses: audio.diarize@1.1.0
+    inputs: {audio: $nodes.decode.audio, transcript: $nodes.asr.transcript}
+  - id: sounds
+    uses: audio.sounds@1.1.0
+    inputs: {video: $inputs.video}
+  - id: waveform
+    uses: audio.waveform@1.0.0
+    inputs: {audio: $nodes.decode.audio}
+  - id: faces
+    uses: vision.face-track@1.4.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots}
+  # who on screen speaks each utterance (LR-ASD over the face tracks and the audio), and which person each voice is
+  - id: speakers
+    uses: vision.active-speaker@1.1.0
+    inputs: {video: $inputs.video, audio: $nodes.decode.audio, shots: $nodes.decode.shots, faces: $nodes.faces.faces,
+             transcript: $nodes.diarize.transcript}
+  - id: bodies
+    uses: vision.body-pose@1.1.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, faces: $nodes.faces.faces}
+  # who faces whom: MediaPipe 3D torso direction for the bodies' own person boxes (no second detector pass)
+  - id: facing
+    uses: vision.facing@1.1.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, bodies: $nodes.bodies.bodies}
+  # hand boxes from the bodies' hand keypoints and a hand detector; each hand's body and face come with the bodies
+  - id: hands
+    uses: vision.hands@1.1.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, bodies: $nodes.bodies.bodies}
+  # objects in two steps here: objects_track outlines and tracks the things the captions step names (its vocabulary)
+  # with SAM 3 and embeds them with DINOv3 (both gated: HF_TOKEN), on the GPU with no API; objects checks each track's
+  # crops with Haiku (frames and faces), finds who wears what (faces, bodies) and links them across shots
+  - id: objects_track
+    uses: vision.objects-track@1.0.0
+    inputs: {vocabulary: $nodes.captions.vocabulary, video: $inputs.video, media: $nodes.decode.media,
+             shots: $nodes.decode.shots, faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
+  - id: objects
+    uses: vision.objects@2.0.0
+    inputs: {tracks: $nodes.objects_track.tracks, shots: $nodes.decode.shots, faces: $nodes.faces.faces,
+             bodies: $nodes.bodies.bodies, media: $nodes.decode.media}
+  # hand over mouth, self-touch, pointing and raised hands from the hands' keypoints, py-feat's landmarks and the bodies'
+  # shoulders. objects is optional: with it, an object can be what a hand points at; leaving objects out (--only)
+  # still runs gestures, pointing at faces only
+  - id: gestures
+    uses: vision.gestures@1.0.0
+    inputs: {video: $inputs.video, hands: $nodes.hands.hands, bodies: $nodes.bodies.bodies, faces: $nodes.faces.faces,
+             detail: $nodes.faces.detail, objects: $nodes.objects.objects}
+  # objects is optional for gaze: when the objects step runs, its tracks are gaze targets too (gaze waits for it); when
+  # --only leaves it out, gaze runs on the faces alone
+  - id: gaze
+    uses: vision.gaze@1.2.0
+    inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces, objects: $nodes.objects.objects}
+  # the speech it reads is diarized, as the bake-off's captions read it: lines by voice (SPEAKER_00, ...), not one SPEAKER
+  - id: captions
+    uses: vlm.shot-captions-objects@1.0.0
+    inputs: {shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes, transcript: $nodes.diarize.transcript,
+             faces: $nodes.faces.faces, media: $nodes.decode.media}
+  # how each utterance is said: Praat's measures against its speaker's pitch range (the speakers layer names the speaker)
+  # and the Odyssey baseline's arousal, dominance and valence, all on this machine
+  - id: prosody
+    uses: audio.prosody@1.0.0
+    inputs: {audio: $nodes.decode.audio, transcript: $nodes.diarize.transcript, speakers: $nodes.speakers.speakers}
+  # the delivery in words and tags, by gpt-audio-1.5 (each utterance's audio with 1 s of context, and its transcript
+  # lines, go to OpenAI: OPENAI_API_KEY), written into the prosody layer. Its own node, so prosody runs without uploads
+  - id: prosody_captions
+    uses: audio.prosody-captions@1.0.0
+    inputs: {audio: $nodes.decode.audio, transcript: $nodes.diarize.transcript, prosody: $nodes.prosody.prosody}
