@@ -330,9 +330,15 @@ def child_env(requested: list[str], secrets: dict[str, str]) -> dict[str, str]:
 # once, not a download it has no token for. Nor does it load a token stored on the machine (`hf auth login`'s, or
 # HF_TOKEN_PATH's), which huggingface_hub otherwise does even offline
 OFFLINE = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
-# a prepare on another machine: the token it was sent, or none, never the machine's own login (its HF_TOKEN in a
-# profile, its stored token): access to a gated model is a person's. A prepare that prepare_first runs has it from OFFLINE
-SENT_TOKEN_ONLY = {"HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"}
+# A prepare is online, with the token it was sent as HF_TOKEN: access to a gated model is a person's. It runs without
+# HF_HUB_DISABLE_IMPLICIT_TOKEN (PREPARE_UNSET), and only when it was sent one: transformers 5.20 fetches a model's
+# config without the token it is given when implicit tokens are off (SAM 3's prepare got a 401 on liquidswords2,
+# 2026-10-30). The implicit token must then be the one it was sent: huggingface_hub (2.3) takes an OIDC identity first
+# (OIDC_LOGINS, unset), then HF_TOKEN (which replaces any other), then a stored token (its path NO_STORED_TOKEN)
+PREPARE_UNSET = ("HF_HUB_OFFLINE", "HF_HUB_DISABLE_IMPLICIT_TOKEN")
+OIDC_LOGINS = ("HF_OIDC_RESOURCE", "HF_OIDC_ID_TOKEN")
+# where a prepare looks for a stored token: a path that cannot exist (below /dev/null)
+NO_STORED_TOKEN = "/dev/null/no-stored-token"
 
 
 def hf_cache_env(home: str) -> dict[str, str]:

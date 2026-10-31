@@ -99,7 +99,7 @@ with Node() as node:
             parsed = sc.parse_caption(arguments)
         except ValueError as e:
             raise NodeError("internal", f"{u['id']}: {e}") from None
-        return {"parsed": parsed, "usage": usage, "prompt": text,
+        return {"parsed": parsed, "usage": usage, "prompt": text, "outside": sc.outside_tags(arguments),
                 "raw": {"model": r.model, "finish_reason": choice.finish_reason, "arguments": arguments,
                         "usage": r.usage.model_dump(mode="json")}}
 
@@ -141,6 +141,8 @@ with Node() as node:
     node.write_json("prosody", "prosody.json", sc.refine(
         prosody, entries, node.producer(timings={"caption_s": caption_s, "tagger_s": tagger_s}, device="OpenAI API"),
         {"file": captions_raw.FILE, "format": "parquet", "description": captions_raw.DESCRIPTION}))
-    node.usage(utterances=len(units), workers=sc.WORKERS,
+    # tags the audio model gave outside the list, dropped from their captions: utterance -> tags
+    outside = {u["id"]: c["outside"] for u, c in zip(units, captions) if c["outside"]}
+    node.usage(utterances=len(units), workers=sc.WORKERS, tags_outside_list=outside,
                usd_by_model={sc.GPT_MODEL: round(sum(c["usage"]["usd"] for c in captions), 4),
                              sc.TAGGER: round(sum(t["usage"]["usd"] for t in tagged), 4)})
