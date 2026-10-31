@@ -109,6 +109,12 @@ class PodHost(Host):
     def keys_command(self) -> str:
         return "perception cloud keys runpod on"
 
+    @property
+    def orchestrator_python(self) -> str:
+        """A pod has no Python of its own: uv downloads one, the newest it knows unless bounded (for one, av had no wheel:
+        2026-10-31). From the package's oldest to the one this orchestrator runs on, whose wheels its requirements have."""
+        return f"'>=3.12,<{sys.version_info.major}.{sys.version_info.minor + 1}'"
+
 
 def planned_host(keys: bool) -> PodHost:
     """The pod as the checks before it is made see it: RunPod's machine (RunPodBackend.caps), with the image's tools."""

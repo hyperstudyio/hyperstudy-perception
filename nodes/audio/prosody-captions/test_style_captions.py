@@ -192,3 +192,17 @@ def test_a_caption_reply_that_is_not_the_schemas_json_is_asked_again_once():
 def test_a_second_reply_that_is_not_the_schemas_fails_the_caption():
     with pytest.raises(ValueError, match="asked twice"):
         sc.caption_reply(asker("{", None))
+
+
+
+def test_a_reply_is_asked_again_only_within_what_the_step_reserved():
+    """Review of #53: the second call is not in the manifest's per-utterance cost, so it is made only while the step's
+    spend is within its reservation; past it, a reply that is not the schema's fails the caption as it did before."""
+    with pytest.raises(ValueError, match="not asked again"):
+        sc.caption_reply(asker("{", GOOD), may_ask_again=lambda usd: usd > 1)
+    assert sc.caption_reply(asker("{", GOOD), may_ask_again=lambda usd: usd == 0.01)["parsed"]["description"] == "Calm."
+
+
+def test_what_an_utterance_is_reserved_is_the_manifests():
+    lines = (Path(sc.__file__).parent / "manifest.yaml").read_text().splitlines()
+    assert f"cost: {{usd: {sc.COST_PER_UTTERANCE}, per: utterance, input: transcript}}" in lines

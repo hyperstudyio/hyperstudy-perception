@@ -97,8 +97,11 @@ with Node() as node:
             arguments = choice.message.tool_calls[0].function.arguments if choice.message.tool_calls else None
             return arguments, usage, {"model": r.model, "finish_reason": choice.finish_reason, "arguments": arguments,
                                       "usage": r.usage.model_dump(mode="json")}
+        def may_ask_again(usd: float) -> bool:   # a second call only within what the step reserved (review of #53)
+            with lock:
+                return totals["usd"] + usd <= len(units) * sc.COST_PER_UTTERANCE
         try:
-            got = sc.caption_reply(ask)
+            got = sc.caption_reply(ask, may_ask_again)
         except ValueError as e:
             raise NodeError("internal", f"{u['id']}: {e}") from None
         return {"parsed": got["parsed"], "usage": got["usage"], "prompt": text, "outside": sc.outside_tags(got["arguments"]),

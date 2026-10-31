@@ -154,6 +154,12 @@ class Host:
                    d.get("keep_days"), d.get("min_free_gb"), d.get("keys") is True)
 
     @property
+    def orchestrator_python(self) -> str:
+        """The Python the orchestrator's environment there is made with (remote_run.Remote.interpreter): any it has
+        from the package's oldest on (it may have no internet, and only a newer one: review of #53)."""
+        return "'>=3.12'"
+
+    @property
     def keys_command(self) -> str:
         """What gives runs coordinated there the keys their steps declare (remote_run.remote_plan's advice)."""
         return f"perception hosts keys {self.name} on"

@@ -136,15 +136,20 @@ def cost(model: str, prompt_tokens: int, audio_tokens: int | None, completion_to
     return {"text_in": text_in, "audio_in": audio_in, "out": completion_tokens, "usd": usd}
 
 
-def caption_reply(ask) -> dict:
+def caption_reply(ask, may_ask_again=lambda usd: True) -> dict:
     """One target's caption: `ask()` makes one call to the audio model and gives (its function call's arguments, or
-    None when it made none; its usage, as cost() gives it; its raw reply). gpt-audio does not hold its function call to
-    the schema (strict or not), so a reply that is not the schema's JSON (one was cut short of a comma on a pod's run,
-    2026-10-31) is asked again, once: {parsed, arguments, raw (the last reply's), usage (both calls', summed),
-    asked_again ([the first reply's {problem, finish_reason, arguments}], or nothing: kept to find out why, review of
-    #53)}. ValueError when the second is not the schema's either."""
+    None when it made none; its usage, as cost() gives it; its raw reply). Why a reply can fail the schema is known: the
+    audio models do not constrain their function call to it (strict or not; the same reason off-list tags are dropped,
+    parse_caption), so one sample can be malformed (one was cut short of a comma on a pod's run, 2026-10-31). Such a
+    reply is asked again, once, when `may_ask_again(what the first cost)` says the step's reservation still covers it
+    (the manifest's cost counts one call an utterance: review of #53): {parsed, arguments, raw (the last reply's), usage
+    (both calls', summed), asked_again ([the first reply's {problem, finish_reason, arguments}], or nothing)}.
+    ValueError when the reply, or the second, is not the schema's."""
     rejected, usages = [], []
-    for _ in range(2):
+    for attempt in range(2):
+        if attempt and not may_ask_again(usages[0]["usd"]):
+            raise ValueError(f"not asked again (the step's reservation would not cover it): {rejected[0]['problem']} "
+                             f"(finish_reason {rejected[0]['finish_reason']}, arguments {str(rejected[0]['arguments'])[:300]!r})")
         arguments, usage, raw = ask()
         usages.append(usage)
         try:
@@ -158,6 +163,10 @@ def caption_reply(ask) -> dict:
                 "usage": {k: sum(u[k] for u in usages) for k in usages[0]}}
     raise ValueError("asked twice, and neither reply was the schema's: " + "; ".join(
         f"{r['problem']} (finish_reason {r['finish_reason']}, arguments {str(r['arguments'])[:300]!r})" for r in rejected))
+
+# what the step reserves an utterance (manifest.yaml's cost; a test checks they agree): one caption call and its tags
+COST_PER_UTTERANCE = 0.008
+
 
 def parse_caption(arguments: str) -> dict:
     """The function call's arguments -> {description, tags, emphasized_words}; ValueError when they are not that. Its tags

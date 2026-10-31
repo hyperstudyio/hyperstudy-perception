@@ -289,11 +289,9 @@ class Remote:
         uv = self.host.caps.tools.get("uv")
         if not uv:
             raise RemoteError(f"{self.host.name} has no uv (perception hosts check {self.host.name} after installing it)")
-        # a Python from the package's oldest to the one this orchestrator runs on, whose wheels its requirements have:
-        # one already there if it has one (a lab server may have no internet: review of #53), never one newer (a pod
-        # has none of its own, and uv downloaded the newest it knew, for which av had no wheel: 2026-10-31). Part of
-        # the environment's name: one made under another rule is another environment
-        python = f"'>=3.12,<{sys.version_info.major}.{sys.version_info.minor + 1}'"
+        # the host's rule for its Python (hosts.Host.orchestrator_python; a pod's is bounded), part of the
+        # environment's name: one made under another rule is another environment
+        python = self.host.orchestrator_python
         key = hashlib.sha256(f"{COPY_LAYOUT}\n{python}\n{self.requirements}".encode()).hexdigest()[:20]
         env = f"{self.root}/envs/orchestrator-{key}"
         if self.sh(f"test -e {q(env)}/.complete", check=False).returncode:
