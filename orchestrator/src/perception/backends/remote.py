@@ -34,10 +34,11 @@ from .native import REPO, NativeBackend
 
 
 def code_files(manifest: Manifest, runner: Runner, untracked: bool = False) -> list[str]:
-    """What a node needs on the other machine, relative to the repository: the files git tracks in its directory, its
-    uv project and the node SDK. Only tracked files: a working copy can hold images, crops and bundles that must not
-    leave the machine (as launch.sh stages for whole-graph cloud runs). `untracked`: also the files there git neither
-    tracks nor the repository ignores, which a node running on this machine runs with (its identity: Backend.identity)."""
+    """What a node needs on the other machine, relative to the repository: the files git tracks in its directory (and in
+    its entry's, and the folders its runner shares), its uv project and the node SDK. Only tracked files: a working copy
+    can hold images, crops and bundles that must not leave the machine (as launch.sh stages for whole-graph cloud runs).
+    `untracked`: also the files there git neither tracks nor the repository ignores, which a node running on this
+    machine runs with (its identity: Backend.identity)."""
     if not manifest.directory.resolve().is_relative_to(REPO):
         raise RuntimeError(f"{manifest.ref} is not in the pipeline's repository ({manifest.directory}): only files it tracks are sent")
     dirs = [manifest.directory.resolve().relative_to(REPO).as_posix(), "sdk"]
@@ -46,6 +47,10 @@ def code_files(manifest: Manifest, runner: Runner, untracked: bool = False) -> l
     entry_dir = (manifest.directory / runner.entry).resolve().parent.relative_to(REPO).as_posix()
     if not (entry_dir + "/").startswith(dirs[0] + "/"):
         dirs.append(entry_dir)   # a script shared with another node (../work/node.py)
+    for shared in runner.shares:   # another node's code it imports (Runner.shares)
+        if not (REPO / shared).resolve().is_relative_to(REPO.resolve()) or not (REPO / shared).is_dir():
+            raise RuntimeError(f"{manifest.ref} shares {shared}, which is not a folder of the pipeline's repository")
+        dirs.append(shared)
     if release():
         files = files_in(dirs)   # a copy shipped with an app: every file in it was tracked where it was made
     else:
