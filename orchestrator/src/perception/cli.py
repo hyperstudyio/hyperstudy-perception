@@ -861,10 +861,16 @@ def cmd_remote(args):
                 return graph_error(args, e)
             secrets = load_secrets()
             rp = remote_run.remote_plan(host, graph, doc, secrets, args.allow_uploads)
+            run_id = args.run_id or new_run_id()
             if on_pod:
+                # a run whose pod is gone (fetched, canceled) has ended: another pod would run every step again (review of #53)
+                had = remote_run.record(run_id)
+                gone = (json.loads(had.read_text()) if had.exists() else {}).get("pod") or {}
+                if gone.get("deleted"):
+                    return problem(f"run {run_id} has ended: its pod was deleted" + (" after the run was fetched" if gone.get("fetched") else "")
+                                   + " (start a new run without --run-id)")
                 rp["pod"], doc = _pod_plan(args, graph, doc, rp)
                 secrets = {k: v for k, v in secrets.items() if k not in pod_run.NEVER_SENT}
-            run_id = args.run_id or new_run_id()
             if Store(home()).db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone() and not remote_run.record(run_id).exists():
                 # one of this store's own runs (review of #46): it would run there, spend, and never be imported
                 return problem(f"run {run_id} is a run of this machine's, not one it started on a host" if args.run_id
@@ -913,11 +919,11 @@ def cmd_remote(args):
                        else f"already {started['status']}") + f" on {host.name}")
             if args.detach:
                 return 0
-            code = _remote_follow(args, remote, run_id, announce=False)
-            return _pod_fetch(args, remote, run_id, secrets) if on_pod and code == 0 else code
+            return _remote_follow(args, remote, run_id, announce=False,
+                                  on_end=(lambda: _pod_fetch(args, remote, run_id, secrets)) if on_pod else None)
         if action == "attach":
-            code = _remote_follow(args, remote, args.run_id, announce=True)
-            return _pod_fetch(args, remote, args.run_id, load_secrets()) if on_pod and code == 0 else code
+            return _remote_follow(args, remote, args.run_id, announce=True,
+                                  on_end=(lambda: _pod_fetch(args, remote, args.run_id, load_secrets())) if on_pod else None)
         if action == "status":
             got = remote.call("status", *([args.run_id] if args.run_id else []))
             if args.json:
@@ -1004,6 +1010,7 @@ def _pod_plan(args, graph, doc: dict, rp: dict) -> tuple[dict, dict]:
     rp["ok"] = not rp["problems"]
     sent = {**doc, "policy": {**doc.get("policy", {}), "max_cost_usd": max(cap, 0.0)}}
     return {"deadline_s": deadline, "linger_s": linger_s, "hourly_usd": pod_run.hourly_usd(), "reserved_usd": reserved,
+            "run_max_cost_usd": graph.spec.policy.max_cost_usd,
             "api_usd": api_usd, "api_cap_usd": max(cap, 0.0), "video_s": video_s, "gpus": list(pod_run.GPUS),
             "disk_gb": pod_run.DISK_GB}, sent
 
@@ -1022,6 +1029,7 @@ def _pod_for(args, run_id: str, plan: dict, secrets: dict):
         raise remote_run.RemoteError("no RunPod API key (perception cloud on runpod checks for it)")
     api = RunPod(load_secrets()["RUNPOD_API_KEY"])
     _, host, pod = pod_run.launch(run_id, api, plan["deadline_s"])
+    rec.write_text(json.dumps({**json.loads(rec.read_text()), "pod": {**pod, "run_max_cost_usd": plan["run_max_cost_usd"]}}))
     host.keys = keys
     if args.json:
         emit("pod", run=run_id, pod=pod["id"], name=pod["name"], deadline_at=pod["deadline_at"], hourly_usd=pod["hourly_usd"],
@@ -1062,8 +1070,11 @@ def _pod_fetch(args, remote, run_id: str, secrets: dict) -> int:
     mine = json.loads(rec.read_text())
     rec.write_text(json.dumps({**mine, "pod": {**mine["pod"], "fetched": True}}))
     pod = _pod_delete(args, run_id, secrets)
-    # the run's spend here: its API steps' (imported) and its pod's
-    Store(home()).db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (pod["cost_usd"], run_id))
+    # the run's spend here: its API steps' (imported) and its pod's, against its own cap (the coordinator there had
+    # that less the pod's reservation: review of #53)
+    cap = pod.get("run_max_cost_usd")
+    Store(home()).db.execute("UPDATE runs SET spent_usd = spent_usd + ?, max_cost_usd = COALESCE(?, max_cost_usd) WHERE id=?",
+                             (pod["cost_usd"], cap, run_id))
     return 0
 
 
@@ -1089,8 +1100,10 @@ def shown(text) -> str:
     return "".join(c if c.isprintable() or c == " " else repr(c)[1:-1] for c in str(text))
 
 
-def _remote_follow(args, remote, run_id: str, announce: bool) -> int:
-    """A run there, followed as `run` follows its own: run.created (when attaching), each event, then run.finished."""
+def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None) -> int:
+    """A run there, followed as `run` follows its own: run.created (when attaching), each event, then run.finished.
+    `on_end`: called once the run has ended there, however it ended (a pod's fetch and deletion); its failure is the
+    command's, and otherwise the exit code says how the run ended."""
     from . import remote_run
     if announce:
         if args.json:
@@ -1115,6 +1128,8 @@ def _remote_follow(args, remote, run_id: str, announce: bool) -> int:
         emit("run.finished", run=run_id, status=status, host=remote.host.name)
     else:
         print(shown(f"run {run_id} on {remote.host.name}: {status}"))
+    if on_end and (code := on_end()):
+        return code
     return 0 if status == "succeeded" else 1
 
 

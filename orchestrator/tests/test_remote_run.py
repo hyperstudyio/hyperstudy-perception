@@ -1326,3 +1326,22 @@ def test_an_ended_run_is_kept_a_while_whatever_the_retention(tmp_path, monkeypat
     ended_run(store, "20261029-120000-aaaaaa", ago_s=5)
     ended_run(store, "20261029-120000-bbbbbb", ago_s=rc.PRUNE_GRACE_S + 60)
     assert rc.prune(store, 0, None) == ["20261029-120000-bbbbbb"]
+
+
+def test_the_orchestrators_environment_there_has_this_machines_python(tmp_path, monkeypatch):
+    """Made with the Python this orchestrator runs on (its minor version), whose wheels its requirements have: not
+    whatever is newest there (a RunPod pod has no Python of its own, and uv would download the newest it knows, for
+    which av had no wheel and failed to build: 2026-10-31)."""
+    import subprocess as sp
+    caps = Capabilities(platform=this_platform(), cpu_cores=8, memory_gb=32, accelerators={"cpu"}, vram_gb=0,
+                        tools={"uv": "/opt/uv/uv", "ffmpeg": None, "ffprobe": None})
+    remote = remote_run.Remote(Host("lab", "lab", "/srv/hp", caps, time.time()))
+    remote.__dict__.update(requirements="anyio==4\n", copy="/srv/hp/pipelines/abc")   # cached properties, as if sent
+    sent = []
+
+    def sh(script, data=None, timeout=600, check=True):
+        sent.append(script)
+        return sp.CompletedProcess(script, 1 if script.startswith("test -e") else 0, b"", b"")
+    monkeypatch.setattr(remote, "sh", sh)
+    assert remote.interpreter.endswith("/bin/python")
+    assert f"--python {sys.version_info.major}.{sys.version_info.minor} " in sent[-1]

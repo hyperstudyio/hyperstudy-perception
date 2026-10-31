@@ -64,7 +64,7 @@ def spec(deadline: float) -> dict:
     from .runpod import api_base
     b = RunPodBackend()
     return {"provider": "runpod", "api": api_base(), "image": b.image, "start": b.start, "gpus": list(GPUS),
-            "datacenters": b.datacenters, "disk_gb": DISK_GB, "min_driver": b.min_driver, "guard": str(b.guard),
+            "datacenters": b.datacenters, "disk_gb": DISK_GB, "min_driver": b.min_driver, "guard": str(b.guard), "setup": str(b.setup),
             "hourly_usd": hourly_usd(), "launch_s": b.launch_s, "down_s": b.down_s, "api_s": b.api_s,
             "unknown_s": b.unknown_s, "deadline_s": deadline}
 
@@ -109,6 +109,7 @@ def launch(run: str, api, deadline: float) -> tuple[PodSession, PodHost, dict]:
     made_at = time.time()
     try:
         caps, root = session.launch(f"perception-{run.rsplit('-', 1)[-1]}-run")
+        caps = dataclasses.replace(caps, tools={**caps.tools, "uv": set_up(session)})
     except BaseException:
         session.teardown()
         raise
@@ -120,6 +121,24 @@ def launch(run: str, api, deadline: float) -> tuple[PodSession, PodHost, dict]:
     record(run).parent.mkdir(parents=True, exist_ok=True)
     record(run).write_text(json.dumps({**mine, "pod": pod}))
     return session, host(pod, keys=False), pod
+
+
+def set_up(session: PodSession) -> str:
+    """What the run needs on the pod, after guard.sh and before anything is sent (cloud/skypilot/node-setup.sh, as a
+    step's pod has it: ffmpeg, rsync, and uv, which the image keeps off PATH in ~/.perception-uv). The uv it says."""
+    import subprocess
+    import sys
+    from .pod_session import LaunchFailed, say
+    say("checking ffmpeg, rsync and uv on the pod")
+    try:
+        done = session.sh("bash -s", check=False, data=Path(session.c["setup"]).read_bytes(), timeout=900)
+    except subprocess.TimeoutExpired:
+        raise LaunchFailed(f"setting up pod {session.pod} took more than 15 min")
+    sys.stdout.buffer.write(done.stderr)
+    uv = done.stdout.decode().strip().splitlines()[-1] if done.stdout.strip() else ""
+    if done.returncode or not uv:
+        raise LaunchFailed(f"setting up pod {session.pod} failed (exit {done.returncode})" + ("" if uv else ": it did not say where uv is"))
+    return uv
 
 
 def delete(run: str, api) -> dict:

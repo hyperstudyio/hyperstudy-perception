@@ -14,7 +14,7 @@ from perception import pod_run, remote_run
 from perception.backends.cloud import Cloud
 from perception.pod_session import removal_at_boot
 
-from test_cloud import GUARD_OK, GUARD_REFUSES, script
+from test_cloud import GUARD_OK, GUARD_REFUSES, SETUP_OK, script
 from test_remote_run import KEY, files_holding, graph_file, keyed, of, perception, starts
 from test_remote_run import work as remote_work
 from test_runpod import KEY as RUNPOD_KEY, FakeRunPod
@@ -56,10 +56,10 @@ def runpod(tmp_path, monkeypatch):
     real_init = remote_run.Remote.__init__
     monkeypatch.setattr(remote_run.Remote, "__init__",
                         lambda self, host, nodes=None, python=sys.executable: real_init(self, host, nodes, python))
-    real_spec = pod_run.spec   # the guard a stand-in (test_cloud's), the time limits short
-    guard = script(tmp_path / "guard.sh", GUARD_OK)
-    monkeypatch.setattr(pod_run, "spec", lambda deadline: {**real_spec(deadline), "guard": str(guard), "launch_s": 60,
-                                                           "down_s": 60, "unknown_s": 5})
+    real_spec = pod_run.spec   # the guard and setup stand-ins (test_cloud's), the time limits short
+    guard, setup = script(tmp_path / "guard.sh", GUARD_OK), script(tmp_path / "node-setup.sh", SETUP_OK)
+    monkeypatch.setattr(pod_run, "spec", lambda deadline: {**real_spec(deadline), "guard": str(guard), "setup": str(setup),
+                                                           "launch_s": 60, "down_s": 60, "unknown_s": 5})
     Cloud(tmp_path / "mac").set(True, "runpod")
     yield api
     api.server.shutdown()
@@ -93,7 +93,9 @@ def test_a_run_on_a_pod_made_for_it_is_imported_and_the_pod_deleted(tmp_path, ru
     assert body["dockerStartCmd"] == ["bash", "-c", removal_at_boot(made["deadline_at"] - 60, pod_run.RunPodBackend.start)]
     # checked (guard.sh) before anything was sent, then the run there, imported, and the pod deleted
     ev = events(tmp_path / "host")
-    assert ev.index("guard 580") < next(i for i, e in enumerate(ev) if "rsync" in e or "remote_coordinator" in e)
+    assert ev.index("guard 580") < ev.index("setup") < next(i for i, e in enumerate(ev) if "rsync" in e or "remote_coordinator" in e)
+    # the uv the setup installed (or the image has) is the one the run's environment is made with: it is not on PATH
+    assert record_of(run)["pod"]["caps"]["tools"]["uv"] == str(tmp_path / "host" / "home" / ".perception-uv" / "uv")
     assert of(out, "fetched")[0]["run"] == run and of(out, "run.finished")[-1]["status"] == "succeeded"
     [deleted] = of(out, "pod_deleted")
     assert deleted["deleted"] and f"api DELETE /pods/{made['pod']}" in ev and not runpod.pods
@@ -190,3 +192,34 @@ def test_a_detached_run_is_reached_by_its_pod_and_canceling_it_deletes_the_pod(t
     code, out = perception(capsys, "remote", "cancel", "runpod", run)
     assert code == 0 and of(out, "canceled")[0]["canceled"] and of(out, "pod_deleted")[0]["deleted"]
     assert not runpod.pods and record_of(run)["pod"]["deleted"]
+
+
+def test_a_run_whose_pod_is_gone_is_never_run_again_on_another(tmp_path, runpod, capsys):
+    """Review of #53: `--run-id` on a run already fetched (its pod deleted) is refused, as a lab server answers that
+    it ended: a new pod would run every step again, API spend included, past the cap that saw one reservation."""
+    graph = str(graph_file(tmp_path, [work(tmp_path, "a")]))
+    code, out = perception(capsys, "remote", "run", "runpod", graph, "--allow-uploads", "--max-cost-usd", "5")
+    assert code == 0, out
+    run = of(out, "run.created")[0]["run"]
+    code, out = perception(capsys, "remote", "run", "runpod", graph, "--allow-uploads", "--max-cost-usd", "5", "--run-id", run)
+    assert code == 1 and len(runpod.bodies) == 1
+    assert "pod was deleted" in of(out, "error")[0]["problems"][0]
+
+
+def test_a_run_that_fails_on_its_pod_is_fetched_and_its_pod_deleted(tmp_path, runpod, capsys):
+    """Review of #53: any end (failed, canceled), not only success, brings the run back and deletes the pod, so it
+    stops billing and its cost is in the run's spend; the exit code still says it failed."""
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a", fail="input", fail_until=5)])),
+                           "--allow-uploads", "--max-cost-usd", "5")
+    assert code == 1 and of(out, "run.finished")[-1]["status"] == "failed"
+    assert of(out, "fetched") and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods
+
+
+def test_the_imported_run_keeps_the_cap_it_was_given(tmp_path, runpod, capsys):
+    """Review of #53: its spend here includes the pod, so its cap here is the run's own, not the one the coordinator
+    there had (that less the reservation)."""
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
+                           "--allow-uploads", "--max-cost-usd", "5")
+    run = of(out, "run.created")[0]["run"]
+    code, out = perception(capsys, "status", run)
+    assert of(out, "status")[0]["max_cost_usd"] == 5
