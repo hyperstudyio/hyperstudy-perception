@@ -55,7 +55,8 @@ def removal_at_boot(at: int, start: str, remove_at: str = REMOVE_AT) -> str:
     writes it there, set before anything else runs on it and asked again until RunPod does it (runpodctl, with the pod's
     own key, scoped to that pod), then the image's own start (sshd). The backstop for a pod whose driver never comes
     back, from its first moment; perception-deadline names it (guard.sh). What REMOVE_AT holds can only bring the
-    removal forward: anything but a whole number there leaves the deadline as it is."""
+    removal forward of the deadline: anything but a whole number there leaves the deadline as it is. (Its writers: the
+    run's end, remote_coordinator.linger, and a fetch keeping the pod for itself, pod_run.keep_for_fetch.)"""
     # asked every 30 s until it happens, whatever runpodctl's exit says: the pod's removal ends this loop with it
     f = shlex.quote(remove_at)
     removal = (f"until t=$(date +%s); [ $t -ge {int(at)} ] || {{ s=$(cat {f} 2>/dev/null); "

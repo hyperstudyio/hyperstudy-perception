@@ -182,6 +182,20 @@ def set_up(session: PodSession) -> str:
     return uv
 
 
+# what a fetch starting keeps the pod for at least: the removal its run's end set (now plus the linger window) moved on,
+# so a long fetch is not cut off (review of #53); the deadline still bounds it
+KEEP_FOR_FETCH_S = 30 * 60
+
+
+def keep_for_fetch(remote):
+    """Move the pod's removal (REMOVE_AT, which its run's end wrote) to KEEP_FOR_FETCH_S from now, if sooner. Only once
+    the run has ended there and set it: before, the deadline alone holds, and nothing is brought forward."""
+    from .pod_session import REMOVE_AT
+    f = f'"${{PERCEPTION_REMOVE_AT:-{REMOVE_AT}}}"'
+    remote.sh(f'f={f}; [ -s "$f" ] || exit 0; at=$(( $(date +%s) + {KEEP_FOR_FETCH_S} )); '
+              f'[ "$(cat "$f")" -ge "$at" ] 2>/dev/null && exit 0; echo "$at" > "$f.tmp" && mv -f "$f.tmp" "$f"', check=False)
+
+
 def seen(run: str, api) -> dict | None:
     """The run's pod as RunPod has it now: one it no longer has removed itself (the end of its linger window, or its
     deadline) with nobody fetching it, and is recorded so (removed_itself), charged its time up to now, never past its

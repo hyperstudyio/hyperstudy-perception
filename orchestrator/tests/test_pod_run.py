@@ -359,9 +359,10 @@ def test_a_run_id_recorded_on_another_host_is_refused_before_a_pod_is_made(tmp_p
     assert "another graph" in of(out, "error")[0]["problems"][0]
 
 
-@pytest.mark.parametrize("linger", ["-5", "nan", "inf", "100000"])
+@pytest.mark.parametrize("linger", ["-5", "nan", "inf", "100000", "0", "9"])
 def test_a_linger_window_that_is_not_a_number_of_minutes_is_refused(tmp_path, runpod, capsys, linger):
-    """Review of #53: a negative window would shorten the deadline below what the run needs; nan and inf are no time."""
+    """Review of #53: a negative window would shorten the deadline below what the run needs; nan and inf are no time;
+    under 10 minutes, the pod could go before this machine has seen the run end and fetched it."""
     with pytest.raises(SystemExit):
         perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
                    "--allow-uploads", "--max-cost-usd", "5", "--linger-min", linger)
@@ -450,3 +451,13 @@ def test_a_pod_that_removed_itself_is_seen_gone(tmp_path, runpod, capsys):
     assert record_of(run)["pod"]["removed_itself"]
     code, out = perception(capsys, "remote", "fetch", "runpod", run)
     assert code == 1 and "removed itself" in of(out, "error")[0]["problems"][0]
+
+
+
+def test_a_fetch_keeps_the_pod_for_itself(tmp_path, runpod, capsys):
+    """Review of #53: once the run ends the pod goes at the end of its linger window; a fetch starting moves that to at
+    least 30 minutes on, so a long fetch is not cut off (the deadline still bounds it)."""
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
+                           "--allow-uploads", "--max-cost-usd", "5", "--linger-min", "10")
+    assert code == 0, out
+    assert abs(int((tmp_path / "host" / "remove-at").read_text()) - (time.time() + 30 * 60)) < 120

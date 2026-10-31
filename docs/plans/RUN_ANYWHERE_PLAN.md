@@ -149,7 +149,7 @@ for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved 
   RunPod account key never leaves this machine (guard.sh checks the pod holds none).
 - **Deadline.** Set at creation (in the pod's name and its start command): setup (the orchestrator's and nodes'
   environments, the gated weights: 30 min until measured) + 12 × the video's length (an hour when it is not known) +
-  the linger window (`--linger-min`, 30 by default), rounded up to 5 minutes, at least an hour (pod_run.deadline_s).
+  the linger window (`--linger-min`, 10 to 1440, 30 by default: shorter, the pod could go before this machine has seen the run end and begun its fetch, which then keeps it 30 minutes), rounded up to 5 minutes, at least an hour (pod_run.deadline_s).
   Not the plan's estimates: they come from a place's own runs, and a pod made for a run has none.
 - **One spending cap.** The pod is reserved at the dearest listed GPU's price for its whole deadline. The run's
   `max_cost_usd` minus that reservation is the cap the coordinator there is given for its API steps; a run whose

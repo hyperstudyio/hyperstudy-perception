@@ -809,15 +809,16 @@ def cmd_setup(args):
 
 
 def minutes(text: str) -> float:
-    """--linger-min: a number of minutes from 0 to a day (review of #53: a negative window would shorten a pod's deadline
-    below what its run needs, and nan or inf are no time)."""
+    """--linger-min: a number of minutes from 10 to a day (review of #53: a negative window would shorten a pod's
+    deadline below what its run needs, nan or inf are no time, and under 10 minutes the pod could go before this
+    machine has seen the run end and begun its fetch, which then keeps it: pod_run.KEEP_FOR_FETCH_S)."""
     import math
     try:
         value = float(text)
     except ValueError:
         value = math.nan
-    if not (0 <= value <= 24 * 60):
-        raise argparse.ArgumentTypeError(f"a number of minutes from 0 to {24 * 60}: {text!r}")
+    if not (10 <= value <= 24 * 60):
+        raise argparse.ArgumentTypeError(f"a number of minutes from 10 to {24 * 60}: {text!r}")
     return value
 
 
@@ -1127,8 +1128,10 @@ def _pod_fetch(args, remote, run_id: str, secrets: dict) -> int:
 
 
 def _pod_import(args, remote, run_id: str):
-    """The run, which has ended on its pod, into this store (remote_run.fetch), marked fetched in its record."""
-    from . import remote_run
+    """The run, which has ended on its pod, into this store (remote_run.fetch), marked fetched in its record. The pod
+    is kept for the fetch first (pod_run.keep_for_fetch)."""
+    from . import pod_run, remote_run
+    pod_run.keep_for_fetch(remote)
     out = Path(getattr(args, "output", None) or home() / "bundles" / run_id)
     got = remote_run.fetch(remote, run_id, out.expanduser().resolve())
     if args.json:
