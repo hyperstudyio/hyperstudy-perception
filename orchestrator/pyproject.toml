@@ -1,6 +1,6 @@
 [project]
 name = "hyperstudy-perception"
-version = "0.1.3"
+version = "0.1.4"
 description = "Video perception pipeline: shots, speech, faces and captions from a video, as a versioned track bundle, run locally, on cloud GPUs or lab servers"
 readme = "README.md"
 license = "MIT"
