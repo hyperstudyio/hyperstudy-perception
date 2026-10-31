@@ -18,7 +18,7 @@ from perception_node import Node, NodeError   # noqa: E402
 import captioning   # noqa: E402
 import vocabulary   # noqa: E402
 from garments import session_names   # noqa: E402
-from haiku import MAX_OBJECTS, VOCAB_INSTRUCTIONS, Haiku, spent as haiku_spent   # noqa: E402
+from haiku import MAX_OBJECTS, MODEL as HAIKU, VOCAB_INSTRUCTIONS, Haiku, spent as haiku_spent   # noqa: E402
 from linking import check_classes, clean_names   # noqa: E402
 
 # the names step's rules (haiku.VOCAB_INSTRUCTIONS' list), for the reply's objects part
@@ -37,16 +37,19 @@ with Node() as node:
         earlier.update(named)
         prompts[shot["index"]], body_named[shot["index"]] = session_names(named)
 
-    captions_usd = captioning.run(node, more=more, each=each,
+    captions = captioning.run(node, more=more, each=each,
                                   schema_more={"objects": {"type": "array", "items": {"type": "string"}}})
     shots = node.input_json("shots")["shots"]
     totals = {"in": 0, "out": 0, "calls": 0}
 
     def spend(n_in, n_out):
         totals.update({"in": totals["in"] + n_in, "out": totals["out"] + n_out, "calls": totals["calls"] + 1})
-        node.usage(usd=round(captions_usd + haiku_spent(totals["in"], totals["out"]), 4), class_calls=totals["calls"])
+        node.usage(usd=round(captions["usd"] + haiku_spent(totals["in"], totals["out"]), 4), class_calls=totals["calls"],
+                   tokens_in=captions["tokens_in"] + totals["in"], tokens_out=captions["tokens_out"] + totals["out"])
 
     names = sorted({n for shot_names in prompts.values() for n in shot_names})
+    if names:   # the class call is Haiku's, whichever model captions
+        node.model(HAIKU, licence_mode="api-terms", licence="Anthropic API terms")
     try:
         classes = check_classes(names, Haiku(node.secret("ANTHROPIC_API_KEY"), spend).name_classes(names)) if names else {}
     except ValueError as e:

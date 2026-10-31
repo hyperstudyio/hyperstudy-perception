@@ -143,3 +143,12 @@ def test_its_vocabulary_is_the_names_steps_and_its_layers_are_the_captions_steps
     # every name given before (cleaned; a garment too, as the names step tells it), never a later shot's
     assert "Names used in earlier shots: chair, helmet, jacket, mug" in calls[1]["messages"][0]["content"][-1]["text"]
     assert both["usage"]["calls"] == 2 and both["usage"]["class_calls"] == 1 and both["usage"]["usd"] > 0
+
+
+def test_its_usage_counts_the_class_call_and_names_haiku_with_any_captions_model(tmp_path, monkeypatch, stand_in):
+    """The class call is Haiku's whatever model captions: it is among the models used, and its tokens are counted."""
+    given = inputs(tmp_path / "in")
+    both = run(HERE / "node.py", tmp_path / "both", given, {**CONFIG, "model": "claude-opus-5-5"}, monkeypatch)
+    assert {m["id"] for m in both["models"]} >= {"claude-opus-5-5", "claude-haiku-5-5"}
+    usage = both["usage"]   # the stand-in bills 1000 tokens in, 50 out a call: two shots' captions, one class call
+    assert (usage["tokens_in"], usage["tokens_out"], usage["calls"], usage["class_calls"]) == (3000, 150, 2, 1)

@@ -140,8 +140,8 @@ def spent(model, tokens_in, tokens_out):
 def run(node, more=None, each=None, schema_more=None):
     """Caption every shot and write the shots and text layers. `more(shot)`: text added at the end of the shot's prompt;
     `schema_more`: properties added to the reply's schema (each required); `each(shot, reply)`: called with every
-    reply, in order. Returns the captions' spend (USD), which is what the step reports: a step that makes other calls
-    adds its own to it."""
+    reply, in order. Returns the captions' spend: USD and tokens (usd, tokens_in, tokens_out), which is what the step
+    reports; a step that makes other calls adds its own to them."""
     schema = SCHEMA if not schema_more else {**SCHEMA, "properties": {**SCHEMA["properties"], **schema_more},
                                             "required": SCHEMA["required"] + list(schema_more)}
     import anthropic
@@ -193,4 +193,4 @@ def run(node, more=None, each=None, schema_more=None):
     node.write_json("shots", "shots.json", {**shots_doc, "producer": node.producer(timings=timings, device="Anthropic API"), "shots": shots})
     node.write_json("text", "text.json", {"layer": "text", "schema_version": "0.1.0",
                                           "producer": node.producer(timings=timings, device="Anthropic API"), "items": texts})
-    return spent(model, totals["in"], totals["out"])
+    return {"usd": spent(model, totals["in"], totals["out"]), "tokens_in": totals["in"], "tokens_out": totals["out"]}
