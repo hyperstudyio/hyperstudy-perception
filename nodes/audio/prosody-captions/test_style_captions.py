@@ -162,3 +162,31 @@ def test_the_fan_out_keeps_the_items_order():
     client = FailingClient(-1)
     got = sc.fan_out(lambda i: client.chat.completions.create(utterance=i)["utterance"], range(50), workers=4)
     assert got == list(range(50)) and client.calls == 50
+
+
+GOOD = json.dumps({"description": "Calm.", "tags": ["calm"], "emphasized_words": []})
+
+
+def asker(*replies):
+    """One call per reply given, in order: (arguments or None, usage, raw), as node.py's ask makes them."""
+    calls = iter(replies)
+
+    def ask():
+        arguments = next(calls)
+        return arguments, {"text_in": 10, "audio_in": 5, "out": 3, "usd": 0.01}, {"finish_reason": "tool_calls", "arguments": arguments}
+    return ask
+
+
+def test_a_caption_reply_that_is_not_the_schemas_json_is_asked_again_once():
+    """gpt-audio does not hold its function call to the schema: a reply that is not its JSON (a pod's run, 2026-10-31:
+    "Expecting ',' delimiter") is asked again, once, both calls billed and the first's problem kept."""
+    got = sc.caption_reply(asker('{"description": "Calm" "tags": []}', GOOD))
+    assert got["parsed"]["description"] == "Calm." and got["arguments"] == GOOD
+    assert got["usage"] == {"text_in": 20, "audio_in": 10, "out": 6, "usd": 0.02}
+    assert len(got["asked_again"]) == 1 and "delimiter" in got["asked_again"][0]
+    assert sc.caption_reply(asker(GOOD))["asked_again"] == []
+
+
+def test_a_second_reply_that_is_not_the_schemas_fails_the_caption():
+    with pytest.raises(ValueError, match="asked twice"):
+        sc.caption_reply(asker("{", None))

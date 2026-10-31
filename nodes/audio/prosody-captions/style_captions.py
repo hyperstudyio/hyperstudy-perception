@@ -136,6 +136,27 @@ def cost(model: str, prompt_tokens: int, audio_tokens: int | None, completion_to
     return {"text_in": text_in, "audio_in": audio_in, "out": completion_tokens, "usd": usd}
 
 
+def caption_reply(ask) -> dict:
+    """One target's caption: `ask()` makes one call to the audio model and gives (its function call's arguments, or
+    None when it made none; its usage, as cost() gives it; its raw reply). gpt-audio does not hold its function call to
+    the schema (strict or not), so a reply that is not the schema's JSON (one was cut short of a comma on a pod's run,
+    2026-10-31) is asked again, once: {parsed, arguments, raw (the last reply's), usage (both calls', summed),
+    asked_again (the first's problem, or nothing)}. ValueError when the second is not the schema's either."""
+    problems, usages = [], []
+    for _ in range(2):
+        arguments, usage, raw = ask()
+        usages.append(usage)
+        try:
+            if arguments is None:
+                raise ValueError(f"no function call in the reply (finish_reason {raw.get('finish_reason')})")
+            parsed = parse_caption(arguments)
+        except ValueError as e:
+            problems.append(str(e))
+            continue
+        return {"parsed": parsed, "arguments": arguments, "raw": raw, "asked_again": problems,
+                "usage": {k: sum(u[k] for u in usages) for k in usages[0]}}
+    raise ValueError(f"asked twice, and neither reply was the schema's: {'; '.join(problems)}")
+
 def parse_caption(arguments: str) -> dict:
     """The function call's arguments -> {description, tags, emphasized_words}; ValueError when they are not that. Its tags
     are those of the list only: gpt-audio-1.5 does not hold a function call to the schema's enum (strict or not), so a tag

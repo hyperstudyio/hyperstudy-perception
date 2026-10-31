@@ -23,7 +23,7 @@ import time
 import numpy as np
 
 from perception_node import Node, NodeError
-from models import PEAFRAME, PEAFRAME_SR, TAGGER_SR, WEIGHTS, device, load_mn40, load_panns, load_peaframe, run_mn40, run_panns, run_peaframe, sync
+from models import PEAFRAME, PEAFRAME_SR, TAGGER_SR, WEIGHTS, device, free, load_mn40, load_panns, load_peaframe, run_mn40, run_panns, run_peaframe, sync
 from sound_events import (PANNS_CONTEXT_S, PANNS_CORE_S, PANNS_FPS, PE_CONTEXT_S, PE_CORE_S, PE_HOP, QUERIES, audioset_labels,
                           padded_for_windows, plan_chunks, sound_events, spans, stitch, step_max, tag_rows, tag_steps, windows)
 from soundtrack import samples
@@ -67,6 +67,7 @@ with Node() as node:
         raise NodeError("internal", str(e)) from None
     panns_frames = len(framewise)
     del panns, pieces, framewise
+    free(dev)
 
     # EfficientAT mn40: one 5 s window per 1 s step, batch_size windows at a time
     mn40 = timed(timings, "load_mn40_s", dev, load_mn40, dev)
@@ -76,6 +77,7 @@ with Node() as node:
     mn40_scores = np.concatenate(scores)
     steps["mn40"] = tag_rows(mn40_scores, labels)
     del mn40, padded, scores
+    free(dev)
 
     # PE-A-Frame: each query's probability per 40 ms frame, then spans above its threshold
     pe = timed(timings, "load_peaframe_s", dev, load_peaframe, dev)
