@@ -143,7 +143,9 @@ def launch(run: str, api, deadline: float, gpus: list[str] | None = None, log=No
         if not gone:   # still there: the run's record holds it, for `remote status` and `remote cancel` (review of #53)
             remember(run, {"id": session.pod, "name": session.name, "deadline_at": session.deadline_at, "deadline_s": deadline,
                            "gpus": gpus, "keys": str(keys_folder(run)), "hourly_usd": session.usd or session.c["hourly_usd"],
-                           "made_at": made_at, "deleted": False, "cost_usd": usd, "launch_failed": True})
+                           "made_at": made_at, "deleted": False, "cost_usd": usd, "launch_failed": True,
+                           # whether guard.sh confirmed its removal at the deadline (review of #53): nothing else ends it
+                           "removal_confirmed": session.deadline_set})
             e.pod_left = message or (f"pod {session.pod or session.name} could not be deleted: it removes itself at its "
                                      f"deadline ({time.strftime('%H:%M', time.localtime(session.deadline_at))})")
         raise
@@ -192,8 +194,11 @@ def delete(run: str, api, log=None) -> dict:
         return pod
     session = PodSession(api, spec(pod["deadline_s"], pod.get("gpus")), Path(pod["keys"]),
                          started=time.monotonic() - (time.time() - pod["made_at"]), log=log or sys.stderr)
-    session.pod, session.name, session.usd, session.deadline_set = pod["id"], pod["name"], pod["hourly_usd"], True
-    gone, usd, _ = session.teardown()
-    pod = {**pod, "deleted": gone, "cost_usd": usd}
+    # its removal at the deadline: confirmed by guard.sh for every pod a launch finished (its record's removal_confirmed
+    # says, for one a launch left: review of #53)
+    session.pod, session.name, session.usd = pod["id"], pod["name"], pod["hourly_usd"]
+    session.deadline_set = pod.get("removal_confirmed", not pod.get("launch_failed"))
+    gone, usd, message = session.teardown()
+    pod = {**pod, "deleted": gone, "cost_usd": usd, "may_still_run": message}
     record(run).write_text(json.dumps({**json.loads(record(run).read_text()), "pod": pod}))
     return pod

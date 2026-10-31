@@ -97,15 +97,8 @@ with Node() as node:
             arguments = choice.message.tool_calls[0].function.arguments if choice.message.tool_calls else None
             return arguments, usage, {"model": r.model, "finish_reason": choice.finish_reason, "arguments": arguments,
                                       "usage": r.usage.model_dump(mode="json")}
-        def may_ask_again(usd: float) -> bool:   # a second call only within what the step reserved (review of #53)
-            with lock:
-                return totals["usd"] + usd <= len(units) * sc.COST_PER_UTTERANCE
-        try:
-            got = sc.caption_reply(ask, may_ask_again)
-        except ValueError as e:
-            raise NodeError("internal", f"{u['id']}: {e}") from None
-        return {"parsed": got["parsed"], "usage": got["usage"], "prompt": text, "outside": sc.outside_tags(got["arguments"]),
-                "asked_again": got["asked_again"], "raw": got["raw"]}
+        got = sc.caption_attempt(ask)
+        return {**got, "prompt": text, "ask": ask, "asked_again": []}
 
     def tag(description: str) -> dict:
         r = call(lambda: client.chat.completions.create(
@@ -129,8 +122,26 @@ with Node() as node:
     captions = sc.fan_out(caption, range(len(units)))   # on a failure, no further call starts
     caption_s = round(time.time() - t0, 1)
     t0 = time.time()
-    tagged = sc.fan_out(lambda c: tag(c["parsed"]["description"]), captions)
+    good = [k for k, c in enumerate(captions) if "rejected" not in c]
+    tagged = dict(zip(good, sc.fan_out(lambda k: tag(captions[k]["parsed"]["description"]), good)))
     tagger_s = round(time.time() - t0, 1)
+    # a reply that was not the schema's, asked again once every other call is made: then what the step spent is all but
+    # this second call and its tag, which must stay within its reservation (style_captions.may_ask_again)
+    for k, c in enumerate(captions):
+        if "rejected" not in c:
+            continue
+        tag_usd = max((t["usage"]["usd"] for t in tagged.values()), default=c["usage"]["usd"])
+        if not sc.may_ask_again(totals["usd"], c["usage"]["usd"], tag_usd, len(units)):
+            raise NodeError("internal", f"{units[k]['id']}: not asked again (the step's reservation would not cover it): "
+                                        f"{sc.rejected_text(c['rejected'])}")
+        try:
+            captions[k] = {**c, **sc.asked_again(c, sc.caption_attempt(c["ask"]))}
+        except ValueError as e:
+            raise NodeError("internal", f"{units[k]['id']}: {e}") from None
+        tagged[k] = tag(captions[k]["parsed"]["description"])
+    tagged = [tagged[k] for k in range(len(units))]
+    for c in captions:
+        c["outside"] = sc.outside_tags(c["arguments"])
 
     for m in prosody["producer"]["models"]:   # the measures' and emotion's models, as the prosody node recorded them
         node.model(m["id"], licence_mode=m["licence_mode"], source=m.get("source"), revision=m.get("revision"), licence=m.get("licence"))

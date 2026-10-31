@@ -177,30 +177,32 @@ def asker(*replies):
     return ask
 
 
-def test_a_caption_reply_that_is_not_the_schemas_json_is_asked_again_once():
-    """gpt-audio does not hold its function call to the schema: a reply that is not its JSON (a pod's run, 2026-10-31:
-    "Expecting ',' delimiter") is asked again, once, both calls billed and the first's problem kept."""
-    got = sc.caption_reply(asker('{"description": "Calm" "tags": []}', GOOD))
-    assert got["parsed"]["description"] == "Calm." and got["arguments"] == GOOD
+def test_a_caption_reply_that_is_not_the_schemas_json_is_rejected_whole_and_a_second_one_taken():
+    """gpt-audio does not constrain its function call to the schema: a reply that is not its JSON (a pod's run,
+    2026-10-31: "Expecting ',' delimiter") is kept as it came, and a second reply, if asked, is the caption, both calls
+    billed."""
+    calls = asker('{"description": "Calm" "tags": []}', GOOD)
+    first = sc.caption_attempt(calls)
+    assert "delimiter" in first["rejected"]["problem"] and first["rejected"]["arguments"] == '{"description": "Calm" "tags": []}'
+    assert first["rejected"]["finish_reason"] == "tool_calls"
+    got = sc.asked_again(first, sc.caption_attempt(calls))
+    assert got["parsed"]["description"] == "Calm." and got["arguments"] == GOOD and got["asked_again"] == [first["rejected"]]
     assert got["usage"] == {"text_in": 20, "audio_in": 10, "out": 6, "usd": 0.02}
-    [first] = got["asked_again"]
-    assert "delimiter" in first["problem"] and first["arguments"] == '{"description": "Calm" "tags": []}'
-    assert first["finish_reason"] == "tool_calls"
-    assert sc.caption_reply(asker(GOOD))["asked_again"] == []
+    assert "rejected" not in sc.caption_attempt(asker(GOOD))
 
 
 def test_a_second_reply_that_is_not_the_schemas_fails_the_caption():
+    calls = asker("{", None)
+    first = sc.caption_attempt(calls)
     with pytest.raises(ValueError, match="asked twice"):
-        sc.caption_reply(asker("{", None))
-
+        sc.asked_again(first, sc.caption_attempt(calls))
 
 
 def test_a_reply_is_asked_again_only_within_what_the_step_reserved():
-    """Review of #53: the second call is not in the manifest's per-utterance cost, so it is made only while the step's
-    spend is within its reservation; past it, a reply that is not the schema's fails the caption as it did before."""
-    with pytest.raises(ValueError, match="not asked again"):
-        sc.caption_reply(asker("{", GOOD), may_ask_again=lambda usd: usd > 1)
-    assert sc.caption_reply(asker("{", GOOD), may_ask_again=lambda usd: usd == 0.01)["parsed"]["description"] == "Calm."
+    """Review of #53: asked once every other call is made, so what the step has spent is all but this caption's second
+    call and its tag, which must stay within the step's reservation (COST_PER_UTTERANCE an utterance)."""
+    assert sc.may_ask_again(0.07, 0.005, 0.001, 10)          # 0.076 <= 0.08
+    assert not sc.may_ask_again(0.076, 0.005, 0.001, 10)     # 0.082 > 0.08
 
 
 def test_what_an_utterance_is_reserved_is_the_manifests():

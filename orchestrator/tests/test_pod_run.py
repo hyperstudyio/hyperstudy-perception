@@ -390,6 +390,13 @@ def test_a_pod_whose_launch_failed_and_could_not_be_deleted_is_recorded_for_canc
     assert record_of(run)["pod"]["id"] == "pod1" and not record_of(run)["pod"]["deleted"]
     code, out = perception(capsys, "remote", "status", "runpod")
     assert [p["pod"] for p in of(out, "pods")[0]["pods"]] == ["pod1"]
+    # its removal at the deadline was never confirmed: a cancel that cannot delete it says so (review of #53)
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert code == 1 and "may still be running" in of(out, "pod_deleted")[0]["may_still_run"]
+    # a start asked again with its id is refused, not a traceback (review of #53)
+    code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
+                           "--allow-uploads", "--max-cost-usd", "5", "--run-id", run)
+    assert code == 1 and "failed to start" in of(out, "error")[0]["problems"][0] and len(runpod.bodies) == 1
     runpod.flags.discard("delete-fails")
     code, out = perception(capsys, "remote", "cancel", "runpod", run)
     assert code == 0 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods
@@ -409,3 +416,24 @@ def test_a_pods_cost_is_charged_once_when_a_cancel_follows_a_fetch_whose_delete_
     (tmp_path / "host" / "unreachable").touch()
     perception(capsys, "remote", "cancel", "runpod", run)
     assert of(perception(capsys, "status", run)[1], "status")[0]["spent_usd"] == spent
+
+
+
+def test_a_start_that_failed_before_it_was_sent_can_be_asked_again(tmp_path, runpod, capsys, monkeypatch):
+    """Review of #53: its pod was deleted, but nothing ran there: --run-id starts it, on a new pod."""
+    real = remote_run.Remote.send_input
+    calls = []
+
+    def fails_once(self, *a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise remote_run.RemoteError("the video could not be sent")
+        return real(self, *a, **kw)
+    monkeypatch.setattr(remote_run.Remote, "send_input", fails_once)
+    graph = str(graph_file(tmp_path, [work(tmp_path, "a")]))
+    code, out = perception(capsys, "remote", "run", "runpod", graph, "--allow-uploads", "--max-cost-usd", "5")
+    run = of(out, "run.created")[0]["run"]
+    assert code == 1 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods
+    code, out = perception(capsys, "remote", "run", "runpod", graph, "--allow-uploads", "--max-cost-usd", "5", "--run-id", run)
+    assert code == 0, out
+    assert of(out, "run.finished")[-1]["status"] == "succeeded" and len(runpod.bodies) == 2 and not runpod.pods

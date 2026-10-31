@@ -887,11 +887,15 @@ def cmd_remote(args):
             run_id = args.run_id or new_run_id()
             if on_pod:
                 # a run whose pod is gone (fetched, canceled) has ended: another pod would run every step again (review of #53)
-                had = remote_run.record(run_id)
-                gone = (json.loads(had.read_text()) if had.exists() else {}).get("pod") or {}
-                if gone.get("deleted"):
+                had = json.loads(remote_run.record(run_id).read_text()) if remote_run.record(run_id).exists() else {}
+                gone = had.get("pod") or {}
+                # only a run whose start was sent can have run there (review of #53)
+                if gone.get("deleted") and had.get("start_sent"):
                     return problem(f"run {run_id} has ended: its pod was deleted" + (" after the run was fetched" if gone.get("fetched") else "")
                                    + " (start a new run without --run-id)")
+                if gone.get("launch_failed") and not gone.get("deleted"):
+                    return problem(f"run {run_id}'s pod failed to start and was not deleted: `perception remote cancel "
+                                   f"runpod {run_id}` deletes it")
                 rp["pod"], doc = _pod_plan(args, graph, doc, rp)
                 secrets = {k: v for k, v in secrets.items() if k not in pod_run.NEVER_SENT}
             if Store(home()).db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone() and not remote_run.record(run_id).exists():
@@ -1098,9 +1102,10 @@ def _pod_delete(args, run_id: str, secrets: dict) -> dict:
     from .runpod import RunPod
     pod = pod_run.delete(run_id, RunPod(load_secrets().get("RUNPOD_API_KEY") or ""), log=sys.stderr)
     if args.json:
-        emit("pod_deleted", run=run_id, pod=pod["id"], deleted=pod["deleted"], cost_usd=pod["cost_usd"])
+        emit("pod_deleted", run=run_id, pod=pod["id"], deleted=pod["deleted"], cost_usd=pod["cost_usd"],
+             may_still_run=pod.get("may_still_run"))
     else:
-        print(f"pod {pod['id']} " + ("deleted" if pod["deleted"] else "not deleted (it removes itself at its deadline)")
+        print(f"pod {pod['id']} " + ("deleted" if pod["deleted"] else f"not deleted ({pod.get('may_still_run') or 'it removes itself at its deadline'})")
               + f"; it cost about ${pod['cost_usd']:.2f}")
     return pod
 

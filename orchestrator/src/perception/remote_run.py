@@ -467,6 +467,9 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     data = json.dumps(spec).encode()
     del keys, spec
     remote.start_sent = True
+    had = json.loads(record(run).read_text())
+    if not had.get("start_sent"):   # from here the run may be going there, answered or not (a pod's --run-id: review of #53)
+        record(run).write_text(json.dumps({**had, "start_sent": True}))
     return remote.call("start", data=data)
 
 
