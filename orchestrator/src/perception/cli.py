@@ -642,7 +642,12 @@ def cmd_cloud(args):
         else:
             print(problem or f"{args.provider} can be used")
         return 0
-    if args.action == "on":
+    if args.action == "keys":   # whether a whole run on a pod may hold the keys its steps declare (pod_run.py)
+        if args.provider != "runpod" or args.state is None:
+            problem = "perception cloud keys runpod on|off: only a whole run on a RunPod pod is given keys"
+        else:
+            cloud.set_keys(args.state == "on")
+    elif args.action == "on":
         problem = runpod_problem() if args.provider == "runpod" else aws_problem()
         if problem is None:
             cloud.set(True, args.provider)
@@ -664,10 +669,12 @@ def cmd_cloud(args):
     aws, rp = CloudBackend(), RunPodBackend()
     if args.json:
         emit("cloud", enabled=cloud.enabled, machine=aws.machine_title, region=aws.region, hourly_usd=aws.hourly_usd,
-             runpod={"enabled": cloud.runpod, "machine": rp.machine_title, "region": rp.region, "hourly_usd": rp.hourly_usd})
+             runpod={"enabled": cloud.runpod, "machine": rp.machine_title, "region": rp.region, "hourly_usd": rp.hourly_usd,
+                     "keys": cloud.runpod_keys})
     else:
         print(f"aws    {'on ' if cloud.enabled else 'off'}  {aws.machine_title}, {aws.region}, ${aws.hourly_usd}/h")
-        print(f"runpod {'on ' if cloud.runpod else 'off'}  {rp.machine_title}; {rp.region}, at most ${rp.hourly_usd}/h")
+        print(f"runpod {'on ' if cloud.runpod else 'off'}  {rp.machine_title}; {rp.region}, at most ${rp.hourly_usd}/h; "
+              f"whole runs there {'are' if cloud.runpod_keys else 'are not'} given your keys")
     return 0
 
 
@@ -804,11 +811,10 @@ def cmd_setup(args):
 def cmd_remote(args):
     """A whole run coordinated on a lab server (remote_run.py): `run` checks it may go there, sends it and follows it;
     `status`, `attach` and `fetch` reach a run there from this machine, whether or not this machine started it."""
-    from . import remote_run
+    from . import pod_run, remote_run
+    from .pod_session import GuardRefused, LaunchFailed, Refused
     from .remote_driver import Unreachable
     from .scheduler import RUN_ID, new_run_id
-    hosts = Hosts(home()).load()
-    host = hosts.get(args.host)
 
     def problem(*problems) -> int:
         if args.json:
@@ -817,11 +823,28 @@ def cmd_remote(args):
             print("perception remote: " + shown("; ".join(problems)), file=sys.stderr)
         return 1
 
-    if host is None:
-        return problem(f"no host {args.host!r} (perception hosts add)")
     action = args.remote_action
     if action != "run" and args.run_id and not RUN_ID.match(args.run_id):   # it names folders here and there
         return problem(f"not a run id: {args.run_id!r}")
+    on_pod = args.host == pod_run.NAME   # a pod made for the run (pod_run.py), not a host of hosts.json
+    pod = None
+    if on_pod and action == "status" and not args.run_id:
+        return _pods(args)
+    if on_pod and action == "run":
+        host = pod_run.planned_host(Cloud(home()).runpod_keys)
+    elif on_pod:
+        rec = remote_run.record(args.run_id)
+        pod = (json.loads(rec.read_text()) if rec.exists() else {}).get("pod")
+        if not pod:
+            return problem(f"this machine made no RunPod pod for run {args.run_id}")
+        if pod.get("deleted"):
+            return problem(f"run {args.run_id}'s pod was deleted" + (" after its run was fetched" if pod.get("fetched") else "")
+                           + f" (it cost about ${pod.get('cost_usd', 0):.2f})")
+        host = pod_run.host(pod, Cloud(home()).runpod_keys)
+    else:
+        host = Hosts(home()).load().get(args.host)
+    if host is None:
+        return problem(f"no host {args.host!r} (perception hosts add)")
     import subprocess
     try:
         remote = remote_run.Remote(host, nodes=args.nodes)
@@ -838,6 +861,9 @@ def cmd_remote(args):
                 return graph_error(args, e)
             secrets = load_secrets()
             rp = remote_run.remote_plan(host, graph, doc, secrets, args.allow_uploads)
+            if on_pod:
+                rp["pod"], doc = _pod_plan(args, graph, doc, rp)
+                secrets = {k: v for k, v in secrets.items() if k not in pod_run.NEVER_SENT}
             run_id = args.run_id or new_run_id()
             if Store(home()).db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone() and not remote_run.record(run_id).exists():
                 # one of this store's own runs (review of #46): it would run there, spend, and never be imported
@@ -851,17 +877,31 @@ def cmd_remote(args):
                         print(f"{n['id']:16s} {n['uses']:28s} {n['place'] or 'on ' + host.name}"
                               + (f"  receives {', '.join(n['secrets'])}" if n["secrets"] else ""))
                     print(f"{host.name} receives {', '.join(rp['uploads'])}" + (f" and the keys {', '.join(rp['keys'])}" if rp["keys"] else ""))
+                    if on_pod:
+                        q = rp["pod"]
+                        print(f"a pod for at most {q['deadline_s'] / 60:.0f} min (gone {q['linger_s'] / 60:.0f} min after the run "
+                              f"if not fetched): ${q['reserved_usd']:.2f} reserved; API steps ${q['api_usd']:.2f} of the "
+                              f"${q['api_cap_usd']:.2f} left")
                     for p in rp["problems"]:
                         print(f"cannot run there: {p}")
                 return 0 if rp["ok"] else 1
             # said before anything starts: a start whose answer is lost is asked again with this id (--run-id)
+            store = "a pod made for the run" if on_pod else remote.home
             if args.json:
-                emit("run.created", run=run_id, store=f"{host.name}:{remote.home}", host=host.name)
+                emit("run.created", run=run_id, store=f"{host.name}:{store}", host=host.name)
             else:
-                print(f"run {run_id}  (on {host.name}, store {remote.home})")
+                print(f"run {run_id}  (on {host.name}, store {store})")
+            if on_pod:
+                remote, made = _pod_for(args, run_id, rp["pod"], secrets)
+                host = remote.host
             try:
-                started = remote_run.start(remote, run_id, graph, doc, secrets, args.allow_uploads, args.allow_downloads)
-            except remote_run.RemoteError as e:
+                started = remote_run.start(remote, run_id, graph, doc, secrets, args.allow_uploads, args.allow_downloads,
+                                           linger_s=rp["pod"]["linger_s"] if on_pod else None)
+            except BaseException as e:
+                if on_pod and made:   # nothing ran on the pod made for it: deleted now
+                    _pod_delete(args, run_id, secrets)
+                if not isinstance(e, remote_run.RemoteError):
+                    raise
                 if args.json and getattr(e, "answer", {}).get("plan"):
                     emit("plan", **e.answer["plan"])   # the host's own plan: why it would not run there
                 return problem(*e.problems)
@@ -873,9 +913,11 @@ def cmd_remote(args):
                        else f"already {started['status']}") + f" on {host.name}")
             if args.detach:
                 return 0
-            return _remote_follow(args, remote, run_id, announce=False)
+            code = _remote_follow(args, remote, run_id, announce=False)
+            return _pod_fetch(args, remote, run_id, secrets) if on_pod and code == 0 else code
         if action == "attach":
-            return _remote_follow(args, remote, args.run_id, announce=True)
+            code = _remote_follow(args, remote, args.run_id, announce=True)
+            return _pod_fetch(args, remote, args.run_id, load_secrets()) if on_pod and code == 0 else code
         if action == "status":
             got = remote.call("status", *([args.run_id] if args.run_id else []))
             if args.json:
@@ -910,7 +952,11 @@ def cmd_remote(args):
             else:
                 print(f"run {args.run_id}: canceled on {host.name}" if got["canceled"] else
                       shown(f"run {args.run_id} had ended on {host.name}: {got['status']}"))
+            if on_pod:   # its results are not wanted: the pod goes now
+                _pod_delete(args, args.run_id, load_secrets())
             return 0
+        if action == "fetch" and on_pod:
+            return _pod_fetch(args, remote, args.run_id, load_secrets())
         if action == "fetch":
             out = Path(args.output) if args.output else home() / "bundles" / args.run_id
             got = remote_run.fetch(remote, args.run_id, out.expanduser().resolve())
@@ -923,12 +969,119 @@ def cmd_remote(args):
             return 0
     except remote_run.RemoteError as e:
         return problem(*e.problems)
+    except (LaunchFailed, Refused, GuardRefused) as e:   # the pod (pod_session.py): none is left behind
+        return problem(f"no pod for the run: {e}")
     except Unreachable as e:
         return problem(f"{host.name} cannot be reached: {e}")
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:   # a link git tracks, a file gone, a host too slow
         return problem(f"{type(e).__name__}: {e}")
     return 1
 
+
+def _pod_plan(args, graph, doc: dict, rp: dict) -> tuple[dict, dict]:
+    """A run on a pod made for it (pod_run.py): how long the pod may exist, what that reserves, and what is left of the
+    run's max_cost_usd for its API steps, which is the cap the coordinator there gets (the graph it is sent). A problem in
+    `rp` when what is left would not cover their estimate, or RunPod cannot be used."""
+    import math
+    from . import pod_run
+    from .backends.cloud import video_seconds
+    from .plan import plan as make_plan
+    if not Cloud(home()).runpod:
+        rp["problems"].append("RunPod is not on here: perception cloud on runpod (it checks your RunPod API key)")
+    video_s = video_seconds((graph.spec.inputs[n].type, graph.input_path(n)) for n in graph.spec.inputs)
+    linger_s = float(args.linger_min) * 60
+    deadline = pod_run.deadline_s(video_s, linger_s)
+    reserved = pod_run.reservation_usd(deadline)
+    here = make_plan(Coordinator(Store(home()), registry(args), backends(), load_secrets()), graph,
+                     allow_downloads=True, allow_uploads=True)
+    api_usd = round(sum(n.cost_usd or 0 for n in here.nodes if n.service), 4)
+    cap = round(graph.spec.policy.max_cost_usd - reserved, 4)
+    if cap < api_usd or cap <= 0:
+        rp["problems"].append(f"a pod for {deadline / 60:.0f} min is reserved at ${reserved:.2f} (at most "
+                              f"${pod_run.hourly_usd()}/h), which leaves ${max(cap, 0):.2f} of the run's "
+                              f"${graph.spec.policy.max_cost_usd:.2f} for API steps estimated at ${api_usd:.2f}: "
+                              f"--max-cost-usd {math.ceil((reserved + api_usd) * 100 + 1) / 100:.2f} or more")
+    rp["ok"] = not rp["problems"]
+    sent = {**doc, "policy": {**doc.get("policy", {}), "max_cost_usd": max(cap, 0.0)}}
+    return {"deadline_s": deadline, "linger_s": linger_s, "hourly_usd": pod_run.hourly_usd(), "reserved_usd": reserved,
+            "api_usd": api_usd, "api_cap_usd": max(cap, 0.0), "video_s": video_s, "gpus": list(pod_run.GPUS),
+            "disk_gb": pod_run.DISK_GB}, sent
+
+
+def _pod_for(args, run_id: str, plan: dict, secrets: dict):
+    """The run's pod, as a host to start the run on: the one its record names if it is still there (a start asked again
+    with --run-id), or one made now (pod_run.launch). Whether it was made now."""
+    from . import pod_run, remote_run
+    from .runpod import RunPod
+    rec = remote_run.record(run_id)
+    pod = (json.loads(rec.read_text()) if rec.exists() else {}).get("pod")
+    keys = Cloud(home()).runpod_keys
+    if pod and not pod.get("deleted"):
+        return remote_run.Remote(pod_run.host(pod, keys), nodes=args.nodes), False
+    if not secrets.get("RUNPOD_API_KEY") and not load_secrets().get("RUNPOD_API_KEY"):
+        raise remote_run.RemoteError("no RunPod API key (perception cloud on runpod checks for it)")
+    api = RunPod(load_secrets()["RUNPOD_API_KEY"])
+    _, host, pod = pod_run.launch(run_id, api, plan["deadline_s"])
+    host.keys = keys
+    if args.json:
+        emit("pod", run=run_id, pod=pod["id"], name=pod["name"], deadline_at=pod["deadline_at"], hourly_usd=pod["hourly_usd"],
+             reserved_usd=plan["reserved_usd"])
+    else:
+        print(f"pod {pod['id']} at ${pod['hourly_usd']}/h, removed by {time.strftime('%H:%M', time.localtime(pod['deadline_at']))} at the latest")
+    return remote_run.Remote(host, nodes=args.nodes), True
+
+
+def _pod_delete(args, run_id: str, secrets: dict) -> dict:
+    from . import pod_run
+    from .runpod import RunPod
+    pod = pod_run.delete(run_id, RunPod(load_secrets().get("RUNPOD_API_KEY") or ""))
+    if args.json:
+        emit("pod_deleted", run=run_id, pod=pod["id"], deleted=pod["deleted"], cost_usd=pod["cost_usd"])
+    else:
+        print(f"pod {pod['id']} " + ("deleted" if pod["deleted"] else "not deleted (it removes itself at its deadline)")
+              + f"; it cost about ${pod['cost_usd']:.2f}")
+    return pod
+
+
+def _pod_fetch(args, remote, run_id: str, secrets: dict) -> int:
+    """Import a run that ended on its pod, then delete the pod. A fetch that fails leaves the pod for another try until
+    its linger window ends."""
+    from . import pod_run, remote_run
+    out = Path(getattr(args, "output", None) or home() / "bundles" / run_id)
+    try:
+        got = remote_run.fetch(remote, run_id, out.expanduser().resolve())
+    except remote_run.RemoteError as e:
+        raise remote_run.RemoteError(*e.problems, f"the pod stays until its linger window ends: `perception remote fetch "
+                                                  f"{pod_run.NAME} {run_id}` tries again") from None
+    if args.json:
+        emit("fetched", **got)
+    else:
+        print(f"imported run {got['run']} from its pod: {got['tasks']} tasks, {got['objects']} objects"
+              + (f"; bundle in {got['path']}" if got["path"] else f"; no bundle ({got['bundle_problem'] or 'the run did not succeed'})"))
+    rec = remote_run.record(run_id)
+    mine = json.loads(rec.read_text())
+    rec.write_text(json.dumps({**mine, "pod": {**mine["pod"], "fetched": True}}))
+    pod = _pod_delete(args, run_id, secrets)
+    # the run's spend here: its API steps' (imported) and its pod's
+    Store(home()).db.execute("UPDATE runs SET spent_usd = spent_usd + ? WHERE id=?", (pod["cost_usd"], run_id))
+    return 0
+
+
+def _pods(args) -> int:
+    """The pods this machine made for runs (`remote status runpod`): each run's, from its record."""
+    from . import remote_run
+    rows = []
+    for rec in sorted(remote_run.record("x").parent.glob("*.json")):
+        pod = json.loads(rec.read_text()).get("pod")
+        if pod:
+            rows.append({"run": rec.stem, "pod": pod["id"], "deadline_at": pod["deadline_at"], "hourly_usd": pod["hourly_usd"],
+                         "fetched": bool(pod.get("fetched")), "deleted": bool(pod.get("deleted")), "cost_usd": pod.get("cost_usd")})
+    if args.json:
+        emit("pods", pods=rows)
+    for r in rows if not args.json else []:
+        print(f"{r['run']}  pod {r['pod']}  " + (f"deleted, ${r['cost_usd']:.2f}" if r["deleted"] else
+              f"until {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['deadline_at']))} at most, ${r['hourly_usd']}/h"))
+    return 0
 
 def shown(text) -> str:
     """Text a host sent, as text mode prints it: control characters escaped (a tampered host could send terminal
@@ -1051,8 +1204,9 @@ def main(argv: list[str] | None = None) -> int:
     h.add_argument("--expired", action="store_true", help="clean: only what retention removes (see above)")
     h.set_defaults(fn=cmd_hosts)
     c = sub.add_parser("cloud", help="offer a cloud GPU machine to nodes that can use one")
-    c.add_argument("action", choices=["on", "off", "status", "check"])
+    c.add_argument("action", choices=["on", "off", "status", "check", "keys"])
     c.add_argument("provider", nargs="?", choices=Cloud.providers, default="aws")
+    c.add_argument("state", nargs="?", choices=["on", "off"], help="keys: whether whole runs on a pod get your keys")
     c.set_defaults(fn=cmd_cloud)
     k = sub.add_parser("keys", help="your API keys and tokens: store one in the keychain, list where each comes from")
     k.add_argument("action", choices=["set", "list", "remove", "check"])
@@ -1079,6 +1233,8 @@ def main(argv: list[str] | None = None) -> int:
     rr_.add_argument("--run-id", help="the run's id (the one a start whose answer was lost said): attaches if it is running there")
     rr_.add_argument("--dry-run", action="store_true", help="say what would be sent and to which steps the keys would go; send nothing")
     rr_.add_argument("--detach", action="store_true", help="return once it has started there")
+    rr_.add_argument("--linger-min", type=float, default=30,
+                     help="runpod: how long its pod waits for a fetch after the run ends, then removes itself")
     rr_.set_defaults(fn=cmd_remote)
     for name, helptext in (("status", "a run there, or the runs there"), ("attach", "follow a run there until it ends"),
                            ("fetch", "import a finished run into this store, and export its bundle here"),

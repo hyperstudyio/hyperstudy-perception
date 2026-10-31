@@ -161,7 +161,17 @@ for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved 
   its deadline is deleted by the next RunPod launch (runpod_sweep), as now.
 - **Weights.** Downloaded in the session with the user's token (decided 2026-10-28), into the pod's disk (100 GB
   until measured). Then, measured on real runs: a RunPod network volume, an R2 bucket and an image with the weights,
-  against downloading each time (time to ready, cost, bandwidth), once each model's licence is checked for a private copy.
+  against downloading each time (time to ready, cost, bandwidth). The licences allow a private copy: the SAM License
+  (2025-11-19) and the DINOv3 License (2025-08-19) each grant the right to "reproduce, distribute, copy" their materials,
+  weights included, with the agreement given with any copy passed on (read 2026-10-31; not legal advice). A copy in
+  the user's own bucket or volume is theirs to keep; the weights never go in the public image (ghcr.io), which would
+  hand gated models to anyone who pulls it, past Meta's own gate. A private image with them, under the organisation on
+  GitHub, is wanted as a fourth way (decided 2026-10-31): RunPod pulls it with registry credentials kept in the RunPod
+  account (a GitHub token that reads packages, never on a pod); its weights layer (~5 GB) misses RunPod's cache of the
+  base image, which the comparison measures. R2 (also wanted, 2026-10-31) charges nothing to download (Cloudflare's
+  pricing page, read 2026-10-31: $0.015/GB-month stored, the first 10 GB free; egress free), so ~5 GB of weights there
+  costs nothing or cents a month however many pods fetch them; a pod reads them with a read-only token scoped to that
+  bucket, sent as the run's keys are.
 - **Verify.** Tests with RunPod's API stood in (test_runpod's FakeRunPod) and the pod a stand-in host; then a short
   clip on a real pod: one pod in the console, killing this machine's side leaves the run going and the pod removed at
   its linger window; deleted after fetch.

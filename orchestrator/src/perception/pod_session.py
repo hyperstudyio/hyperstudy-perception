@@ -263,6 +263,8 @@ def pod_ssh(keys: Path, port: int) -> list[str]:
     that (quoted: ssh reads an unquoted path with a space as two files). None of the user's ssh config applies (-F none:
     its IdentityFiles would be offered too), and nothing of this machine's is forwarded to it (an agent, ports, X11)."""
     from .hosts import ssh_command
-    return [*ssh_command(), "-F", "none", "-i", str(keys / "id_ed25519"), "-p", str(int(port)), "-o", "IdentitiesOnly=yes",
+    # its connection shared by its key too: a pod made later at the same address and port is never reached through
+    # a connection to the one before
+    return [*ssh_command(identity=str(keys / "id_ed25519")), "-F", "none", "-i", str(keys / "id_ed25519"), "-p", str(int(port)), "-o", "IdentitiesOnly=yes",
             "-o", f'UserKnownHostsFile="{keys / "known_hosts"}"', "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-o", "ForwardX11=no"]

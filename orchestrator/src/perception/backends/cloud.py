@@ -216,6 +216,18 @@ class Cloud:
     def runpod(self) -> bool:
         return self.read().get("runpod", False)
 
+    @property
+    def runpod_keys(self) -> bool:
+        """Whether a whole run on a RunPod pod (pod_run.py) may be given the keys its steps declare: the user's explicit
+        yes (`perception cloud keys runpod on`), off until then. Per-step pods are never given any."""
+        return self.read().get("runpod_keys", False) is True
+
+    def set_keys(self, allowed: bool):
+        doc = self.read()
+        doc["runpod_keys"] = allowed
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(doc))
+
     def set(self, enabled: bool, provider: str = "aws"):
         doc = self.read()
         doc["enabled" if provider == "aws" else provider] = enabled

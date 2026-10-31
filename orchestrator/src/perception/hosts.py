@@ -153,6 +153,11 @@ class Host:
         return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"),
                    d.get("keep_days"), d.get("min_free_gb"), d.get("keys") is True)
 
+    @property
+    def keys_command(self) -> str:
+        """What gives runs coordinated there the keys their steps declare (remote_run.remote_plan's advice)."""
+        return f"perception hosts keys {self.name} on"
+
     def ssh(self, fresh: bool = False) -> list[str]:
         """ssh to this host: every command sent to it (probe, nodes, clean) goes through this, with its overrides.
         `fresh`: its own connection, not a shared one (a check: see ssh_command)."""

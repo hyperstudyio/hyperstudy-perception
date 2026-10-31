@@ -522,6 +522,8 @@ def _start(spec: dict, keys: dict, run: str, nodes: list[str], folder: Path) -> 
     keep_s, min_free = spec.get("keep_s", KEEP_DAYS * 86400), spec.get("min_free_gb")
     retention = ["--keep-s", str(float(keep_s))] + (["--min-free-gb", str(float(min_free))] if min_free is not None else []) \
         if _number_ok(keep_s) and (min_free is None or _number_ok(min_free)) else []
+    if _number_ok(spec.get("linger_s")):   # a pod made for the run: it goes this long after the run ends (cmd_serve)
+        (folder / "linger_s").write_text(str(float(spec["linger_s"])))
     proc = spawn(run, nodes, keys, retention)
     del keys
     try:   # one that cannot even start (a broken copy) says so now; one that runs is left to run
@@ -534,6 +536,29 @@ def _start(spec: dict, keys: dict, run: str, nodes: list[str], folder: Path) -> 
     status = store.db.execute("SELECT status FROM runs WHERE id=?", (run,)).fetchone()["status"]
     answer(run=run, started=True, resumed=bool(row), pid=proc.pid, status=status)
     return 0, True
+
+
+def linger(folder: Path):
+    """On a pod made for the run (run-anywhere phase 10: its start sent `linger_s`), the time it is to go once the run
+    has ended: now plus that window, for this machine's fetch, written where the pod's removal reads it
+    (pod_session.REMOVE_AT). Only ever brought forward: an earlier time already there stays."""
+    from .pod_session import REMOVE_AT
+    try:
+        at = int(time.time() + float((folder / "linger_s").read_text()))
+    except (OSError, ValueError):
+        return   # not a pod's run
+    path = Path(os.environ.get("PERCEPTION_REMOVE_AT", REMOVE_AT))
+    with contextlib.suppress(OSError, ValueError):
+        if int(path.read_text().strip()) <= at:
+            return
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(str(at))
+        tmp.replace(path)   # whole, never a part the removal could misread
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} this pod goes at {time.strftime('%H:%M:%S', time.localtime(at))} "
+              "unless fetched sooner", flush=True)
+    except OSError as e:
+        print(f"could not set the pod's removal ({e}): it goes at its deadline", flush=True)
 
 
 def cmd_serve(args) -> int:
@@ -561,6 +586,7 @@ def cmd_serve(args) -> int:
         with locked(folder / ".lock"):   # a start then sees it either running, or ended with its holds released
             if status:   # the run has ended: its inputs need no hold any more (remote_run.Remote.send_input)
                 release(run)
+                linger(folder)
             with contextlib.suppress(OSError, ValueError):
                 if int(pidfile.read_text()) == os.getpid():
                     pidfile.unlink()

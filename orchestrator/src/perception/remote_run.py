@@ -138,7 +138,7 @@ def remote_plan(host: Host, graph: Graph, doc: dict, secrets: dict[str, str], al
             keys.setdefault(s, []).append(node.id)
     if keys and not host.keys:
         problems.append(f"{', '.join(sorted({n for ns in keys.values() for n in ns}))} need {', '.join(sorted(keys))}, and "
-                        f"{host.name} may not hold your keys for its runs: `perception hosts keys {host.name} on` lets it "
+                        f"{host.name} may not hold your keys for its runs: `{host.keys_command}` lets it "
                         "(or leave those steps out with --only)")
     if missing := sorted(k for k in keys if k not in secrets):
         problems.append(f"{', '.join(missing)} not set here (perception keys set NAME): {', '.join(sorted({n for k in missing for n in keys[k]}))} need it")
@@ -403,8 +403,9 @@ def record(run: str) -> Path:
 
 
 def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, str], allow_uploads: bool,
-          allow_downloads: bool) -> dict:
-    """Send what the run needs (module docstring, steps 1-4) and start it there: the host's answer."""
+          allow_downloads: bool, linger_s: float | None = None) -> dict:
+    """Send what the run needs (module docstring, steps 1-4) and start it there: the host's answer. `linger_s`: the
+    host is a pod made for the run, removed this long after the run ends (pod_run.py)."""
     declared = {s for n in graph.nodes.values() for s in (*n.manifest.secrets, *n.manifest.download_secrets)}
     keys = {k: v for k, v in secrets.items() if k in declared} if remote.host.keys else {}
     # whose cache there its gated weights go in (hosts.hf_home), found before anything is sent
@@ -428,14 +429,14 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     # resumed run must never read under the first one's cache keys (re-review of #46)
     mine = {"host": remote.host.name, "inputs": here, "input_sha256": {k: v["sha256"] for k, v in inputs.items()},
             "graph": str(graph.source or ""), "graph_doc": doc}
-    if record(run).exists():
-        had = json.loads(record(run).read_text())
+    had = json.loads(record(run).read_text()) if record(run).exists() else {}
+    if "host" in had:   # started before (a record of only its pod: one made for it a moment ago, pod_run.launch)
         if any(had.get(k) != mine[k] for k in ("host", "inputs", "input_sha256", "graph_doc")):
             raise RemoteError(f"run {run} was started with another graph (or other inputs, or on another host): "
                               "a run's id names one run")
     else:
         record(run).parent.mkdir(parents=True, exist_ok=True)
-        record(run).write_text(json.dumps(mine))
+        record(run).write_text(json.dumps({**had, **mine}))
     remote.copy, remote.interpreter   # the copy and its environment before the video: a host that cannot run it gets no clip
     had = json.loads(record(run).read_text())
     if "copy" not in had:   # the copy it started with: status, attach and fetch call it (Remote.use_copy_of)
@@ -447,7 +448,8 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     spec = {"run": run, "graph": sent, "inputs": inputs, "allow_uploads": allow_uploads, "allow_downloads": allow_downloads,
             "nodes": remote.nodes, "keys": keys, "hf_account": account,
             # the host's retention, for the runs coordinated there (remote_coordinator.prune)
-            "keep_s": remote.host.keep_s, "min_free_gb": remote.host.min_free_gb}
+            "keep_s": remote.host.keep_s, "min_free_gb": remote.host.min_free_gb,
+            **({"linger_s": linger_s} if linger_s is not None else {})}
     data = json.dumps(spec).encode()
     del keys, spec
     return remote.call("start", data=data)
