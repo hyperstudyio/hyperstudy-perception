@@ -1326,3 +1326,28 @@ def test_an_ended_run_is_kept_a_while_whatever_the_retention(tmp_path, monkeypat
     ended_run(store, "20261029-120000-aaaaaa", ago_s=5)
     ended_run(store, "20261029-120000-bbbbbb", ago_s=rc.PRUNE_GRACE_S + 60)
     assert rc.prune(store, 0, None) == ["20261029-120000-bbbbbb"]
+
+
+def test_the_orchestrators_environment_on_a_pod_has_a_python_no_newer_than_this_machines(tmp_path, monkeypatch):
+    """On a pod made for the run, a Python from the package's oldest to this machine's minor version, whose wheels its
+    requirements have: a pod has no Python of its own, and uv downloaded the newest it knew, for which av had no wheel
+    (2026-10-31). A lab server keeps any it has from 3.12 on: it may have no internet, and only a newer one (review of
+    #53)."""
+    from perception.pod_run import PodHost
+    import subprocess as sp
+    caps = Capabilities(platform=this_platform(), cpu_cores=8, memory_gb=32, accelerators={"cpu"}, vram_gb=0,
+                        tools={"uv": "/opt/uv/uv", "ffmpeg": None, "ffprobe": None})
+    def venv(host) -> str:
+        remote = remote_run.Remote(host)
+        remote.__dict__.update(requirements="anyio==4\n", copy="/srv/hp/pipelines/abc")   # cached properties, as if sent
+        sent = []
+
+        def sh(script, data=None, timeout=600, check=True):
+            sent.append(script)
+            return sp.CompletedProcess(script, 1 if script.startswith("test -e") else 0, b"", b"")
+        monkeypatch.setattr(remote, "sh", sh)
+        assert remote.interpreter.endswith("/bin/python")
+        return sent[-1]
+    pod = venv(PodHost("runpod", "root@pod", "/srv/hp", caps, time.time(), port=22, pod_keys=str(tmp_path)))
+    assert f"--python '>=3.12,<{sys.version_info.major}.{sys.version_info.minor + 1}' " in pod
+    assert "--python '>=3.12' " in venv(Host("lab", "lab", "/srv/hp", caps, time.time()))

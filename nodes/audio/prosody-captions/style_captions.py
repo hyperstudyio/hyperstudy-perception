@@ -136,6 +136,48 @@ def cost(model: str, prompt_tokens: int, audio_tokens: int | None, completion_to
     return {"text_in": text_in, "audio_in": audio_in, "out": completion_tokens, "usd": usd}
 
 
+def caption_attempt(ask) -> dict:
+    """One call for one target's caption: `ask()` makes it and gives (its function call's arguments, or None when it
+    made none; its usage, as cost() gives it; its raw reply). {parsed, arguments, raw, usage}, or {rejected: {problem,
+    finish_reason, arguments}, usage} when the reply is not the schema's. Why one can fail the schema is known: the
+    audio models do not constrain their function call to it (strict or not; the same reason off-list tags are dropped,
+    parse_caption), so a sample can be malformed (one was cut short of a comma on a pod's run, 2026-10-31)."""
+    arguments, usage, raw = ask()
+    try:
+        if arguments is None:
+            raise ValueError(f"no function call in the reply (finish_reason {raw.get('finish_reason')})")
+        return {"parsed": parse_caption(arguments), "arguments": arguments, "raw": raw, "usage": usage}
+    except ValueError as e:
+        return {"rejected": {"problem": str(e), "finish_reason": raw.get("finish_reason"), "arguments": arguments},
+                "usage": usage}
+
+
+def rejected_text(rejected: dict) -> str:
+    return (f"{rejected['problem']} (finish_reason {rejected['finish_reason']}, "
+            f"arguments {str(rejected['arguments'])[:300]!r})")
+
+
+def may_ask_again(spent_usd: float, caption_usd: float, tag_usd: float, utterances: int) -> bool:
+    """Whether a rejected caption may be asked again: once every other call of the step has been made (spent_usd is
+    then all but this), only if this caption's second call and its tag stay within what the step reserved (the
+    manifest's cost, an utterance: review of #53)."""
+    return spent_usd + caption_usd + tag_usd <= utterances * COST_PER_UTTERANCE
+
+
+def asked_again(first: dict, second: dict) -> dict:
+    """A caption asked a second time: the second's, with both calls' usage and the first's rejected reply
+    (asked_again). ValueError when the second is not the schema's either."""
+    if "rejected" in second:
+        raise ValueError(f"asked twice, and neither reply was the schema's: {rejected_text(first['rejected'])}; "
+                         f"{rejected_text(second['rejected'])}")
+    usage = {k: first["usage"][k] + second["usage"][k] for k in first["usage"]}
+    return {**second, "usage": usage, "asked_again": [first["rejected"]]}
+
+
+# what the step reserves an utterance (manifest.yaml's cost; a test checks they agree): one caption call and its tags
+COST_PER_UTTERANCE = 0.008
+
+
 def parse_caption(arguments: str) -> dict:
     """The function call's arguments -> {description, tags, emphasized_words}; ValueError when they are not that. Its tags
     are those of the list only: gpt-audio-1.5 does not hold a function call to the schema's enum (strict or not), so a tag

@@ -80,28 +80,25 @@ with Node() as node:
         u = units[k]
         i, j = u["samples"]
         text = sc.prompt(units, k)
-        r = call(lambda: client.chat.completions.create(
-            model=sc.GPT_MODEL, modalities=["text"],
-            tools=[{"type": "function", "function": {"name": "record_style", "description": "Record how the target is said",
-                                                     "parameters": sc.CAPTION_SCHEMA, "strict": True}}],
-            tool_choice={"type": "function", "function": {"name": "record_style"}},
-            messages=[{"role": "system", "content": sc.GPT_INSTRUCTIONS},
-                      {"role": "user", "content": [{"type": "text", "text": text},
-                                                   {"type": "input_audio", "input_audio": {"data": wav_b64(pcm[2 * i:2 * j]), "format": "wav"}}]}]))
-        d = r.usage.prompt_tokens_details
-        usage = sc.cost(sc.GPT_MODEL, r.usage.prompt_tokens, d.audio_tokens if d else 0, r.usage.completion_tokens)
-        spend(usage)
-        choice = r.choices[0]
-        if not choice.message.tool_calls:
-            raise NodeError("internal", f"{u['id']}: no function call in the reply (finish_reason {choice.finish_reason})")
-        arguments = choice.message.tool_calls[0].function.arguments
-        try:
-            parsed = sc.parse_caption(arguments)
-        except ValueError as e:
-            raise NodeError("internal", f"{u['id']}: {e}") from None
-        return {"parsed": parsed, "usage": usage, "prompt": text, "outside": sc.outside_tags(arguments),
-                "raw": {"model": r.model, "finish_reason": choice.finish_reason, "arguments": arguments,
-                        "usage": r.usage.model_dump(mode="json")}}
+
+        def ask():
+            r = call(lambda: client.chat.completions.create(
+                model=sc.GPT_MODEL, modalities=["text"],
+                tools=[{"type": "function", "function": {"name": "record_style", "description": "Record how the target is said",
+                                                         "parameters": sc.CAPTION_SCHEMA, "strict": True}}],
+                tool_choice={"type": "function", "function": {"name": "record_style"}},
+                messages=[{"role": "system", "content": sc.GPT_INSTRUCTIONS},
+                          {"role": "user", "content": [{"type": "text", "text": text},
+                                                       {"type": "input_audio", "input_audio": {"data": wav_b64(pcm[2 * i:2 * j]), "format": "wav"}}]}]))
+            d = r.usage.prompt_tokens_details
+            usage = sc.cost(sc.GPT_MODEL, r.usage.prompt_tokens, d.audio_tokens if d else 0, r.usage.completion_tokens)
+            spend(usage)
+            choice = r.choices[0]
+            arguments = choice.message.tool_calls[0].function.arguments if choice.message.tool_calls else None
+            return arguments, usage, {"model": r.model, "finish_reason": choice.finish_reason, "arguments": arguments,
+                                      "usage": r.usage.model_dump(mode="json")}
+        got = sc.caption_attempt(ask)
+        return {**got, "prompt": text, "ask": ask, "asked_again": []}
 
     def tag(description: str) -> dict:
         r = call(lambda: client.chat.completions.create(
@@ -125,8 +122,26 @@ with Node() as node:
     captions = sc.fan_out(caption, range(len(units)))   # on a failure, no further call starts
     caption_s = round(time.time() - t0, 1)
     t0 = time.time()
-    tagged = sc.fan_out(lambda c: tag(c["parsed"]["description"]), captions)
+    good = [k for k, c in enumerate(captions) if "rejected" not in c]
+    tagged = dict(zip(good, sc.fan_out(lambda k: tag(captions[k]["parsed"]["description"]), good)))
     tagger_s = round(time.time() - t0, 1)
+    # a reply that was not the schema's, asked again once every other call is made: then what the step spent is all but
+    # this second call and its tag, which must stay within its reservation (style_captions.may_ask_again)
+    for k, c in enumerate(captions):
+        if "rejected" not in c:
+            continue
+        tag_usd = max((t["usage"]["usd"] for t in tagged.values()), default=c["usage"]["usd"])
+        if not sc.may_ask_again(totals["usd"], c["usage"]["usd"], tag_usd, len(units)):
+            raise NodeError("internal", f"{units[k]['id']}: not asked again (the step's reservation would not cover it): "
+                                        f"{sc.rejected_text(c['rejected'])}")
+        try:
+            captions[k] = {**c, **sc.asked_again(c, sc.caption_attempt(c["ask"]))}
+        except ValueError as e:
+            raise NodeError("internal", f"{units[k]['id']}: {e}") from None
+        tagged[k] = tag(captions[k]["parsed"]["description"])
+    tagged = [tagged[k] for k in range(len(units))]
+    for c in captions:
+        c["outside"] = sc.outside_tags(c["arguments"])
 
     for m in prosody["producer"]["models"]:   # the measures' and emotion's models, as the prosody node recorded them
         node.model(m["id"], licence_mode=m["licence_mode"], source=m.get("source"), revision=m.get("revision"), licence=m.get("licence"))
@@ -143,6 +158,9 @@ with Node() as node:
         {"file": captions_raw.FILE, "format": "parquet", "description": captions_raw.DESCRIPTION}))
     # tags the audio model gave outside the list, dropped from their captions: utterance -> tags
     outside = {u["id"]: c["outside"] for u, c in zip(units, captions) if c["outside"]}
-    node.usage(utterances=len(units), workers=sc.WORKERS, tags_outside_list=outside,
+    # replies that were not the schema's JSON, asked again once (style_captions.caption_attempt, asked_again): utterance -> the first
+    # reply as it came (its problem, finish_reason and arguments), to find out why
+    asked_again = {u["id"]: c["asked_again"][0] for u, c in zip(units, captions) if c["asked_again"]}
+    node.usage(utterances=len(units), workers=sc.WORKERS, tags_outside_list=outside, asked_again=asked_again,
                usd_by_model={sc.GPT_MODEL: round(sum(c["usage"]["usd"] for c in captions), 4),
                              sc.TAGGER: round(sum(t["usage"]["usd"] for t in tagged), 4)})

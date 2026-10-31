@@ -561,9 +561,30 @@ def test_a_pods_removal_waits_for_its_deadline(tmp_path):
         assert subprocess.run(["pgrep", "-f", "perception-deadline"], capture_output=True).returncode == 0
         assert "runpodctl" not in calls(t)
     finally:
-        subprocess.run(["pkill", "-f", f"date \\+%s\\) -ge {int(time.time()) + 3600}"], capture_output=True)
+        subprocess.run(["pkill", "-f", f"[-]ge {int(time.time()) + 3600}"], capture_output=True)
         subprocess.run(["pkill", "-f", "perception-deadline"], capture_output=True)
 
+
+@pytest.mark.parametrize("told, removed", [("past", True), ("future", False), ("soon", False), ("12x", False), ("", False)])
+def test_a_pod_told_a_time_sooner_than_its_deadline_goes_then_and_never_later(tmp_path, told, removed):
+    """A whole run's pod goes at its end plus its linger window (pod_session.REMOVE_AT), before its deadline: a time
+    there that has come removes it; one still to come, or anything but a whole number, leaves the deadline as it is."""
+    t = tmp_path
+    (t / "bin").mkdir()
+    script(t / "bin" / "runpodctl", f'#!/bin/sh\necho "runpodctl $*" >> {t}/calls\n')
+    script(t / "bin" / "sleep", "#!/bin/sh\n/bin/sleep 0.05\n")   # its waits, short
+    env = {"PATH": f"{t / 'bin'}:/usr/bin:/bin", "RUNPOD_POD_ID": "pod42"}
+    (t / "remove-at").write_text({"past": str(int(time.time()) - 1), "future": str(int(time.time()) + 3600)}.get(told, told))
+    deadline = int(time.time()) + 3600
+    subprocess.run(["bash", "-c", removal_at_boot(deadline, "true", str(t / "remove-at"))], env=env, timeout=30)
+    try:
+        for _ in range(30):
+            if "runpodctl pod delete pod42" in calls(t):
+                break
+            time.sleep(0.1)
+        assert ("runpodctl pod delete pod42" in calls(t)) == removed
+    finally:
+        subprocess.run(["pkill", "-f", str(t / "remove-at")], capture_output=True)   # this test's removal alone
 
 def test_a_pod_whose_clock_disagrees_is_not_used(tmp_path, pod):
     skew = pod.fake_host / "skewbin"

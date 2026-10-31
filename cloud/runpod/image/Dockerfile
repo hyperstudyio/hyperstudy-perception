@@ -8,10 +8,11 @@
 FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04@sha256:2594f25beeef751aeebcc207ba4c45a382ba174655f01e15cbbfad0e2bdb5ef8
 ENV DEBIAN_FRONTEND=noninteractive
 
-# what nodes and the driver use (setup then installs nothing); sshd takes keys only. Each pod makes its own host keys
-# at start (start.sh): the ones in the base image are public, and are never used
+# what nodes and the driver use (setup then installs nothing): ffmpeg, rsync, and the EGL and GLES libraries MediaPipe
+# loads even on the CPU (vision.facing failed for want of libEGL.so.1 on a pod, 2026-10-31). sshd takes keys only.
+# Each pod makes its own host keys at start (start.sh): the ones in the base image are public, and are never used
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg rsync \
+ && apt-get install -y --no-install-recommends ffmpeg rsync libegl1 libgles2 \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
  && mkdir -p /run/sshd /etc/ssh/sshd_config.d \
  && printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n' \

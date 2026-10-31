@@ -138,7 +138,7 @@ def remote_plan(host: Host, graph: Graph, doc: dict, secrets: dict[str, str], al
             keys.setdefault(s, []).append(node.id)
     if keys and not host.keys:
         problems.append(f"{', '.join(sorted({n for ns in keys.values() for n in ns}))} need {', '.join(sorted(keys))}, and "
-                        f"{host.name} may not hold your keys for its runs: `perception hosts keys {host.name} on` lets it "
+                        f"{host.name} may not hold your keys for its runs: `{host.keys_command}` lets it "
                         "(or leave those steps out with --only)")
     if missing := sorted(k for k in keys if k not in secrets):
         problems.append(f"{', '.join(missing)} not set here (perception keys set NAME): {', '.join(sorted({n for k in missing for n in keys[k]}))} need it")
@@ -168,6 +168,7 @@ class Remote:
         self.root = host.root
         self.home = f"{self.root}/coordinator"
         self.ssh = host.ssh()   # every command to a host goes through it (its overrides: hosts.Host.ssh)
+        self.start_sent = False   # a run's start was sent: from then on it may be running there, answered or not
         # node folders given with --nodes, as the copy names them: only ones inside the pipeline's files are sent
         self.nodes = []
         for n in nodes or []:
@@ -288,10 +289,13 @@ class Remote:
         uv = self.host.caps.tools.get("uv")
         if not uv:
             raise RemoteError(f"{self.host.name} has no uv (perception hosts check {self.host.name} after installing it)")
-        key = hashlib.sha256(f"{COPY_LAYOUT}\n{self.requirements}".encode()).hexdigest()[:20]
+        # the host's rule for its Python (hosts.Host.orchestrator_python; a pod's is bounded), part of the
+        # environment's name: one made under another rule is another environment
+        python = self.host.orchestrator_python
+        key = hashlib.sha256(f"{COPY_LAYOUT}\n{python}\n{self.requirements}".encode()).hexdigest()[:20]
         env = f"{self.root}/envs/orchestrator-{key}"
         if self.sh(f"test -e {q(env)}/.complete", check=False).returncode:
-            done = self.sh(f"{q(uv)} venv --quiet --allow-existing --python '>=3.12' {q(env)} && "
+            done = self.sh(f"{q(uv)} venv --quiet --allow-existing --python {python} {q(env)} && "
                            f"{q(uv)} pip install --quiet --python {q(env)}/bin/python -r {q(self.copy + '/' + REQUIREMENTS)} && "
                            f"touch {q(env)}/.complete", check=False, timeout=1800)
             if done.returncode:
@@ -402,9 +406,36 @@ def record(run: str) -> Path:
     return home() / "remote" / f"{run}.json"
 
 
+def run_record(host: str, graph: Graph, doc: dict) -> dict:
+    """The graph as this machine runs it there (its inputs at their paths here, and their hashes): what an import
+    trusts, never the host's copy. Written once (start): a start under the same id with another graph (another --set
+    or --only, other inputs, another host) is another run, refused before anything is sent (record_conflict), and never
+    changes the record fetch checks the first one against. Each input by its hash too: one rewritten in place (the same
+    path, other bytes) is another run's input, which a resumed run must never read under the first one's cache keys
+    (re-review of #46)."""
+    store = Store(home())
+    here, sha = {}, {}
+    for name in graph.spec.inputs:
+        path = graph.input_path(name)
+        if not path.exists():
+            raise RemoteError(f"graph input {name}: {path} does not exist")
+        sha[name] = store.source(path, graph.spec.inputs[name].type).hash
+        here[name] = str(path)
+    return {"host": host, "inputs": here, "input_sha256": sha, "graph": str(graph.source or ""), "graph_doc": doc}
+
+
+def record_conflict(run: str, mine: dict) -> str | None:
+    """Why a start under this id is another run than the one recorded (run_record), or None."""
+    had = json.loads(record(run).read_text()) if record(run).exists() else {}
+    if "host" in had and any(had.get(k) != mine[k] for k in ("host", "inputs", "input_sha256", "graph_doc")):
+        return f"run {run} was started with another graph (or other inputs, or on another host): a run's id names one run"
+    return None
+
+
 def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, str], allow_uploads: bool,
-          allow_downloads: bool) -> dict:
-    """Send what the run needs (module docstring, steps 1-4) and start it there: the host's answer."""
+          allow_downloads: bool, linger_s: float | None = None) -> dict:
+    """Send what the run needs (module docstring, steps 1-4) and start it there: the host's answer. `linger_s`: the
+    host is a pod made for the run, removed this long after the run ends (pod_run.py)."""
     declared = {s for n in graph.nodes.values() for s in (*n.manifest.secrets, *n.manifest.download_secrets)}
     keys = {k: v for k, v in secrets.items() if k in declared} if remote.host.keys else {}
     # whose cache there its gated weights go in (hosts.hf_home), found before anything is sent
@@ -412,44 +443,33 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
         account = hf_account(keys["HF_TOKEN"]) if keys.get("HF_TOKEN") else None
     except RuntimeError as e:
         raise RemoteError(str(e)) from None
-    store = Store(home())
-    inputs, here = {}, {}
-    for name in graph.spec.inputs:
-        path = graph.input_path(name)
-        if not path.exists():
-            raise RemoteError(f"graph input {name}: {path} does not exist")
-        sha = store.source(path, graph.spec.inputs[name].type).hash
-        inputs[name] = {"sha256": sha, "filename": path.name}
-        here[name] = str(path)
-    # the graph as this machine ran it (its inputs at their paths here): what an import trusts, never the host's copy.
-    # Written once: a start under the same id with another graph (another --set or --only, other inputs, another host)
-    # is another run, refused before anything is sent, and never changes the record fetch checks the first one against
-    # each input by its hash too: one rewritten in place (the same path, other bytes) is another run's input, which a
-    # resumed run must never read under the first one's cache keys (re-review of #46)
-    mine = {"host": remote.host.name, "inputs": here, "input_sha256": {k: v["sha256"] for k, v in inputs.items()},
-            "graph": str(graph.source or ""), "graph_doc": doc}
-    if record(run).exists():
-        had = json.loads(record(run).read_text())
-        if any(had.get(k) != mine[k] for k in ("host", "inputs", "input_sha256", "graph_doc")):
-            raise RemoteError(f"run {run} was started with another graph (or other inputs, or on another host): "
-                              "a run's id names one run")
-    else:
+    mine = run_record(remote.host.name, graph, doc)
+    inputs = {k: {"sha256": sha, "filename": Path(mine["inputs"][k]).name} for k, sha in mine["input_sha256"].items()}
+    had = json.loads(record(run).read_text()) if record(run).exists() else {}
+    if problem := record_conflict(run, mine):
+        raise RemoteError(problem)
+    if "host" not in had:   # never started (a record of only its pod: one made for it a moment ago, pod_run.launch)
         record(run).parent.mkdir(parents=True, exist_ok=True)
-        record(run).write_text(json.dumps(mine))
+        record(run).write_text(json.dumps({**had, **mine}))
     remote.copy, remote.interpreter   # the copy and its environment before the video: a host that cannot run it gets no clip
     had = json.loads(record(run).read_text())
     if "copy" not in had:   # the copy it started with: status, attach and fetch call it (Remote.use_copy_of)
         record(run).write_text(json.dumps({**had, "copy": remote.copy, "interpreter": remote.interpreter}))
     for name in graph.spec.inputs:
-        remote.send_input(Path(here[name]), inputs[name]["sha256"], run, name)
+        remote.send_input(Path(mine["inputs"][name]), inputs[name]["sha256"], run, name)
     # nothing of this machine's paths: each input is named by its sha256 and file name (remote_coordinator.with_inputs)
     sent = {**doc, "inputs": {k: {**v, "uri": inputs[k]["filename"]} for k, v in doc["inputs"].items()}}
     spec = {"run": run, "graph": sent, "inputs": inputs, "allow_uploads": allow_uploads, "allow_downloads": allow_downloads,
             "nodes": remote.nodes, "keys": keys, "hf_account": account,
             # the host's retention, for the runs coordinated there (remote_coordinator.prune)
-            "keep_s": remote.host.keep_s, "min_free_gb": remote.host.min_free_gb}
+            "keep_s": remote.host.keep_s, "min_free_gb": remote.host.min_free_gb,
+            **({"linger_s": linger_s} if linger_s is not None else {})}
     data = json.dumps(spec).encode()
     del keys, spec
+    remote.start_sent = True
+    had = json.loads(record(run).read_text())
+    if not had.get("start_sent"):   # from here the run may be going there, answered or not (a pod's --run-id: review of #53)
+        record(run).write_text(json.dumps({**had, "start_sent": True}))
     return remote.call("start", data=data)
 
 

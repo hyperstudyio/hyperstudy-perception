@@ -18,9 +18,15 @@ Licences: PANNs code MIT and weights CC-BY-4.0, EfficientAT code and weights MIT
 are CC-BY-4.0), PE-A-Frame Apache-2.0: commercial-ok, as PLAN.md §4 lists them.
 """
 
+import os
 import time
 
-import numpy as np
+# PE-A-Frame's largest allocation (7.38 GiB on a 92 s soundtrack) failed on a 24 GB card with 6.7 GiB free and 6.7 GiB
+# more reserved by PyTorch but unused: the caching allocator's blocks, split by the pass's own earlier tensors, could not
+# hold it (a RunPod pod, 2026-10-31). Expandable segments map that memory as one; set before torch is first imported
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import numpy as np  # noqa: E402
 
 from perception_node import Node, NodeError
 from models import PEAFRAME, PEAFRAME_SR, TAGGER_SR, WEIGHTS, device, load_mn40, load_panns, load_peaframe, run_mn40, run_panns, run_peaframe, sync

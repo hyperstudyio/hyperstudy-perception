@@ -1,0 +1,238 @@
+"""A whole run on a RunPod pod made for it (`perception remote run runpod GRAPH ...`): run-anywhere phase 10.
+
+The run goes as it goes to a lab server (remote_run.py, phase 7: the pipeline's copy, the video, the run's spec and
+keys on ssh's stdin, a coordinator there started detached), with the pod as the host. The pod is made for the run
+(pod_session.PodSession: checked by guard.sh before anything is sent) and deleted after it: by `fetch` once the run is
+imported, by `cancel`, or, when nothing comes back for it, by itself at the end of its linger window after the run
+ends (the coordinator there writes that time: remote_coordinator.linger) or at its deadline, whichever is sooner.
+
+What it may cost is fixed before the pod is made: the pod is reserved at the dearest GPU it may get for its whole
+deadline, and the run's max_cost_usd less that reservation is what the coordinator there may spend on its API steps.
+A run whose remainder would not cover their estimate is refused here, before anything is made.
+
+The pod is remembered in the run's record (remote_run.record: `pod`), with its ssh key and known hosts in a private
+folder beside it (remote/<run>.pod/), so status, attach, fetch and cancel reach it from any later command. The RunPod
+account key stays on this machine (it makes and deletes the pod); the run's keys go to the pod only with
+`perception cloud keys runpod on`.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import math
+import sys
+import time
+from pathlib import Path
+
+from .backends.cloud import RunPodBackend
+from .hosts import Host
+from .pod_session import PodSession, pod_ssh
+
+NAME = "runpod"
+# until measured on a pod (RUN_ANYWHERE_PLAN.md, phase 10): starting it and making the orchestrator's and nodes'
+# environments and fetching the gated weights; then the steps, at most this many times the video's length (the full
+# graph's steps took 7 to 23 times it, summed, on liquidswords2 with eight runs sharing its two GPUs, 2026-10-30)
+SETUP_S = 30 * 60
+PER_VIDEO_S = 12
+LINGER_S = 30 * 60
+MIN_DEADLINE_S = 60 * 60
+UNKNOWN_LENGTH_S = 60 * 60   # a run whose length is not known (an input that is not a video): its steps' time and units
+# a whole run's pod: the RunPod backend's GPUs up to $0.60/h, so the reservation of a short clip's run leaves room for
+# its API steps under the full graph's $1.50; of those, the ones with the memory the run's steps need (gpus_for)
+GPUS = {name: usd for name, usd in RunPodBackend.gpus.items() if usd <= 0.60}
+DISK_GB = 100   # every step's environment and the gated weights, with the video and what the steps make (estimate)
+# the run's keys a pod is never given, whatever its steps declare: the accounts' own (they make and delete machines);
+# a step that declares one is refused before any pod is made
+NEVER_SENT = ("RUNPOD_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
+# an API step's units before the steps that make them have run (a fresh run's shots and utterances), per second of
+# video, for the check before a pod is made: more than OOO's clips have (0.30-0.36 shots and 0.55-0.72 utterances a
+# second, clips 3, 4 and 5_2, 2026-10-31)
+UNITS_PER_S = {"shot": 0.5, "utterance": 1.0, "minute": 1 / 60}
+
+
+def gpus_for(vram_gb: float) -> dict[str, float]:
+    """The GPUs a whole run's pod may get: GPUS with at least `vram_gb` (the largest minimum_vram_gb of the graph's
+    CUDA runners: a step would otherwise have no CUDA place there), name -> $/h."""
+    return {g: usd for g, usd in GPUS.items() if RunPodBackend.gpu_vram_gb[g] >= vram_gb}
+
+
+def hourly_usd(gpus: dict[str, float] | None = None) -> float:
+    return max((gpus or GPUS).values())
+
+
+def deadline_s(video_s: float | None, linger_s: float = LINGER_S) -> int:
+    """How long the pod may exist: setup, the steps (by the video's length; an hour when it is not known) and the linger
+    window, in whole 5 minutes, at least an hour."""
+    steps = PER_VIDEO_S * (video_s or UNKNOWN_LENGTH_S / PER_VIDEO_S)
+    return max(MIN_DEADLINE_S, math.ceil((SETUP_S + steps + linger_s) / 300) * 300)
+
+
+def unknown_units_usd(cost, config: dict, video_s: float | None) -> float | None:
+    """An API step's estimate when its units are not known yet (manifests.Cost: per shot, utterance or minute), from
+    the video's length (UNITS_PER_S), or the hour deadline_s assumes when it is not known (review of #53)."""
+    if cost.per == "run":
+        return cost.unit_usd(config)
+    return cost.unit_usd(config) * UNITS_PER_S[cost.per] * (video_s or UNKNOWN_LENGTH_S)
+
+
+def reservation_usd(deadline: float, gpus: dict[str, float] | None = None) -> float:
+    return round(hourly_usd(gpus) * deadline / 3600, 4)
+
+
+def spec(deadline: float, gpus: list[str] | None = None) -> dict:
+    """The pod's spec for PodSession (as RunPodBackend.driver_spec's "cloud", for a whole run): any of `gpus`."""
+    from .runpod import api_base
+    b = RunPodBackend()
+    gpus = gpus or list(GPUS)
+    return {"provider": "runpod", "api": api_base(), "image": b.image, "start": b.start, "gpus": gpus,
+            "datacenters": b.datacenters, "disk_gb": DISK_GB, "min_driver": b.min_driver, "guard": str(b.guard), "setup": str(b.setup),
+            "hourly_usd": hourly_usd({g: GPUS[g] for g in gpus}), "launch_s": b.launch_s, "down_s": b.down_s, "api_s": b.api_s,
+            "unknown_s": b.unknown_s, "deadline_s": deadline}
+
+
+def keys_folder(run: str) -> Path:
+    from .remote_run import record
+    return record(run).with_suffix(".pod")
+
+
+@dataclasses.dataclass
+class PodHost(Host):
+    """A pod as a host for remote_run: reached with its own key and known hosts (pod_session.pod_ssh), nothing of the
+    user's ssh config."""
+    pod_keys: str = ""
+
+    def ssh(self, fresh: bool = False) -> list[str]:
+        return pod_ssh(Path(self.pod_keys), self.port or 22)
+
+    @property
+    def keys_command(self) -> str:
+        return "perception cloud keys runpod on"
+
+    @property
+    def orchestrator_python(self) -> str:
+        """A pod has no Python of its own: uv downloads one, the newest it knows unless bounded (for one, av had no wheel:
+        2026-10-31). From the package's oldest to the one this orchestrator runs on, whose wheels its requirements have."""
+        return f"'>=3.12,<{sys.version_info.major}.{sys.version_info.minor + 1}'"
+
+
+def planned_host(keys: bool) -> PodHost:
+    """The pod as the checks before it is made see it: RunPod's machine (RunPodBackend.caps), with the image's tools."""
+    caps = dataclasses.replace(RunPodBackend.caps, tools={"uv": "uv", "ffmpeg": "ffmpeg", "ffprobe": "ffprobe"})
+    return PodHost(NAME, "(a pod made for the run)", "", caps, time.time(), keys=keys)
+
+
+def host(pod: dict, keys: bool) -> PodHost:
+    """The pod a run's record names, as a host."""
+    from .backends.base import Capabilities
+    return PodHost(NAME, pod["dest"], pod["root"], Capabilities.from_json(pod["caps"]), pod["made_at"], port=int(pod["port"]),
+                   keys=keys, pod_keys=pod["keys"])
+
+
+def launch(run: str, api, deadline: float, gpus: list[str] | None = None, log=None) -> tuple[PodSession, PodHost, dict]:
+    """Make the run's pod and check it (PodSession.launch), and remember it in the run's record before anything is sent
+    to it. Returns the session (to delete the pod if what follows fails), the pod as a host, and what the record holds."""
+    from .remote_run import record
+    session = PodSession(api, spec(deadline, gpus), keys_folder(run), log=log or sys.stderr)
+    made_at = time.time()
+    try:
+        caps, root = session.launch(f"perception-{run.rsplit('-', 1)[-1]}-run")
+        caps = dataclasses.replace(caps, tools={**caps.tools, "uv": set_up(session)})
+    except BaseException as e:
+        gone, usd, message = session.teardown()
+        if not gone:   # still there: the run's record holds it, for `remote status` and `remote cancel` (review of #53)
+            remember(run, {"id": session.pod, "name": session.name, "deadline_at": session.deadline_at, "deadline_s": deadline,
+                           "gpus": gpus, "keys": str(keys_folder(run)), "hourly_usd": session.usd or session.c["hourly_usd"],
+                           "made_at": made_at, "deleted": False, "cost_usd": usd, "launch_failed": True,
+                           # whether guard.sh confirmed its removal at the deadline (review of #53): nothing else ends it
+                           "removal_confirmed": session.deadline_set})
+            e.pod_left = message or (f"pod {session.pod or session.name} could not be deleted: it removes itself at its "
+                                     f"deadline ({time.strftime('%H:%M', time.localtime(session.deadline_at))})")
+        raise
+    pod = {"id": session.pod, "name": session.name, "deadline_at": session.deadline_at, "deadline_s": deadline, "gpus": gpus,
+           "dest": session.dest, "port": int(session.ssh[session.ssh.index("-p") + 1]), "root": root,
+           "caps": caps.to_json(),
+           "keys": str(keys_folder(run)), "hourly_usd": session.usd, "made_at": made_at}
+    remember(run, pod)
+    return session, host(pod, keys=False), pod
+
+
+def remember(run: str, pod: dict):
+    """The run's pod, in its record (remote_run.record)."""
+    from .remote_run import record
+    mine = json.loads(record(run).read_text()) if record(run).exists() else {}
+    record(run).parent.mkdir(parents=True, exist_ok=True)
+    record(run).write_text(json.dumps({**mine, "pod": pod}))
+
+
+def set_up(session: PodSession) -> str:
+    """What the run needs on the pod, after guard.sh and before anything is sent (cloud/skypilot/node-setup.sh, as a
+    step's pod has it: ffmpeg, rsync, and uv, which the image keeps off PATH in ~/.perception-uv). The uv it says."""
+    import subprocess
+    from .pod_session import LaunchFailed, say
+    say("checking ffmpeg, rsync and uv on the pod", session.log)
+    try:
+        done = session.sh("bash -s", check=False, data=Path(session.c["setup"]).read_bytes(), timeout=900)
+    except subprocess.TimeoutExpired:
+        raise LaunchFailed(f"setting up pod {session.pod} took more than 15 min")
+    session.log.write(done.stderr.decode(errors="replace"))
+    uv = done.stdout.decode().strip().splitlines()[-1] if done.stdout.strip() else ""
+    if done.returncode or not uv:
+        raise LaunchFailed(f"setting up pod {session.pod} failed (exit {done.returncode})" + ("" if uv else ": it did not say where uv is"))
+    return uv
+
+
+# what a fetch starting keeps the pod for at least: the removal its run's end set (now plus the linger window) moved on,
+# so a long fetch is not cut off (review of #53); the deadline still bounds it
+KEEP_FOR_FETCH_S = 30 * 60
+
+
+def keep_for_fetch(remote):
+    """Move the pod's removal (REMOVE_AT, which its run's end wrote) to KEEP_FOR_FETCH_S from now, if sooner. Only once
+    the run has ended there and set it: before, the deadline alone holds, and nothing is brought forward."""
+    from .pod_session import REMOVE_AT
+    f = f'"${{PERCEPTION_REMOVE_AT:-{REMOVE_AT}}}"'
+    remote.sh(f'f={f}; [ -s "$f" ] || exit 0; at=$(( $(date +%s) + {KEEP_FOR_FETCH_S} )); '
+              f'[ "$(cat "$f")" -ge "$at" ] 2>/dev/null && exit 0; echo "$at" > "$f.tmp" && mv -f "$f.tmp" "$f"', check=False)
+
+
+def seen(run: str, api) -> dict | None:
+    """The run's pod as RunPod has it now: one it no longer has removed itself (the end of its linger window, or its
+    deadline) with nobody fetching it, and is recorded so (removed_itself), charged its time up to now, never past its
+    deadline (review of #53). A pod RunPod cannot be asked about is left as recorded."""
+    from .remote_run import record
+    from .runpod import RunPodError
+    pod = json.loads(record(run).read_text()).get("pod") if record(run).exists() else None
+    if not pod or pod.get("deleted") or not pod.get("id"):
+        return pod
+    try:
+        if api.pod(pod["id"]) is not None:
+            return pod
+    except RunPodError:
+        return pod
+    lived = min(time.time() - pod["made_at"], pod["deadline_s"])
+    pod = {**pod, "deleted": True, "removed_itself": True, "cost_usd": round(pod["hourly_usd"] * lived / 3600, 4)}
+    remember(run, pod)
+    return pod
+
+
+def delete(run: str, api, log=None) -> dict:
+    """Delete the run's pod (PodSession.teardown) and record what it cost: its time at its price, from when it was made.
+    Asked again after it is gone, it says so and changes nothing."""
+    from .remote_run import record
+    mine = json.loads(record(run).read_text())
+    pod = mine.get("pod")
+    if not pod:
+        raise RuntimeError(f"run {run} has no pod of its own")
+    if pod.get("deleted"):
+        return pod
+    session = PodSession(api, spec(pod["deadline_s"], pod.get("gpus")), Path(pod["keys"]),
+                         started=time.monotonic() - (time.time() - pod["made_at"]), log=log or sys.stderr)
+    # its removal at the deadline: confirmed by guard.sh for every pod a launch finished (its record's removal_confirmed
+    # says, for one a launch left: review of #53)
+    session.pod, session.name, session.usd = pod["id"], pod["name"], pod["hourly_usd"]
+    session.deadline_set = pod.get("removal_confirmed", not pod.get("launch_failed"))
+    gone, usd, message = session.teardown()
+    pod = {**pod, "deleted": gone, "cost_usd": usd, "may_still_run": message}
+    record(run).write_text(json.dumps({**json.loads(record(run).read_text()), "pod": pod}))
+    return pod

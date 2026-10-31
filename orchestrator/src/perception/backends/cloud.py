@@ -143,9 +143,9 @@ class RunPodBackend(CloudBackend):
     guard = REPO / "cloud" / "runpod" / "guard.sh"
     # perception's own image (cloud/runpod/image): RunPod's cached PyTorch image with ffmpeg, rsync, uv and runpodctl 3
     # added; software only. Its tag is tag.py's, from what goes into it (a test checks they agree)
-    image_tag = "e92ef7a71b30"
+    image_tag = "efba77cf5632"
     # and the digest of the build that was measured: a rebuild under the same tag (apt's versions move) is never pulled
-    image_digest = "sha256:09e6eb03f0ab44353e13b198e9f2b114b07c29af5613b33da42e2e122b7a74c4"
+    image_digest = "sha256:472c7316c3bb200d88948b43acbb4afd054f9d56621f869d700a6680884e234a"
     # under the repository's owner, where .github/workflows/runpod-image.yml pushes it (a test checks)
     image = f"ghcr.io/hyperstudyio/perception-runpod:{image_tag}@{image_digest}"
     start = "/perception-start.sh"   # its own start (host keys, PUBLIC_KEY, sshd), run after the pod's removal is set
@@ -158,6 +158,14 @@ class RunPodBackend(CloudBackend):
             "NVIDIA RTX PRO 4500 Blackwell": 0.72, "NVIDIA L40": 0.82,
             "NVIDIA GeForce RTX 4090": 0.89, "NVIDIA RTX PRO 5000 Blackwell": 0.96, "NVIDIA RTX 6000 Ada Generation": 0.99,
             "NVIDIA L40S": 1.09, "NVIDIA GeForce RTX 5090": 1.19}
+    # each one's memory as nvidia-smi reports it (GB; the probe's memory_gb), against the steps' minimum_vram_gb: a "24 GB"
+    # card reports 24 or 23.99, an L4 22.5, a "48 GB" A40, L40 or L40S 45
+    gpu_vram_gb = {"NVIDIA RTX A4500": 20, "NVIDIA RTX A5000": 24, "NVIDIA RTX 4000 Ada Generation": 20,
+                   "NVIDIA GeForce RTX 3090": 24, "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition": 95.6,
+                   "NVIDIA RTX PRO 4000 Blackwell": 24, "NVIDIA A40": 45, "NVIDIA L4": 22.5, "NVIDIA RTX A6000": 48,
+                   "NVIDIA RTX PRO 4500 Blackwell": 32, "NVIDIA L40": 45, "NVIDIA GeForce RTX 4090": 24,
+                   "NVIDIA RTX PRO 5000 Blackwell": 48, "NVIDIA RTX 6000 Ada Generation": 48, "NVIDIA L40S": 45,
+                   "NVIDIA GeForce RTX 5090": 31.8}
     # datacenters in the US, Canada and Europe, whichever has a GPU free: those RunPod's REST API accepts (its schema's
     # enum, 2026-10-25; gpus above are in its enum too)
     datacenters = ["US-CA-2", "US-DE-1", "US-GA-1", "US-GA-2", "US-IL-1", "US-KS-2", "US-KS-3", "US-MD-1", "US-MO-1", "US-MO-2",
@@ -215,6 +223,18 @@ class Cloud:
     @property
     def runpod(self) -> bool:
         return self.read().get("runpod", False)
+
+    @property
+    def runpod_keys(self) -> bool:
+        """Whether a whole run on a RunPod pod (pod_run.py) may be given the keys its steps declare: the user's explicit
+        yes (`perception cloud keys runpod on`), off until then. Per-step pods are never given any."""
+        return self.read().get("runpod_keys", False) is True
+
+    def set_keys(self, allowed: bool):
+        doc = self.read()
+        doc["runpod_keys"] = allowed
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(doc))
 
     def set(self, enabled: bool, provider: str = "aws"):
         doc = self.read()

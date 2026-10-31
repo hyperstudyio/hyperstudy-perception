@@ -132,6 +132,72 @@ Each phase is PR-sized; verification runs on the lab server or RunPod.
 Phases 1–3 and 6 are independent and can go first. A3 is where requirement 1 reaches users; 11 completes requirement 3.
 4b's comparison needs 7 (a full run on the lab), so the default for the names is chosen after the lab coordinator works.
 
+## Phase 10: a RunPod pod as the run's coordinator (design, 2026-10-31)
+
+Phase 7's whole run (`remote run`), with a pod made for the run as the host. The pod's lifecycle (create it, wait
+for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved out of `remote_driver.Driver` into
+`pod_session.py` so both use one implementation.
+
+- **Surface.** `perception remote run runpod GRAPH ...` (`runpod` is a reserved host name: `hosts add` refuses it),
+  and `remote status | attach | fetch | cancel runpod RUN`, which reach the pod through the run's record
+  (`remote/<run>.json` gains `pod`: its id, name, deadline, address, ssh port and price). The pod's ssh key and
+  known-hosts file are the run's own (`remote/<run>.pod/`, 0700): pods reuse addresses, so nothing goes in the user's
+  `~/.ssh`.
+- **Consent.** `perception cloud on runpod` (the account key, as for per-step pods), and for the run's keys a yes of
+  their own: `perception cloud keys runpod on` (off by default; the app's A2). Without it a run whose steps need keys
+  is refused, naming them, as on a lab server. The keys go on ssh's stdin to the coordinator there, as in phase 7; the
+  RunPod account key never leaves this machine (guard.sh checks the pod holds none).
+- **Deadline.** Set at creation (in the pod's name and its start command): setup (the orchestrator's and nodes'
+  environments, the gated weights: 30 min until measured) + 12 × the video's length (an hour when it is not known) +
+  the linger window (`--linger-min`, 10 to 1440, 30 by default: shorter, the pod could go before this machine has seen the run end and begun its fetch, which then keeps it 30 minutes), rounded up to 5 minutes, at least an hour (pod_run.deadline_s).
+  Not the plan's estimates: they come from a place's own runs, and a pod made for a run has none.
+- **One spending cap.** The pod is reserved at the dearest listed GPU's price for its whole deadline. The run's
+  `max_cost_usd` minus that reservation is the cap the coordinator there is given for its API steps; a run whose
+  remainder is below the plan's API estimate is refused before a pod is made. The pod is charged for the time it
+  existed at the price RunPod gave it, recorded with the run.
+- **Linger and removal.** When the run ends there, the coordinator writes the time the pod is to go
+  (`/perception-remove-at`: the end plus the linger window); the removal its start command set (removal_at_boot) acts
+  at whichever is sooner, that or the deadline. `fetch` deletes the pod through the API once the run is imported,
+  whether it succeeded or not; `cancel` cancels the run there, imports it, and deletes the pod through the API
+  whatever the pod answered (one that cannot be reached is deleted too, ending its run). A start whose answer was lost
+  leaves the pod to the run that may be going there (`attach` follows it, `cancel` ends it). A pod never fetched goes at the end of its linger window, and a stray past
+  its deadline is deleted by the next RunPod launch (runpod_sweep), as now.
+- **Weights.** Downloaded in the session with the user's token (decided 2026-10-28), into the pod's disk (100 GB
+  until measured). Then, measured on real runs: a RunPod network volume, an R2 bucket and an image with the weights,
+  against downloading each time (time to ready, cost, bandwidth). The licences allow a private copy: the SAM License
+  (2025-11-19) and the DINOv3 License (2025-08-19) each grant the right to "reproduce, distribute, copy" their materials,
+  weights included, with the agreement given with any copy passed on (read 2026-10-31; not legal advice). A copy in
+  the user's own bucket or volume is theirs to keep; the weights never go in the public image (ghcr.io), which would
+  hand gated models to anyone who pulls it, past Meta's own gate. A private image with them, under the organisation on
+  GitHub, is wanted as a fourth way (decided 2026-10-31): RunPod pulls it with registry credentials kept in the RunPod
+  account (a GitHub token that reads packages, never on a pod); its weights layer (~5 GB) misses RunPod's cache of the
+  base image, which the comparison measures. R2 (also wanted, 2026-10-31) charges nothing to download (Cloudflare's
+  pricing page, read 2026-10-31: $0.015/GB-month stored, the first 10 GB free; egress free), so ~5 GB of weights there
+  costs nothing or cents a month however many pods fetch them; a pod reads them with a read-only token scoped to that
+  bucket, sent as the run's keys are.
+- **Verify.** Tests with RunPod's API stood in (test_runpod's FakeRunPod) and the pod a stand-in host; then a short
+  clip on a real pod: one pod in the console, killing this machine's side leaves the run going and the pod removed at
+  its linger window; deleted after fetch.
+
+### Phase 10 on real pods (2026-10-31)
+
+The full graph on OOO clip 3 (92 s), `remote run runpod`, from a throwaway store:
+
+- **Ready in about 2 minutes:** pod requested, made, guard.sh, setup, the pipeline's copy, the orchestrator's
+  environment and the video sent, the first steps started. Pods got: RTX 4000 Ada and RTX PRO 4000 Blackwell
+  (EU-RO-1), RTX 3090 (EU-CZ-1), at $0.28-0.57/h.
+- **The run in 19.5-20 minutes** on an RTX PRO 4000 Blackwell; objects_track 591 s with SAM 3 and DINOv3 downloaded in
+  the session (the token to its prepare alone); diarize's gated weights the same way. The pod cost $0.21-0.22 and the
+  API steps about $0.32: $0.53 of the run's $1.50. The deadline (80 min: setup 30, 12x the video, linger 30) was a
+  quarter used: PER_VIDEO_S and SETUP_S can come down once longer clips are measured.
+- **What the first pods found, each fixed and then passing on a pod:** the image keeps uv off PATH (the pod runs
+  node-setup.sh); uv picked a Python without av's wheels (this machine's Python, in the environment's name); facing's
+  MediaPipe needs libEGL and libGLESv2 (in the image); sounds ran out of memory on 24 GB cards (expandable segments,
+  and its measured 23 GB: whole-run pods get GPUs with what the graph's CUDA steps need); one malformed reply from
+  gpt-audio failed prosody_captions (asked again once).
+- **Lifecycle:** a failed run is fetched and its pod deleted; no pod left on the account after six; three that failed
+  before the run started cost $0.00-0.04 each.
+
 ## Decided 2026-10-28
 
 1. **Unattended runs:** the machine running the whole pipeline gets the keys (over stdin, held in memory).
