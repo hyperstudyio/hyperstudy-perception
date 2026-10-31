@@ -145,7 +145,7 @@ class RunPodBackend(CloudBackend):
     # added; software only. Its tag is tag.py's, from what goes into it (a test checks they agree)
     image_tag = "efba77cf5632"
     # and the digest of the build that was measured: a rebuild under the same tag (apt's versions move) is never pulled
-    image_digest = "sha256:09e6eb03f0ab44353e13b198e9f2b114b07c29af5613b33da42e2e122b7a74c4"
+    image_digest = "sha256:472c7316c3bb200d88948b43acbb4afd054f9d56621f869d700a6680884e234a"
     # under the repository's owner, where .github/workflows/runpod-image.yml pushes it (a test checks)
     image = f"ghcr.io/hyperstudyio/perception-runpod:{image_tag}@{image_digest}"
     start = "/perception-start.sh"   # its own start (host keys, PUBLIC_KEY, sshd), run after the pod's removal is set
