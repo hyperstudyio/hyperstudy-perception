@@ -162,6 +162,21 @@ def test_a_shared_script_outside_the_repository_counts_with_its_folder(repo, tmp
     assert here().identity(m, cuda) != before
 
 
+def test_a_folder_a_runner_shares_counts_where_git_cannot_list_it_too(repo):
+    """Runner.shares is the node's code with git (code_files) and without it (unlisted_code_hash: a launch.sh staged
+    copy, a checkout with no .git): a change in the shared folder is a new identity either way."""
+    import shutil
+    (repo / "nodes" / "lib").mkdir()
+    (repo / "nodes" / "lib" / "util.py").write_text("def f(): return 1\n")
+    (repo / "nodes" / "x" / "manifest.yaml").write_text(MANIFEST.replace("env: envs/e,", "env: envs/e, shares: [nodes/lib],"))
+    shutil.rmtree(repo / ".git")
+    m, r = node(repo)
+    with pytest.raises(RuntimeError):
+        remote.code_files(m, r["cuda"])   # git cannot list it: the identity is the unlisted hash
+    before = here().identity(m, r["cuda"])
+    (repo / "nodes" / "lib" / "util.py").write_text("def f(): return 2\n")
+    assert here().identity(m, r["cuda"]) != before
+
 def test_no_identity_is_one_the_rule_before_gave(repo):
     """Those began with the backend's kind (native:, self:, ssh-NAME:, cloud:, runpod:); every one now begins with the
     platform, so no cache key made under the old rule is read as one made under this one."""
