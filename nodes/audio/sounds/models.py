@@ -80,16 +80,6 @@ def run_panns(model, wave, dev):
         return model(torch.from_numpy(wave)[None].to(dev))["framewise_output"][0].cpu().numpy()
 
 
-def free(dev):
-    """Give a finished stage's memory back to the GPU. Freed tensors stay reserved by PyTorch's caching allocator, in
-    blocks the next stage's largest allocation may not fit: on a 24 GB card, PE-A-Frame large asked for 7.38 GiB with
-    6.5 GiB of the earlier stages' left reserved but unused, and 6.9 GiB free (a RunPod pod, 2026-10-31)."""
-    import gc
-    import torch
-    gc.collect()
-    if dev.type == "cuda":
-        torch.cuda.empty_cache()
-
 def load_mn40(dev):
     import torch
     from efficientat.mn.model import get_model

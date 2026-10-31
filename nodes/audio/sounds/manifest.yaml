@@ -16,9 +16,11 @@ config:
 runners:
   - {kind: native, env: envs/audio-events, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
   # PyPI's torch 2.8 wheels for Linux carry CUDA 12.8 (envs/audio-events); the machine needs an NVIDIA driver >= 570.
-  # PE-A-Frame large is 5.8 GB of float32 weights, run on up to 140 s of audio at once: 17 GB allocated on the Apple GPU
-  # (not yet measured on CUDA). 20, not 24: a "24 GB" card reports 23.99, an L4 22.5, and the cloud places 22 and 20.
-  - {kind: native, env: envs/audio-events, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 20}
+  # PE-A-Frame large is 5.8 GB of float32 weights, run on up to 140 s of audio at once: 17 GB allocated on the Apple GPU.
+  # On CUDA (an RTX 3090, 2026-10-31), with expandable segments (node.py), the whole step peaks at 17.1 GB for a 92 s
+  # soundtrack and 22.1 GB for 131.8 s, about 0.13 GB a second more: 23.1 GB for a 140 s piece. 23, not 24: a "24 GB"
+  # card reports 24 or 23.99; an L4 (22.5) and a 20 GB card are too small
+  - {kind: native, env: envs/audio-events, entry: node.py, accelerator: cuda, platforms: [linux/amd64], minimum_vram_gb: 23}
   - {kind: native, env: envs/audio-events, entry: node.py, accelerator: cpu}
 # on the CPU, 28 GB resident at most (PE-A-Frame on nes-biking's 137.6 s soundtrack, one piece)
 resources: {cpu_cores: 4, memory_gb: 28, gpu: exclusive}

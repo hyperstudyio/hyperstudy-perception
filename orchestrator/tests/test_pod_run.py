@@ -58,7 +58,7 @@ def runpod(tmp_path, monkeypatch):
                         lambda self, host, nodes=None, python=sys.executable: real_init(self, host, nodes, python))
     real_spec = pod_run.spec   # the guard and setup stand-ins (test_cloud's), the time limits short
     guard, setup = script(tmp_path / "guard.sh", GUARD_OK), script(tmp_path / "node-setup.sh", SETUP_OK)
-    monkeypatch.setattr(pod_run, "spec", lambda deadline: {**real_spec(deadline), "guard": str(guard), "setup": str(setup),
+    monkeypatch.setattr(pod_run, "spec", lambda deadline, gpus=None: {**real_spec(deadline, gpus), "guard": str(guard), "setup": str(setup),
                                                            "launch_s": 60, "down_s": 60, "unknown_s": 5})
     Cloud(tmp_path / "mac").set(True, "runpod")
     yield api
@@ -170,7 +170,7 @@ def test_a_pods_run_gets_keys_only_with_their_own_yes_and_never_the_accounts(tmp
 def test_a_pod_the_guard_refuses_gets_nothing_and_is_deleted(tmp_path, runpod, capsys, monkeypatch):
     spec = pod_run.spec
     guard = script(tmp_path / "refuses.sh", GUARD_REFUSES)
-    monkeypatch.setattr(pod_run, "spec", lambda deadline: {**spec(deadline), "guard": str(guard)})
+    monkeypatch.setattr(pod_run, "spec", lambda deadline, gpus=None: {**spec(deadline, gpus), "guard": str(guard)})
     code, out = perception(capsys, "remote", "run", "runpod", str(graph_file(tmp_path, [work(tmp_path, "a")])),
                            "--allow-uploads", "--max-cost-usd", "5")
     assert code == 1 and "guard.sh refused" in of(out, "error")[0]["problems"][0]
@@ -223,3 +223,23 @@ def test_the_imported_run_keeps_the_cap_it_was_given(tmp_path, runpod, capsys):
     run = of(out, "run.created")[0]["run"]
     code, out = perception(capsys, "status", run)
     assert of(out, "status")[0]["max_cost_usd"] == 5
+
+
+def test_a_pods_gpus_have_the_memory_the_graphs_steps_need():
+    """Only GPUs with at least the largest minimum_vram_gb of the graph's CUDA runners, up to $0.60/h: the sounds step
+    needs 23 GB for its longest piece (measured on an RTX 3090, 2026-10-31), so the 20 GB cards and the L4 are not
+    offered for the full graph; reserved at the dearest of those left."""
+    from perception.backends.cloud import RunPodBackend
+    assert set(RunPodBackend.gpus) == set(RunPodBackend.gpu_vram_gb)
+    gpus = pod_run.gpus_for(23)
+    assert gpus and all(RunPodBackend.gpu_vram_gb[g] >= 23 and usd <= 0.60 for g, usd in gpus.items())
+    assert not {"NVIDIA RTX A4500", "NVIDIA RTX 4000 Ada Generation", "NVIDIA L4"} & set(gpus)
+    assert set(pod_run.gpus_for(0)) == set(pod_run.GPUS) and pod_run.hourly_usd(gpus) == max(gpus.values())
+    assert pod_run.gpus_for(500) == {}
+
+
+def test_the_full_graph_needs_what_its_sounds_step_does():
+    from perception.manifests import Registry
+    reg = Registry.load(Path(pod_run.__file__).resolve().parents[3] / "nodes")
+    sounds = reg.get("audio.sounds@1.1.0")
+    assert max(r.minimum_vram_gb for r in sounds.runners if r.accelerator == "cuda") == 23

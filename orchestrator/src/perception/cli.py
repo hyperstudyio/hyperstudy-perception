@@ -997,21 +997,27 @@ def _pod_plan(args, graph, doc: dict, rp: dict) -> tuple[dict, dict]:
     video_s = video_seconds((graph.spec.inputs[n].type, graph.input_path(n)) for n in graph.spec.inputs)
     linger_s = float(args.linger_min) * 60
     deadline = pod_run.deadline_s(video_s, linger_s)
-    reserved = pod_run.reservation_usd(deadline)
+    # GPUs with the memory every CUDA step needs: one that needs more than its card would have no CUDA place there
+    vram = max((r.minimum_vram_gb for n in graph.nodes.values() for r in n.manifest.runners if r.accelerator == "cuda"), default=0)
+    gpus = pod_run.gpus_for(vram)
+    if not gpus:
+        rp["problems"].append(f"a step needs a GPU with {vram:g} GB, more than any RunPod GPU a whole run's pod may get")
+        gpus = pod_run.GPUS
+    reserved = pod_run.reservation_usd(deadline, gpus)
     here = make_plan(Coordinator(Store(home()), registry(args), backends(), load_secrets()), graph,
                      allow_downloads=True, allow_uploads=True)
     api_usd = round(sum(n.cost_usd or 0 for n in here.nodes if n.service), 4)
     cap = round(graph.spec.policy.max_cost_usd - reserved, 4)
     if cap < api_usd or cap <= 0:
         rp["problems"].append(f"a pod for {deadline / 60:.0f} min is reserved at ${reserved:.2f} (at most "
-                              f"${pod_run.hourly_usd()}/h), which leaves ${max(cap, 0):.2f} of the run's "
+                              f"${pod_run.hourly_usd(gpus)}/h), which leaves ${max(cap, 0):.2f} of the run's "
                               f"${graph.spec.policy.max_cost_usd:.2f} for API steps estimated at ${api_usd:.2f}: "
                               f"--max-cost-usd {math.ceil((reserved + api_usd) * 100 + 1) / 100:.2f} or more")
     rp["ok"] = not rp["problems"]
     sent = {**doc, "policy": {**doc.get("policy", {}), "max_cost_usd": max(cap, 0.0)}}
-    return {"deadline_s": deadline, "linger_s": linger_s, "hourly_usd": pod_run.hourly_usd(), "reserved_usd": reserved,
+    return {"deadline_s": deadline, "linger_s": linger_s, "hourly_usd": pod_run.hourly_usd(gpus), "reserved_usd": reserved,
             "run_max_cost_usd": graph.spec.policy.max_cost_usd,
-            "api_usd": api_usd, "api_cap_usd": max(cap, 0.0), "video_s": video_s, "gpus": list(pod_run.GPUS),
+            "api_usd": api_usd, "api_cap_usd": max(cap, 0.0), "video_s": video_s, "gpus": list(gpus), "vram_gb": vram,
             "disk_gb": pod_run.DISK_GB}, sent
 
 
@@ -1028,7 +1034,7 @@ def _pod_for(args, run_id: str, plan: dict, secrets: dict):
     if not secrets.get("RUNPOD_API_KEY") and not load_secrets().get("RUNPOD_API_KEY"):
         raise remote_run.RemoteError("no RunPod API key (perception cloud on runpod checks for it)")
     api = RunPod(load_secrets()["RUNPOD_API_KEY"])
-    _, host, pod = pod_run.launch(run_id, api, plan["deadline_s"])
+    _, host, pod = pod_run.launch(run_id, api, plan["deadline_s"], plan["gpus"])
     rec.write_text(json.dumps({**json.loads(rec.read_text()), "pod": {**pod, "run_max_cost_usd": plan["run_max_cost_usd"]}}))
     host.keys = keys
     if args.json:

@@ -158,6 +158,14 @@ class RunPodBackend(CloudBackend):
             "NVIDIA RTX PRO 4500 Blackwell": 0.72, "NVIDIA L40": 0.82,
             "NVIDIA GeForce RTX 4090": 0.89, "NVIDIA RTX PRO 5000 Blackwell": 0.96, "NVIDIA RTX 6000 Ada Generation": 0.99,
             "NVIDIA L40S": 1.09, "NVIDIA GeForce RTX 5090": 1.19}
+    # each one's memory as nvidia-smi reports it (GB; the probe's memory_gb), against the steps' minimum_vram_gb: a "24 GB"
+    # card reports 24 or 23.99, an L4 22.5, a "48 GB" A40, L40 or L40S 45
+    gpu_vram_gb = {"NVIDIA RTX A4500": 20, "NVIDIA RTX A5000": 24, "NVIDIA RTX 4000 Ada Generation": 20,
+                   "NVIDIA GeForce RTX 3090": 24, "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition": 95.6,
+                   "NVIDIA RTX PRO 4000 Blackwell": 24, "NVIDIA A40": 45, "NVIDIA L4": 22.5, "NVIDIA RTX A6000": 48,
+                   "NVIDIA RTX PRO 4500 Blackwell": 32, "NVIDIA L40": 45, "NVIDIA GeForce RTX 4090": 24,
+                   "NVIDIA RTX PRO 5000 Blackwell": 48, "NVIDIA RTX 6000 Ada Generation": 48, "NVIDIA L40S": 45,
+                   "NVIDIA GeForce RTX 5090": 31.8}
     # datacenters in the US, Canada and Europe, whichever has a GPU free: those RunPod's REST API accepts (its schema's
     # enum, 2026-10-25; gpus above are in its enum too)
     datacenters = ["US-CA-2", "US-DE-1", "US-GA-1", "US-GA-2", "US-IL-1", "US-KS-2", "US-KS-3", "US-MD-1", "US-MO-1", "US-MO-2",

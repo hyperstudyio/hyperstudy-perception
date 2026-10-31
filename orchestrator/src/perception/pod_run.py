@@ -36,16 +36,22 @@ SETUP_S = 30 * 60
 PER_VIDEO_S = 12
 LINGER_S = 30 * 60
 MIN_DEADLINE_S = 60 * 60
-# a whole run's pod: the RunPod backend's GPUs up to $0.60/h (20 GB or more, as its steps need), so the reservation of
-# a short clip's run leaves room for its API steps under the full graph's $1.50
+# a whole run's pod: the RunPod backend's GPUs up to $0.60/h, so the reservation of a short clip's run leaves room for
+# its API steps under the full graph's $1.50; of those, the ones with the memory the run's steps need (gpus_for)
 GPUS = {name: usd for name, usd in RunPodBackend.gpus.items() if usd <= 0.60}
 DISK_GB = 100   # every step's environment and the gated weights, with the video and what the steps make (estimate)
 # the run's keys a pod is never given, whatever its steps declare: the accounts' own (they make and delete machines)
 NEVER_SENT = ("RUNPOD_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
 
 
-def hourly_usd() -> float:
-    return max(GPUS.values())
+def gpus_for(vram_gb: float) -> dict[str, float]:
+    """The GPUs a whole run's pod may get: GPUS with at least `vram_gb` (the largest minimum_vram_gb of the graph's
+    CUDA runners: a step would otherwise have no CUDA place there), name -> $/h."""
+    return {g: usd for g, usd in GPUS.items() if RunPodBackend.gpu_vram_gb[g] >= vram_gb}
+
+
+def hourly_usd(gpus: dict[str, float] | None = None) -> float:
+    return max((gpus or GPUS).values())
 
 
 def deadline_s(video_s: float | None, linger_s: float = LINGER_S) -> int:
@@ -55,17 +61,18 @@ def deadline_s(video_s: float | None, linger_s: float = LINGER_S) -> int:
     return max(MIN_DEADLINE_S, math.ceil((SETUP_S + steps + linger_s) / 300) * 300)
 
 
-def reservation_usd(deadline: float) -> float:
-    return round(hourly_usd() * deadline / 3600, 4)
+def reservation_usd(deadline: float, gpus: dict[str, float] | None = None) -> float:
+    return round(hourly_usd(gpus) * deadline / 3600, 4)
 
 
-def spec(deadline: float) -> dict:
-    """The pod's spec for PodSession (as RunPodBackend.driver_spec's "cloud", for a whole run)."""
+def spec(deadline: float, gpus: list[str] | None = None) -> dict:
+    """The pod's spec for PodSession (as RunPodBackend.driver_spec's "cloud", for a whole run): any of `gpus`."""
     from .runpod import api_base
     b = RunPodBackend()
-    return {"provider": "runpod", "api": api_base(), "image": b.image, "start": b.start, "gpus": list(GPUS),
+    gpus = gpus or list(GPUS)
+    return {"provider": "runpod", "api": api_base(), "image": b.image, "start": b.start, "gpus": gpus,
             "datacenters": b.datacenters, "disk_gb": DISK_GB, "min_driver": b.min_driver, "guard": str(b.guard), "setup": str(b.setup),
-            "hourly_usd": hourly_usd(), "launch_s": b.launch_s, "down_s": b.down_s, "api_s": b.api_s,
+            "hourly_usd": hourly_usd({g: GPUS[g] for g in gpus}), "launch_s": b.launch_s, "down_s": b.down_s, "api_s": b.api_s,
             "unknown_s": b.unknown_s, "deadline_s": deadline}
 
 
@@ -101,11 +108,11 @@ def host(pod: dict, keys: bool) -> PodHost:
                    keys=keys, pod_keys=pod["keys"])
 
 
-def launch(run: str, api, deadline: float) -> tuple[PodSession, PodHost, dict]:
+def launch(run: str, api, deadline: float, gpus: list[str] | None = None) -> tuple[PodSession, PodHost, dict]:
     """Make the run's pod and check it (PodSession.launch), and remember it in the run's record before anything is sent
     to it. Returns the session (to delete the pod if what follows fails), the pod as a host, and what the record holds."""
     from .remote_run import record
-    session = PodSession(api, spec(deadline), keys_folder(run))
+    session = PodSession(api, spec(deadline, gpus), keys_folder(run))
     made_at = time.time()
     try:
         caps, root = session.launch(f"perception-{run.rsplit('-', 1)[-1]}-run")
@@ -113,7 +120,7 @@ def launch(run: str, api, deadline: float) -> tuple[PodSession, PodHost, dict]:
     except BaseException:
         session.teardown()
         raise
-    pod = {"id": session.pod, "name": session.name, "deadline_at": session.deadline_at, "deadline_s": deadline,
+    pod = {"id": session.pod, "name": session.name, "deadline_at": session.deadline_at, "deadline_s": deadline, "gpus": gpus,
            "dest": session.dest, "port": int(session.ssh[session.ssh.index("-p") + 1]), "root": root,
            "caps": caps.to_json(),
            "keys": str(keys_folder(run)), "hourly_usd": session.usd, "made_at": made_at}
@@ -151,7 +158,7 @@ def delete(run: str, api) -> dict:
         raise RuntimeError(f"run {run} has no pod of its own")
     if pod.get("deleted"):
         return pod
-    session = PodSession(api, spec(pod["deadline_s"]), Path(pod["keys"]), started=time.monotonic() - (time.time() - pod["made_at"]))
+    session = PodSession(api, spec(pod["deadline_s"], pod.get("gpus")), Path(pod["keys"]), started=time.monotonic() - (time.time() - pod["made_at"]))
     session.pod, session.name, session.usd, session.deadline_set = pod["id"], pod["name"], pod["hourly_usd"], True
     gone, usd, _ = session.teardown()
     pod = {**pod, "deleted": gone, "cost_usd": usd}
