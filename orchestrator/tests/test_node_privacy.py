@@ -25,4 +25,4 @@ def test_an_api_node_that_reads_images_declares_every_kind_they_hold():
         if any(t in IMAGES for t in m.inputs.values()):
             assert image_kinds <= set(m.privacy.external_upload), f"{m.ref} sends images but declares {m.privacy.external_upload}"
             checked.append(m.id)
-    assert sorted(checked) == ["vision.objects", "vision.objects-names", "vlm.shot-captions"]
+    assert sorted(checked) == ["vision.objects", "vision.objects-names", "vlm.shot-captions", "vlm.shot-captions-objects"]
