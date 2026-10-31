@@ -67,6 +67,19 @@ def test_the_graph_keeps_one_objects_step_that_brings_the_others(registry):
     assert not {n["id"] for n in only(doc, ["gaze"], registry)["nodes"]} & {"objects", "objects_track", "objects_names"}
 
 
+def test_the_graph_with_names_from_the_captions_is_the_full_one_without_a_names_step(registry):
+    """graphs/full-captions-objects.yaml (run-anywhere 1b, B): full.yaml with the captions step that names the objects,
+    whose vocabulary the track step reads, and no names step; it compiles, and Objects alone brings the captions."""
+    from perception.ir import compile_graph
+    full, both = (yaml.safe_load((REPO / "graphs" / f).read_text()) for f in ("full.yaml", "full-captions-objects.yaml"))
+    nodes = {n["id"]: n for n in both["nodes"]}
+    compile_graph(both, registry)
+    assert set(nodes) == {n["id"] for n in full["nodes"]} - {"objects_names"}
+    assert nodes["captions"]["uses"] == "vlm.shot-captions-objects@1.0.0"
+    assert nodes["objects_track"]["inputs"]["vocabulary"] == "$nodes.captions.vocabulary"
+    chosen = {n["id"] for n in only(both, ["objects"], registry)["nodes"]}
+    assert "captions" in chosen and "objects_names" not in chosen
+
 def test_the_names_and_track_steps_are_steps_of_objects(registry):
     """What the app shows as one feature, Objects: the names and track steps say they are its (part_of), and objects is
     a feature of its own. The plan's part_of, in the graph's ids, is test_cli's."""
