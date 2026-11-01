@@ -178,8 +178,9 @@ for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved 
 - **Verify.** Tests with RunPod's API stood in (test_runpod's FakeRunPod) and the pod a stand-in host; then a short
   clip on a real pod: one pod in the console, killing this machine's side leaves the run going and the pod removed at
   its linger window; deleted after fetch. A run whose coordinator on the pod is gone (killed, the pod restarted) never
-  ends there: following it (`remote run`, `attach`) cancels it there, imports what it did and deletes the pod, as
-  `remote cancel runpod` does, instead of leaving the pod idle until its deadline (review of #53).
+  ends there: following it (`remote run`, `attach`) or fetching it cancels it there, imports what it did and deletes
+  the pod, as `remote cancel runpod` does, instead of leaving the pod idle until its deadline (reviews of #53, #55).
+  A detached run nobody follows or fetches is still bounded only by its deadline (its reservation).
 
 ### Phase 10 on real pods (2026-10-31)
 

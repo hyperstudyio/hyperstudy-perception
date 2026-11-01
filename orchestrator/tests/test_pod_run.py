@@ -463,20 +463,43 @@ def test_a_fetch_keeps_the_pod_for_itself(tmp_path, runpod, capsys):
     assert abs(int((tmp_path / "host" / "remove-at").read_text()) - (time.time() + 30 * 60)) < 120
 
 
-def test_a_pod_run_whose_coordinator_is_gone_is_canceled_imported_and_its_pod_deleted(tmp_path, runpod, capsys):
-    """Review of #53: the coordinator on the pod killed (out of memory, the container restarted), the run never ends
-    there, so following it ends it as `remote cancel runpod` does: canceled there, what it did imported, the pod
-    deleted and charged. Not left idle until its deadline, and not resumed on it: whatever killed it would again."""
+def killed_coordinator(tmp_path, capsys) -> str:
+    """A detached run on its pod whose coordinator there has been killed (out of memory, the container restarted)."""
     import os
     run = detached(tmp_path, capsys, sleep=60)
     [pid] = (tmp_path / "host" / "home").rglob(f"remote/{run}/coordinator.pid")
     assert wait_for(lambda: pid.exists() and pid.read_text().strip())
     os.kill(int(pid.read_text()), 9)
-    time.sleep(0.5)
-    code, out = perception(capsys, "remote", "attach", "runpod", run)
-    assert code == 1
-    assert "is gone" in of(out, "error")[0]["problems"][0] and "--run-id" not in of(out, "error")[0]["problems"][0]
+    return run
+
+
+def ended_as_canceled(run: str, runpod, capsys, out: list[dict]):
+    """Ended as `remote cancel runpod` ends it, then said so: canceled there, imported, the pod deleted."""
+    assert [o["type"] for o in out if o["type"] in ("canceled", "fetched", "pod_deleted", "error")] == ["canceled", "fetched", "pod_deleted", "error"]
     assert of(out, "canceled")[0]["canceled"] and of(out, "fetched")[0]["run"] == run
     assert of(out, "pod_deleted")[0]["deleted"] and not runpod.pods and record_of(run)["pod"]["deleted"]
+    [problem] = of(out, "error")[0]["problems"]
+    assert "is gone" in problem and "canceled there, imported and its pod deleted" in problem and "--run-id" not in problem
     code, out = perception(capsys, "status", run)
     assert of(out, "status")[0]["status"] == "canceled"
+
+
+def test_a_pod_run_whose_coordinator_is_gone_is_canceled_imported_and_its_pod_deleted(tmp_path, runpod, capsys):
+    """Review of #53: the coordinator on the pod killed, the run never ends there, so following it ends it as `remote
+    cancel runpod` does: canceled there, what it did imported, the pod deleted and charged. Not left idle until its
+    deadline, and not resumed on it: whatever killed it would again. An attach that starts before the kill lands sees
+    it on a later poll (follow polls while the coordinator is up)."""
+    run = killed_coordinator(tmp_path, capsys)
+    code, out = perception(capsys, "remote", "attach", "runpod", run)
+    assert code == 1
+    ended_as_canceled(run, runpod, capsys, out)
+
+
+def test_fetching_a_pod_run_whose_coordinator_is_gone_ends_it_too(tmp_path, runpod, capsys):
+    """Review of #55: a fetch would be refused (the run has not ended there) with advice to resume it, and the pod
+    left until its deadline (a coordinator that is gone never sets the linger window): it ends the run as attach does."""
+    run = killed_coordinator(tmp_path, capsys)
+    assert wait_for(lambda: perception(capsys, "remote", "status", "runpod", run)[1][0].get("coordinator") == "gone")
+    code, out = perception(capsys, "remote", "fetch", "runpod", run)
+    assert code == 1
+    ended_as_canceled(run, runpod, capsys, out)

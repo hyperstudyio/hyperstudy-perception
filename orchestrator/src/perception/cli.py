@@ -962,11 +962,11 @@ def cmd_remote(args):
                 return 0
             return _remote_follow(args, remote, run_id, announce=False,
                                   on_end=(lambda: _pod_fetch(args, remote, run_id, secrets)) if on_pod else None,
-                                  on_gone=(lambda: _pod_cancel(args, remote, run_id)) if on_pod else None)
+                                  on_gone=(lambda: _pod_gone(args, remote, run_id)) if on_pod else None)
         if action == "attach":
             return _remote_follow(args, remote, args.run_id, announce=True,
                                   on_end=(lambda: _pod_fetch(args, remote, args.run_id, load_secrets())) if on_pod else None,
-                                  on_gone=(lambda: _pod_cancel(args, remote, args.run_id)) if on_pod else None)
+                                  on_gone=(lambda: _pod_gone(args, remote, args.run_id)) if on_pod else None)
         if action == "status":
             got = remote.call("status", *([args.run_id] if args.run_id else []))
             if args.json:
@@ -1005,6 +1005,8 @@ def cmd_remote(args):
                       shown(f"run {args.run_id} had ended on {host.name}: {got['status']}"))
             return 0
         if action == "fetch" and on_pod:
+            if remote.call("status", args.run_id).get("coordinator") == "gone":   # it would never end there (review of #55)
+                return _pod_gone(args, remote, args.run_id)
             return _pod_fetch(args, remote, args.run_id, load_secrets())
         if action == "fetch":
             out = Path(args.output) if args.output else home() / "bundles" / args.run_id
@@ -1191,6 +1193,21 @@ def _pod_cancel(args, remote, run_id: str) -> int:
     return 0
 
 
+def _pod_gone(args, remote, run_id: str) -> int:
+    """A pod's run whose coordinator there is gone (killed, the pod restarted) never ends there, and nothing sets the
+    pod's linger window: it is ended as `remote cancel runpod` ends it (canceled there, imported, the pod deleted), not
+    resumed on that pod, whatever killed the coordinator would again (review of #53). Said once that is done: 1, as
+    the run did not finish."""
+    done = _pod_cancel(args, remote, run_id) == 0
+    why = (f"run {run_id}'s coordinator on its pod is gone (killed, or the pod restarted), so the run could not end there"
+           + (": it was canceled there, imported and its pod deleted" if done else ""))
+    if args.json:
+        emit("error", problems=[why])
+    else:
+        print(shown(f"perception remote: {why}"), file=sys.stderr)
+    return 1
+
+
 def _pods(args) -> int:
     """The pods this machine made for runs (`remote status runpod`): each run's, from its record."""
     from . import pod_run, remote_run
@@ -1236,15 +1253,12 @@ def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None, on_go
     try:
         status = remote_run.follow(remote, run_id, show)
     except remote_run.RemoteError as e:
-        gone = on_gone and isinstance(e, remote_run.CoordinatorGone)
-        problems = [f"run {run_id}'s coordinator on its pod is gone (killed, or the pod restarted), so the run cannot end "
-                    "there: it is canceled, what it did is imported, and the pod deleted"] if gone else e.problems
+        if on_gone and isinstance(e, remote_run.CoordinatorGone):
+            return on_gone()
         if args.json:
-            emit("error", problems=problems)
+            emit("error", problems=e.problems)
         else:
-            print(shown(f"perception remote: {'; '.join(problems)}"), file=sys.stderr)
-        if gone:
-            on_gone()
+            print(shown(f"perception remote: {e}"), file=sys.stderr)
         return 1
     if args.json:
         emit("run.finished", run=run_id, status=status, host=remote.host.name)
