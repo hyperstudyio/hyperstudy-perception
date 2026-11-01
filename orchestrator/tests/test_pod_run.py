@@ -503,3 +503,18 @@ def test_fetching_a_pod_run_whose_coordinator_is_gone_ends_it_too(tmp_path, runp
     code, out = perception(capsys, "remote", "fetch", "runpod", run)
     assert code == 1
     ended_as_canceled(run, runpod, capsys, out)
+
+
+def test_a_gone_coordinators_run_whose_import_fails_says_so_once(tmp_path, runpod, capsys, monkeypatch):
+    """Review of #55: the cancel's own problem and why it was canceled are one `error`, not two that disagree."""
+    import perception.cli as cli
+    run = killed_coordinator(tmp_path, capsys)
+
+    def import_fails(*_):
+        raise remote_run.RemoteError("an object failed its hash check")
+    monkeypatch.setattr(cli, "_pod_import", import_fails)
+    code, out = perception(capsys, "remote", "attach", "runpod", run)
+    assert code == 1 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods
+    [error] = of(out, "error")
+    assert "is gone" in error["problems"][0] and "imported" not in error["problems"][0]
+    assert any("hash check" in p for p in error["problems"][1:])
