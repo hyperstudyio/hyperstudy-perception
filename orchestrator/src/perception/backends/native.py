@@ -43,6 +43,8 @@ def unlisted_code_hash(manifest: Manifest, runner: Runner) -> str:
     entry = (manifest.directory / runner.entry).resolve().parent if runner.entry else None
     folders = [("", entry)] if entry and entry != manifest.directory.resolve() else []
     for name, shared in [*folders, *((s + "/", REPO / s) for s in runner.shares)]:   # a shared folder by its name
+        if name and not shared.resolve().is_relative_to(REPO.resolve()):   # a link out of it, as code_files refuses
+            raise RuntimeError(f"{manifest.ref} shares {name[:-1]}, which is not a folder of the pipeline's repository")
         if not shared.is_dir():
             if name:   # as code_files refuses it: the node would fail importing from it
                 raise RuntimeError(f"{manifest.ref} shares {name[:-1]}, which is not a folder of the pipeline's repository")

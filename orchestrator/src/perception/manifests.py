@@ -39,8 +39,8 @@ class Runner(Strict):
     def _shares_inside(cls, shares: list[str]) -> list[str]:
         for s in shares:
             parts = s.split("/")
-            if not s or s.startswith("/") or "\\" in s or any(p in ("", ".", "..") for p in parts):
-                raise ValueError(f"shares: {s!r} is not a folder of the repository (relative, with no . or ..)")
+            if not s or s.startswith("/") or "\\" in s or any(p in ("", ".", "..") or ":" in p for p in parts):
+                raise ValueError(f"shares: {s!r} is not a folder of the repository (relative, with no . or .., no drive)")
         return shares
 
 

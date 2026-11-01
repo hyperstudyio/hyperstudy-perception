@@ -189,6 +189,21 @@ def test_a_folder_a_runner_shares_that_is_missing_has_no_identity(repo):
         here().identity(m, r["cuda"])
 
 
+def test_a_folder_a_runner_shares_that_links_outside_the_repository_has_no_identity(repo, tmp_path):
+    """Without git as with it (code_files refuses it): a shared folder that is a link to a folder outside the
+    repository is not walked for the node's identity."""
+    import shutil
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "util.py").write_text("def f(): return 1\n")
+    (repo / "nodes" / "lib").symlink_to(outside, target_is_directory=True)
+    (repo / "nodes" / "x" / "manifest.yaml").write_text(MANIFEST.replace("env: envs/e,", "env: envs/e, shares: [nodes/lib],"))
+    shutil.rmtree(repo / ".git")
+    m, r = node(repo)
+    with pytest.raises(RuntimeError, match="nodes/lib"):
+        here().identity(m, r["cuda"])
+
+
 def test_no_identity_is_one_the_rule_before_gave(repo):
     """Those began with the backend's kind (native:, self:, ssh-NAME:, cloud:, runpod:); every one now begins with the
     platform, so no cache key made under the old rule is read as one made under this one."""

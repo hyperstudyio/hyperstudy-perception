@@ -1928,7 +1928,7 @@ def test_a_folder_a_runner_shares_is_its_code_too(tmp_path):
     files = remote.code_files(m, runner)
     assert "orchestrator/tests/nodes/keyed/node.py" in files and "orchestrator/tests/nodes/work/node.py" in files
     assert "orchestrator/tests/nodes/keyed/node.py" not in remote.code_files(m, m.runners[0])
-    for bad in ("../outside", "/etc", "nodes/../../x", ""):
+    for bad in ("../outside", "/etc", "nodes/../../x", "", "C:/data", "nodes/c:x"):   # a drive is absolute on Windows
         with pytest.raises(ValueError):
             Runner(kind="native", entry="node.py", env="envs/api", shares=[bad])
     missing = m.runners[0].model_copy(update={"shares": ["nodes/no-such-folder"]})
