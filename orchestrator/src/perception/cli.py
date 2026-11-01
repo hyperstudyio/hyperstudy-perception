@@ -962,11 +962,11 @@ def cmd_remote(args):
                 return 0
             return _remote_follow(args, remote, run_id, announce=False,
                                   on_end=(lambda: _pod_fetch(args, remote, run_id, secrets)) if on_pod else None,
-                                  on_gone=(lambda: _pod_gone(args, remote, run_id)) if on_pod else None)
+                                  on_gone=(lambda e: _pod_gone(args, remote, run_id, e)) if on_pod else None)
         if action == "attach":
             return _remote_follow(args, remote, args.run_id, announce=True,
                                   on_end=(lambda: _pod_fetch(args, remote, args.run_id, load_secrets())) if on_pod else None,
-                                  on_gone=(lambda: _pod_gone(args, remote, args.run_id)) if on_pod else None)
+                                  on_gone=(lambda e: _pod_gone(args, remote, args.run_id, e)) if on_pod else None)
         if action == "status":
             got = remote.call("status", *([args.run_id] if args.run_id else []))
             if args.json:
@@ -1005,8 +1005,12 @@ def cmd_remote(args):
                       shown(f"run {args.run_id} had ended on {host.name}: {got['status']}"))
             return 0
         if action == "fetch" and on_pod:
-            if remote.call("status", args.run_id).get("coordinator") == "gone":   # it would never end there (review of #55)
-                return _pod_gone(args, remote, args.run_id)
+            try:   # a run that would never end there is ended, not fetched (review of #55)
+                gone = remote.call("status", args.run_id).get("coordinator") == "gone"
+            except remote_run.RemoteError as e:   # the pod no longer has the run (restarted, its disk wiped)
+                return _pod_gone(args, remote, args.run_id, e)
+            if gone:
+                return _pod_gone(args, remote, args.run_id, remote_run.CoordinatorGone("its coordinator is gone"))
             return _pod_fetch(args, remote, args.run_id, load_secrets())
         if action == "fetch":
             out = Path(args.output) if args.output else home() / "bundles" / args.run_id
@@ -1196,13 +1200,16 @@ def _pod_cancel(args, remote, run_id: str, why: str | None = None) -> int:
     return 0
 
 
-def _pod_gone(args, remote, run_id: str) -> int:
-    """A pod's run whose coordinator there is gone (killed, the pod restarted) never ends there, and nothing sets the
-    pod's linger window: it is ended as `remote cancel runpod` ends it (canceled there, imported, the pod deleted), not
-    resumed on that pod, whatever killed the coordinator would again (review of #53). Said once that is done, in one
-    `error` with anything that went wrong: 1, as the run did not finish."""
-    return _pod_cancel(args, remote, run_id, why=f"run {run_id}'s coordinator on its pod is gone (killed, or the pod "
-                                                 "restarted), so the run could not end there")
+def _pod_gone(args, remote, run_id: str, error) -> int:
+    """A pod's run that can never end there: its coordinator is gone (killed, the pod restarted), or the pod no longer
+    answers for it (restarted with its container disk wiped, which has no volume: review of #55). Nothing sets the
+    pod's linger window, so it is ended as `remote cancel runpod` ends it (canceled there and imported when it can be,
+    the pod deleted), not resumed on that pod, whatever killed the coordinator would again (review of #53). Said once
+    that is done, in one `error` with anything that went wrong: 1, as the run did not finish."""
+    from . import remote_run
+    why = (f"run {run_id}'s coordinator on its pod is gone (killed, or the pod restarted)" if isinstance(error, remote_run.CoordinatorGone)
+           else f"its pod no longer answers for run {run_id} ({'; '.join(error.problems)})")
+    return _pod_cancel(args, remote, run_id, why=f"{why}, so the run could not end there")
 
 
 def _pods(args) -> int:
@@ -1233,8 +1240,9 @@ def shown(text) -> str:
 def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None, on_gone=None) -> int:
     """A run there, followed as `run` follows its own: run.created (when attaching), each event, then run.finished.
     `on_end`: called once the run has ended there, however it ended (a pod's fetch and deletion); its failure is the
-    command's, and otherwise the exit code says how the run ended. `on_gone`: called instead of saying the error
-    (it says its own) when the run's coordinator there is gone (a pod's run canceled, imported and its pod deleted)."""
+    command's, and otherwise the exit code says how the run ended. `on_gone(error)`: called instead of saying the
+    error (it says its own) when the run cannot be followed there to its end: its coordinator is gone, or the host no
+    longer answers for it (a pod's run canceled, imported and its pod deleted)."""
     from . import remote_run
     if announce:
         if args.json:
@@ -1250,8 +1258,8 @@ def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None, on_go
     try:
         status = remote_run.follow(remote, run_id, show)
     except remote_run.RemoteError as e:
-        if on_gone and isinstance(e, remote_run.CoordinatorGone):
-            return on_gone()
+        if on_gone:
+            return on_gone(e)
         if args.json:
             emit("error", problems=e.problems)
         else:

@@ -518,3 +518,17 @@ def test_a_gone_coordinators_run_whose_import_fails_says_so_once(tmp_path, runpo
     [error] = of(out, "error")
     assert "is gone" in error["problems"][0] and "imported" not in error["problems"][0]
     assert any("hash check" in p for p in error["problems"][1:])
+
+
+@pytest.mark.parametrize("action", ["attach", "fetch"])
+def test_a_pod_that_no_longer_has_its_run_is_deleted(tmp_path, runpod, capsys, action):
+    """Review of #55: a pod restarted with its container disk wiped (it has no volume) answers that it has no such run,
+    not that its coordinator is gone; it can never end the run either, so it is deleted as one whose coordinator is."""
+    import shutil
+    run = killed_coordinator(tmp_path, capsys)
+    [store] = [p for p in (tmp_path / "host" / "home").rglob("coordinator") if (p / "remote").is_dir()]
+    shutil.rmtree(store)
+    code, out = perception(capsys, "remote", action, "runpod", run)
+    assert code == 1 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods and record_of(run)["pod"]["deleted"]
+    [error] = of(out, "error")
+    assert "no longer answers for" in error["problems"][0] and "--run-id" not in " ".join(error["problems"])
