@@ -513,6 +513,32 @@ def test_an_adopted_node_caught_between_two_execs_is_still_running(tmp_path, mon
     assert native._alive(proc.pid, request) is False   # really gone
 
 
+@pytest.mark.parametrize("failure", ["killed", "missing"])
+def test_a_ps_that_fails_says_nothing_of_the_process(tmp_path, monkeypatch, failure):
+    """Review of #55: only ps's own "no such process" (exit 1, nothing shown) is a process gone. A ps killed (out of
+    memory, as the processes it checks may be) or not there says nothing: the node, or a run's coordinator, is taken
+    as still running, not run again beside itself, nor its run canceled and its pod deleted."""
+    import perception.backends.native as native
+    import perception.remote_coordinator as rc
+    monkeypatch.setenv("PERCEPTION_HOME", str(tmp_path / "home"))
+    request = str(tmp_path / "request.json")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", request])
+    try:
+        def ps(*a, **k):
+            if failure == "missing":
+                raise FileNotFoundError(2, "No such file or directory", "ps")
+            return subprocess.CompletedProcess(a, -9, "", "")
+        monkeypatch.setattr(native.subprocess, "run", ps)
+        assert native._alive(proc.pid, request) is True
+        rc.run_folder("20261101-000000-abcdef").mkdir(parents=True)
+        (rc.run_folder("20261101-000000-abcdef") / "coordinator.pid").write_text(str(proc.pid))
+        assert rc.alive("20261101-000000-abcdef") is True
+    finally:
+        monkeypatch.undo()
+        proc.kill()
+        proc.wait()
+
+
 def test_a_zombie_is_gone_whether_or_not_anything_reaps_it(tmp_path):
     """A node whose coordinator died in this process stays its zombie (nothing waits for it): it has ended, and a
     coordinator that adopts it must collect it, not wait for it for ever (it did on Linux, where ps shows a zombie in

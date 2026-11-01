@@ -28,6 +28,8 @@ shift
 printf '%s\n' "$*" >> "$FAKE_HOST/argv.log"
 # the pod out of reach (sshd gone, the network down): every command, while $FAKE_HOST/unreachable exists
 if [ -e "$FAKE_HOST/unreachable" ]; then echo "ssh: connect to host pod: Connection timed out" >&2; exit 255; fi
+# one call there that fails without answering (its process killed for memory), the coordinator up all the same
+case "$*" in *"remote_coordinator events"*) if [ -e "$FAKE_HOST/fail-next-events" ]; then rm "$FAKE_HOST/fail-next-events"; echo "Killed" >&2; exit 137; fi;; esac
 case "$*" in
   *"remote_coordinator start"*)
     tee -a "$FAKE_RECORD/start.stdin" | env -i FAKE_HOST="$FAKE_HOST" HOME="$FAKE_HOST/home" PATH="$FAKE_HOST/home/.local/bin:$PATH" PERCEPTION_REMOVE_AT="$FAKE_HOST/remove-at" /bin/sh -c "cd \"\$HOME\" && $*" > "$FAKE_HOST/start.out"
@@ -461,3 +463,106 @@ def test_a_fetch_keeps_the_pod_for_itself(tmp_path, runpod, capsys):
                            "--allow-uploads", "--max-cost-usd", "5", "--linger-min", "10")
     assert code == 0, out
     assert abs(int((tmp_path / "host" / "remove-at").read_text()) - (time.time() + 30 * 60)) < 120
+
+
+def killed_coordinator(tmp_path, capsys) -> str:
+    """A detached run on its pod whose coordinator there has been killed (out of memory, the container restarted)."""
+    import os
+    run = detached(tmp_path, capsys, sleep=60)
+    [pid] = (tmp_path / "host" / "home").rglob(f"remote/{run}/coordinator.pid")
+    assert wait_for(lambda: pid.exists() and pid.read_text().strip())
+    os.kill(int(pid.read_text()), 9)
+    return run
+
+
+def ended_as_canceled(run: str, runpod, capsys, out: list[dict]):
+    """Ended as `remote cancel runpod` ends it, then said so: canceled there, imported, the pod deleted."""
+    assert [o["type"] for o in out if o["type"] in ("canceled", "fetched", "pod_deleted", "error")] == ["canceled", "fetched", "pod_deleted", "error"]
+    assert of(out, "canceled")[0]["canceled"] and of(out, "fetched")[0]["run"] == run
+    assert of(out, "pod_deleted")[0]["deleted"] and not runpod.pods and record_of(run)["pod"]["deleted"]
+    [problem] = of(out, "error")[0]["problems"]
+    assert "is gone" in problem and "canceled there, imported and its pod deleted" in problem and "--run-id" not in problem
+    code, out = perception(capsys, "status", run)
+    assert of(out, "status")[0]["status"] == "canceled"
+
+
+def test_a_pod_run_whose_coordinator_is_gone_is_canceled_imported_and_its_pod_deleted(tmp_path, runpod, capsys):
+    """Review of #53: the coordinator on the pod killed, the run never ends there, so following it ends it as `remote
+    cancel runpod` does: canceled there, what it did imported, the pod deleted and charged. Not left idle until its
+    deadline, and not resumed on it: whatever killed it would again. An attach that starts before the kill lands sees
+    it on a later poll (follow polls while the coordinator is up)."""
+    run = killed_coordinator(tmp_path, capsys)
+    code, out = perception(capsys, "remote", "attach", "runpod", run)
+    assert code == 1
+    ended_as_canceled(run, runpod, capsys, out)
+
+
+def test_fetching_a_pod_run_whose_coordinator_is_gone_ends_it_too(tmp_path, runpod, capsys):
+    """Review of #55: a fetch would be refused (the run has not ended there) with advice to resume it, and the pod
+    left until its deadline (a coordinator that is gone never sets the linger window): it ends the run as attach does."""
+    run = killed_coordinator(tmp_path, capsys)
+    assert wait_for(lambda: perception(capsys, "remote", "status", "runpod", run)[1][0].get("coordinator") == "gone")
+    code, out = perception(capsys, "remote", "fetch", "runpod", run)
+    assert code == 1
+    ended_as_canceled(run, runpod, capsys, out)
+
+
+def test_a_gone_coordinators_run_whose_import_fails_says_so_once(tmp_path, runpod, capsys, monkeypatch):
+    """Review of #55: the cancel's own problem and why it was canceled are one `error`, not two that disagree."""
+    import perception.cli as cli
+    run = killed_coordinator(tmp_path, capsys)
+
+    def import_fails(*_):
+        raise remote_run.RemoteError("an object failed its hash check")
+    monkeypatch.setattr(cli, "_pod_import", import_fails)
+    code, out = perception(capsys, "remote", "attach", "runpod", run)
+    assert code == 1 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods
+    [error] = of(out, "error")
+    assert "is gone" in error["problems"][0] and "imported" not in error["problems"][0]
+    assert any("hash check" in p for p in error["problems"][1:])
+
+
+@pytest.mark.parametrize("action", ["attach", "fetch"])
+def test_a_pod_that_no_longer_has_its_run_is_deleted(tmp_path, runpod, capsys, action):
+    """Review of #55: a pod restarted with its container disk wiped (it has no volume) answers that it has no such run (NoRun),
+    not that its coordinator is gone; it can never end the run either, so it is deleted as one whose coordinator is."""
+    import shutil
+    run = killed_coordinator(tmp_path, capsys)
+    [store] = [p for p in (tmp_path / "host" / "home").rglob("coordinator") if (p / "remote").is_dir()]
+    shutil.rmtree(store)
+    code, out = perception(capsys, "remote", action, "runpod", run)
+    assert code == 1 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods and record_of(run)["pod"]["deleted"]
+    [error] = of(out, "error")
+    assert "no longer has run" in error["problems"][0] and "--run-id" not in " ".join(error["problems"])
+
+
+def test_one_call_that_fails_on_a_healthy_pod_leaves_its_run_and_pod(tmp_path, runpod, capsys):
+    """Review of #55: a poll that fails without answering (the events call killed for memory, a garbled answer) says
+    nothing of the run: its coordinator may be up. Following it stops, as before, and the pod and its run are left."""
+    run = detached(tmp_path, capsys, sleep=30)
+    (tmp_path / "host" / "fail-next-events").touch()
+    code, out = perception(capsys, "remote", "attach", "runpod", run)
+    assert code == 1 and "did not answer" in of(out, "error")[0]["problems"][0]
+    assert runpod.pods and not of(out, "pod_deleted") and not record_of(run)["pod"].get("deleted")
+    code, out = perception(capsys, "remote", "status", "runpod", run)
+    assert of(out, "status")[0]["coordinator"] == "running"
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert code == 0 and not runpod.pods
+
+
+@pytest.mark.parametrize("action", ["attach", "fetch"])
+def test_a_run_not_yet_answered_by_its_pod_is_not_lost_when_the_pod_has_none(tmp_path, runpod, capsys, action):
+    """Review of #55: while its start is on the way (its inputs uploading, the pod planning it) the pod has no such run,
+    and that says nothing of it: only once the pod answered its start is "no such run" a run lost there."""
+    import shutil
+    run = killed_coordinator(tmp_path, capsys)
+    [store] = [p for p in (tmp_path / "host" / "home").rglob("coordinator") if (p / "remote").is_dir()]
+    shutil.rmtree(store)
+    mine = record_of(run)
+    assert mine.pop("start_answered") is True
+    remote_run.record(run).write_text(json.dumps(mine))   # as before the pod's answer to its start came back
+    code, out = perception(capsys, "remote", action, "runpod", run)
+    assert code == 1 and runpod.pods and not of(out, "pod_deleted") and not record_of(run)["pod"].get("deleted")
+    assert "no run" in of(out, "error")[0]["problems"][0]
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert not runpod.pods

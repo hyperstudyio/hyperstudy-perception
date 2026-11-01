@@ -97,6 +97,12 @@ def events(fake: Path) -> list[str]:
     return (fake / "events").read_text().splitlines() if (fake / "events").exists() else []
 
 
+def sent(e: str) -> bool:
+    """An event that sends the node's code or objects to the machine: an ssh command there (not the launch, whose
+    task path is this checkout's, which may hold "objects" in its name)."""
+    return e.startswith("ssh ") and ("objects" in e or "code/" in e)
+
+
 def coordinator(tmp_path, guard=GUARD_OK, deadline_s=1800, launch_s=25 * 60, setup=SETUP_OK, down_s=900, aws_s=120) -> Coordinator:
     cloud = CloudBackend(deadline_s=deadline_s, runner_kind="self", python=sys.executable, launch_s=launch_s, down_s=down_s, aws_s=aws_s,
                          guard=script(tmp_path / "guard.sh", guard), setup=script(tmp_path / "node-setup.sh", setup),
@@ -141,7 +147,7 @@ def test_a_node_runs_on_a_machine_started_for_it_checked_before_anything_is_sent
     assert ev[launch].endswith(f"(config {CloudBackend.project_config})")   # no credentials, only perception-node
     guard = ev.index("guard 29")                 # the shutdown deadline: whole minutes left of the 30, counted from the launch
     setup = ev.index("setup")                    # ffmpeg and uv, installed and waited for (SkyPilot's setup is detached)
-    first_send = next(i for i, e in enumerate(ev) if "objects" in e or "code/" in e)
+    first_send = next(i for i, e in enumerate(ev) if sent(e))
     down = next(i for i, e in enumerate(ev) if e.startswith(f"sky down -y {cluster}"))
     assert launch < guard < setup < first_send < down == len(ev) - 1
     assert any("--instance-initiated-shutdown-behavior terminate" in e for e in ev)
@@ -162,7 +168,7 @@ def test_a_machine_the_guard_refuses_gets_nothing_and_is_deleted(tmp_path, machi
     t = coord._tasks(run_id)["faces"]
     assert t["error_code"] == "privacy" and "guard.sh refused" in t["error"]
     ev = events(machine)
-    assert not any("objects" in e or "code/" in e for e in ev)
+    assert not any(sent(e) for e in ev)
     assert ev[-1].startswith("sky down -y perception-")
     assert "not perception-node" in log_of(coord, run_id)
 
@@ -377,7 +383,7 @@ def test_a_machine_whose_clock_disagrees_is_not_used(tmp_path, machine, rec):
     run_id, status = run(coord, graph(tmp_path, rec))
     t = coord._tasks(run_id)["faces"]
     assert (status, t["error_code"]) == ("failed", "internal") and "clock" in t["error"]
-    assert not any("objects" in e or "code/" in e for e in events(machine))   # nothing was sent
+    assert not any(sent(e) for e in events(machine))   # nothing was sent
     assert events(machine)[-1].startswith("sky down -y perception-")
 
 
@@ -473,7 +479,7 @@ def test_a_machine_that_cannot_be_set_to_terminate_is_not_used(tmp_path, machine
     assert status == "failed"
     t = coord._tasks(run_id)["faces"]
     assert (t["error_code"], t["attempt"]) == ("internal", 1) and "terminate on shutdown" in t["error"]
-    assert not any("objects" in e or "code/" in e for e in events(machine))   # nothing was sent to it
+    assert not any(sent(e) for e in events(machine))   # nothing was sent to it
     assert events(machine)[-1].startswith("sky down -y perception-")
 
 
@@ -482,7 +488,7 @@ def test_a_machine_whose_setup_fails_is_a_launch_failure_charged_its_time(tmp_pa
     run_id, status = run(coord, graph(tmp_path, rec))
     t = coord._tasks(run_id)["faces"]
     assert (status, t["error_code"]) == ("failed", "transient") and "setting up" in t["error"]
-    assert not any("objects" in e or "code/" in e for e in events(machine))   # nothing sent to a machine not set up
+    assert not any(sent(e) for e in events(machine))   # nothing sent to a machine not set up
     assert "Could not get lock" in log_of(coord, run_id)
     assert coord.store.db.execute("SELECT spent_usd FROM runs WHERE id=?", (run_id,)).fetchone()[0] < 0.01
 

@@ -100,6 +100,10 @@ class RemoteError(RuntimeError):
         self.problems = list(problems)
 
 
+class CoordinatorGone(RemoteError):
+    """The run's coordinator there is gone with the run still running (follow): it never ends there by itself."""
+
+
 # --- the checks, before anything leaves -----------------------------------------------------------------------------
 
 def made_kinds(graph: Graph) -> dict[str, list[str]]:
@@ -468,9 +472,14 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     del keys, spec
     remote.start_sent = True
     had = json.loads(record(run).read_text())
-    if not had.get("start_sent"):   # from here the run may be going there, answered or not (a pod's --run-id: review of #53)
-        record(run).write_text(json.dumps({**had, "start_sent": True}))
-    return remote.call("start", data=data)
+    # from here the run may be going there, answered or not (a pod's --run-id: review of #53); not answered yet, as a
+    # resume's start may find the run gone from there and make it again (review of #55)
+    record(run).write_text(json.dumps({**{k: v for k, v in had.items() if k != "start_answered"}, "start_sent": True}))
+    got = remote.call("start", data=data)
+    had = json.loads(record(run).read_text())
+    if not had.get("start_answered"):   # the run is there from now: one it then has no longer was lost (review of #55)
+        record(run).write_text(json.dumps({**had, "start_answered": True}))
+    return got
 
 
 def follow(remote: Remote, run: str, on_event, after: int = 0) -> str:
@@ -499,7 +508,7 @@ def follow(remote: Remote, run: str, on_event, after: int = 0) -> str:
         if got["status"] != "running":
             return got["status"]
         if got["coordinator"] == "gone":
-            raise RemoteError(f"run {run}'s coordinator on {remote.host.name} is gone (the host restarted?): "
+            raise CoordinatorGone(f"run {run}'s coordinator on {remote.host.name} is gone (the host restarted?): "
                               f"`perception remote run {remote.host.name} GRAPH ... --run-id {run}` resumes it")
         time.sleep(POLL_S)
 

@@ -77,6 +77,15 @@ class Refusal(Exception):
         self.problems = list(problems)
 
 
+class NoRun(Refusal):
+    """No such run in this host's store: said with `no_run`, so the other machine can tell it from a call that failed
+    (a pod restarted with its disk wiped has none of its run: review of #55)."""
+    fields = {"no_run": True}
+
+    def __init__(self, run: str):
+        super().__init__(f"no run {run} on this host")
+
+
 def answer(**fields):
     print(json.dumps({"ok": True, **fields}), flush=True)
 
@@ -224,8 +233,11 @@ def alive(run: str) -> bool:
         os.kill(pid, 0)
     except (OSError, ValueError):
         return False
-    from .backends.native import _shown
-    command = _shown(pid)
+    from .backends.native import PsFailed, _shown
+    try:
+        command = _shown(pid)
+    except PsFailed:   # nothing known: it is there (os.kill found it), so running, never taken as gone (review of #55)
+        return True
     return command is not None and (f"perception.remote_coordinator serve {run}" in command or command == "")
 
 
@@ -602,7 +614,7 @@ def cmd_status(args) -> int:
     if args.run:
         row = store.db.execute("SELECT * FROM runs WHERE id=?", (args.run,)).fetchone()
         if row is None:
-            raise Refusal(f"no run {args.run} on this host")
+            raise NoRun(args.run)
         state, status = coordinator_state(store, args.run)
         row = store.db.execute("SELECT * FROM runs WHERE id=?", (args.run,)).fetchone()
         answer(status=run_json(store, row), coordinator=state)
@@ -619,7 +631,7 @@ def cmd_events(args) -> int:
     store = Store(home())
     row = store.db.execute("SELECT status FROM runs WHERE id=?", (args.run,)).fetchone()
     if row is None:
-        raise Refusal(f"no run {args.run} on this host")
+        raise NoRun(args.run)
     events = [{"id": e["id"], "node": e["node_id"], "kind": e["kind"], "message": e["message"] or "", "at": iso(e["at"])}
               for e in store.events(args.run, args.after)]
     # the run's status after its events: a run that ends between the two reads is seen ending at the next call
@@ -637,7 +649,7 @@ def cmd_cancel(args) -> int:
     store = Store(home())
     run = args.run
     if store.db.execute("SELECT 1 FROM runs WHERE id=?", (run,)).fetchone() is None:
-        raise Refusal(f"no run {run} on this host")
+        raise NoRun(run)
     # under the run's lock: not between a start's look at the run and its coordinator's pid recorded
     with locked(run_folder(run) / ".lock"):
         status = store.db.execute("SELECT status FROM runs WHERE id=?", (run,)).fetchone()["status"]
@@ -660,7 +672,7 @@ def cmd_dump(args) -> int:
     run = args.run
     row = store.db.execute("SELECT * FROM runs WHERE id=?", (run,)).fetchone()
     if row is None:
-        raise Refusal(f"no run {run} on this host")
+        raise NoRun(run)
     if row["status"] not in ("succeeded", "failed", "canceled"):
         state = coordinator_state(store, run)[0]
         raise Refusal(f"run {run} is still running here" if state == "running" else
@@ -700,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.fn(args) or 0
     except Refusal as e:
-        print(json.dumps({"ok": False, "problems": e.problems}), flush=True)
+        print(json.dumps({"ok": False, "problems": e.problems, **getattr(e, "fields", {})}), flush=True)
         return 1
 
 
