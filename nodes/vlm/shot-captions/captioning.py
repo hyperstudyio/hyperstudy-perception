@@ -126,6 +126,8 @@ def caption(client, model, effort, prompt, images, spend, schema=None):
     spend(response.usage.input_tokens, response.usage.output_tokens)   # billed even if the reply is then rejected
     if response.stop_reason == "refusal":
         raise NodeError("input", f"refusal: {response.stop_details}")
+    if response.stop_reason == "max_tokens":   # as haiku.reply_json: the JSON is cut off
+        raise NodeError("internal", f"{model}'s caption reached max_tokens: its JSON is cut off")
     text = next((b.text for b in response.content if b.type == "text"), None)
     if text is None:
         raise NodeError("internal", f"no text block in the response (stop_reason {response.stop_reason})")
