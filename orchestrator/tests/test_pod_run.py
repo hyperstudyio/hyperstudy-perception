@@ -548,3 +548,21 @@ def test_one_call_that_fails_on_a_healthy_pod_leaves_its_run_and_pod(tmp_path, r
     assert of(out, "status")[0]["coordinator"] == "running"
     code, out = perception(capsys, "remote", "cancel", "runpod", run)
     assert code == 0 and not runpod.pods
+
+
+@pytest.mark.parametrize("action", ["attach", "fetch"])
+def test_a_run_not_yet_answered_by_its_pod_is_not_lost_when_the_pod_has_none(tmp_path, runpod, capsys, action):
+    """Review of #55: while its start is on the way (its inputs uploading, the pod planning it) the pod has no such run,
+    and that says nothing of it: only once the pod answered its start is "no such run" a run lost there."""
+    import shutil
+    run = killed_coordinator(tmp_path, capsys)
+    [store] = [p for p in (tmp_path / "host" / "home").rglob("coordinator") if (p / "remote").is_dir()]
+    shutil.rmtree(store)
+    mine = record_of(run)
+    assert mine.pop("start_answered") is True
+    remote_run.record(run).write_text(json.dumps(mine))   # as before the pod's answer to its start came back
+    code, out = perception(capsys, "remote", action, "runpod", run)
+    assert code == 1 and runpod.pods and not of(out, "pod_deleted") and not record_of(run)["pod"].get("deleted")
+    assert "no run" in of(out, "error")[0]["problems"][0]
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert not runpod.pods

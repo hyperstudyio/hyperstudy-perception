@@ -474,7 +474,11 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     had = json.loads(record(run).read_text())
     if not had.get("start_sent"):   # from here the run may be going there, answered or not (a pod's --run-id: review of #53)
         record(run).write_text(json.dumps({**had, "start_sent": True}))
-    return remote.call("start", data=data)
+    got = remote.call("start", data=data)
+    had = json.loads(record(run).read_text())
+    if not had.get("start_answered"):   # the run is there from now: one it then has no longer was lost (review of #55)
+        record(run).write_text(json.dumps({**had, "start_answered": True}))
+    return got
 
 
 def follow(remote: Remote, run: str, on_event, after: int = 0) -> str:

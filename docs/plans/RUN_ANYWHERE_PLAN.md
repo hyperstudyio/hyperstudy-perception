@@ -181,9 +181,11 @@ for ssh, probe it, guard.sh, delete it) is the per-step RunPod backend's, moved 
   ends there, nor one the pod says it has no longer (restarted with its store wiped; it has no volume): following
   it (`remote run`, `attach`) or fetching it cancels it there when it can be asked, imports what it did and deletes
   the pod, as `remote cancel runpod` does, instead of leaving the pod idle until its deadline (reviews of #53, #55).
-  A call there that fails without answering says nothing of the run and leaves the pod. Still bounded only by the
-  deadline (its reservation): a detached run nobody follows or fetches, and a pod whose disk was wiped with the
-  pipeline's copy (it cannot answer at all; whether RunPod keeps a container disk across a restart is unverified).
+  "No such run" counts only once the pod answered the run's start (before, its inputs may be uploading); a call
+  there that fails without answering says nothing of the run and leaves the pod. A pod whose disk was wiped with
+  the pipeline's copy is sent this machine's copy (Remote.use_copy_of) and so answers too; whether RunPod keeps a
+  container disk across a restart is unverified. A detached run nobody follows or fetches is still bounded only by
+  its deadline (its reservation).
 
 ### Phase 10 on real pods (2026-10-31)
 

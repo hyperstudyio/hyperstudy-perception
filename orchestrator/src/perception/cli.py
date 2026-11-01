@@ -1008,7 +1008,7 @@ def cmd_remote(args):
             try:   # a run that would never end there is ended, not fetched (review of #55)
                 gone = remote.call("status", args.run_id).get("coordinator") == "gone"
             except remote_run.RemoteError as e:
-                if not _run_lost(e):   # one call that failed: the run may be well there
+                if not _run_lost(e, args.run_id):   # one call that failed, or a start on its way: the run may be well
                     raise
                 return _pod_gone(args, remote, args.run_id, e)
             if gone:
@@ -1202,11 +1202,20 @@ def _pod_cancel(args, remote, run_id: str, why: str | None = None) -> int:
     return 0
 
 
-def _run_lost(e) -> bool:
+def _run_lost(e, run_id: str) -> bool:
     """The run can never end there: its coordinator is gone, or the host says it has no such run (remote_coordinator
-    NoRun). Not a call that failed or an answer that did not parse: those say nothing of the run (review of #55)."""
+    NoRun) although it answered the run's start (before that, the run may be on its way: its inputs uploading, the
+    host planning it). Not a call that failed or an answer that did not parse: those say nothing of the run (reviews
+    of #55)."""
     from . import remote_run
-    return isinstance(e, remote_run.CoordinatorGone) or bool((getattr(e, "answer", None) or {}).get("no_run"))
+    if isinstance(e, remote_run.CoordinatorGone):
+        return True
+    if not (getattr(e, "answer", None) or {}).get("no_run"):
+        return False
+    try:
+        return bool(json.loads(remote_run.record(run_id).read_text()).get("start_answered"))
+    except (OSError, ValueError):
+        return False
 
 
 def _pod_gone(args, remote, run_id: str, error) -> int:
@@ -1268,7 +1277,7 @@ def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None, on_go
     try:
         status = remote_run.follow(remote, run_id, show)
     except remote_run.RemoteError as e:
-        if on_gone and _run_lost(e):
+        if on_gone and _run_lost(e, run_id):
             return on_gone(e)
         if args.json:
             emit("error", problems=e.problems)
