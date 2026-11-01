@@ -28,6 +28,8 @@ shift
 printf '%s\n' "$*" >> "$FAKE_HOST/argv.log"
 # the pod out of reach (sshd gone, the network down): every command, while $FAKE_HOST/unreachable exists
 if [ -e "$FAKE_HOST/unreachable" ]; then echo "ssh: connect to host pod: Connection timed out" >&2; exit 255; fi
+# one call there that fails without answering (its process killed for memory), the coordinator up all the same
+case "$*" in *"remote_coordinator events"*) if [ -e "$FAKE_HOST/fail-next-events" ]; then rm "$FAKE_HOST/fail-next-events"; echo "Killed" >&2; exit 137; fi;; esac
 case "$*" in
   *"remote_coordinator start"*)
     tee -a "$FAKE_RECORD/start.stdin" | env -i FAKE_HOST="$FAKE_HOST" HOME="$FAKE_HOST/home" PATH="$FAKE_HOST/home/.local/bin:$PATH" PERCEPTION_REMOVE_AT="$FAKE_HOST/remove-at" /bin/sh -c "cd \"\$HOME\" && $*" > "$FAKE_HOST/start.out"
@@ -522,7 +524,7 @@ def test_a_gone_coordinators_run_whose_import_fails_says_so_once(tmp_path, runpo
 
 @pytest.mark.parametrize("action", ["attach", "fetch"])
 def test_a_pod_that_no_longer_has_its_run_is_deleted(tmp_path, runpod, capsys, action):
-    """Review of #55: a pod restarted with its container disk wiped (it has no volume) answers that it has no such run,
+    """Review of #55: a pod restarted with its container disk wiped (it has no volume) answers that it has no such run (NoRun),
     not that its coordinator is gone; it can never end the run either, so it is deleted as one whose coordinator is."""
     import shutil
     run = killed_coordinator(tmp_path, capsys)
@@ -531,4 +533,18 @@ def test_a_pod_that_no_longer_has_its_run_is_deleted(tmp_path, runpod, capsys, a
     code, out = perception(capsys, "remote", action, "runpod", run)
     assert code == 1 and of(out, "pod_deleted")[0]["deleted"] and not runpod.pods and record_of(run)["pod"]["deleted"]
     [error] = of(out, "error")
-    assert "no longer answers for" in error["problems"][0] and "--run-id" not in " ".join(error["problems"])
+    assert "no longer has run" in error["problems"][0] and "--run-id" not in " ".join(error["problems"])
+
+
+def test_one_call_that_fails_on_a_healthy_pod_leaves_its_run_and_pod(tmp_path, runpod, capsys):
+    """Review of #55: a poll that fails without answering (the events call killed for memory, a garbled answer) says
+    nothing of the run: its coordinator may be up. Following it stops, as before, and the pod and its run are left."""
+    run = detached(tmp_path, capsys, sleep=30)
+    (tmp_path / "host" / "fail-next-events").touch()
+    code, out = perception(capsys, "remote", "attach", "runpod", run)
+    assert code == 1 and "did not answer" in of(out, "error")[0]["problems"][0]
+    assert runpod.pods and not of(out, "pod_deleted") and not record_of(run)["pod"].get("deleted")
+    code, out = perception(capsys, "remote", "status", "runpod", run)
+    assert of(out, "status")[0]["coordinator"] == "running"
+    code, out = perception(capsys, "remote", "cancel", "runpod", run)
+    assert code == 0 and not runpod.pods

@@ -1007,7 +1007,9 @@ def cmd_remote(args):
         if action == "fetch" and on_pod:
             try:   # a run that would never end there is ended, not fetched (review of #55)
                 gone = remote.call("status", args.run_id).get("coordinator") == "gone"
-            except remote_run.RemoteError as e:   # the pod no longer has the run (restarted, its disk wiped)
+            except remote_run.RemoteError as e:
+                if not _run_lost(e):   # one call that failed: the run may be well there
+                    raise
                 return _pod_gone(args, remote, args.run_id, e)
             if gone:
                 return _pod_gone(args, remote, args.run_id, remote_run.CoordinatorGone("its coordinator is gone"))
@@ -1200,15 +1202,23 @@ def _pod_cancel(args, remote, run_id: str, why: str | None = None) -> int:
     return 0
 
 
+def _run_lost(e) -> bool:
+    """The run can never end there: its coordinator is gone, or the host says it has no such run (remote_coordinator
+    NoRun). Not a call that failed or an answer that did not parse: those say nothing of the run (review of #55)."""
+    from . import remote_run
+    return isinstance(e, remote_run.CoordinatorGone) or bool((getattr(e, "answer", None) or {}).get("no_run"))
+
+
 def _pod_gone(args, remote, run_id: str, error) -> int:
-    """A pod's run that can never end there: its coordinator is gone (killed, the pod restarted), or the pod no longer
-    answers for it (restarted with its container disk wiped, which has no volume: review of #55). Nothing sets the
-    pod's linger window, so it is ended as `remote cancel runpod` ends it (canceled there and imported when it can be,
+    """A pod's run that can never end there: its coordinator is gone (killed, the pod restarted), or the pod says it
+    has no such run (restarted with its store wiped: review of #55; whether RunPod keeps a container disk across a
+    restart is unverified, and one wiped with the pipeline's copy cannot answer at all, so it is left to its deadline).
+    Nothing sets the pod's linger window, so it is ended as `remote cancel runpod` ends it (canceled there and imported when it can be,
     the pod deleted), not resumed on that pod, whatever killed the coordinator would again (review of #53). Said once
     that is done, in one `error` with anything that went wrong: 1, as the run did not finish."""
     from . import remote_run
     why = (f"run {run_id}'s coordinator on its pod is gone (killed, or the pod restarted)" if isinstance(error, remote_run.CoordinatorGone)
-           else f"its pod no longer answers for run {run_id} ({'; '.join(error.problems)})")
+           else f"its pod no longer has run {run_id} (restarted with its disk wiped?)")
     return _pod_cancel(args, remote, run_id, why=f"{why}, so the run could not end there")
 
 
@@ -1241,8 +1251,8 @@ def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None, on_go
     """A run there, followed as `run` follows its own: run.created (when attaching), each event, then run.finished.
     `on_end`: called once the run has ended there, however it ended (a pod's fetch and deletion); its failure is the
     command's, and otherwise the exit code says how the run ended. `on_gone(error)`: called instead of saying the
-    error (it says its own) when the run cannot be followed there to its end: its coordinator is gone, or the host no
-    longer answers for it (a pod's run canceled, imported and its pod deleted)."""
+    error (it says its own) when the run can never end there (_run_lost: a pod's run canceled, imported and its pod
+    deleted). Any other error stops the following only: the run goes on there."""
     from . import remote_run
     if announce:
         if args.json:
@@ -1258,7 +1268,7 @@ def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None, on_go
     try:
         status = remote_run.follow(remote, run_id, show)
     except remote_run.RemoteError as e:
-        if on_gone:
+        if on_gone and _run_lost(e):
             return on_gone(e)
         if args.json:
             emit("error", problems=e.problems)
