@@ -202,8 +202,15 @@ def _alive(pid: int, request: str) -> bool:
         return False
     except PermissionError:
         return False
-    command = _shown(pid)
+    try:
+        command = _shown(pid)
+    except PsFailed:   # nothing known: it is there (os.kill found it), so still running, not run again beside itself
+        return True
     return command is not None and (request in command or command == "")
+
+
+class PsFailed(OSError):
+    """ps could not say whether a process is there (it was killed, or is not installed): nothing is known of it."""
 
 
 def _shown(pid: int) -> str | None:
@@ -211,11 +218,17 @@ def _shown(pid: int) -> str | None:
     process, it has ended (a zombie: its node has finished, whether or not anything reaps it), or it is a kernel thread
     (shown in brackets as a process with no command line is: a pid reused by one is never a node; their parent is
     kthreadd, pid 2, or none). -ww: unlimited width (procps truncates columns to 80 characters when not writing to a
-    terminal, and a long request path then made a live node look dead)."""
-    out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "stat=", "-o", "command="],
-                         capture_output=True, text=True)
-    if out.returncode:   # no such process any more
+    terminal, and a long request path then made a live node look dead). PsFailed when ps fails otherwise than finding
+    no such process (exit 1, nothing shown): killed for memory, it said nothing of the process (review of #55)."""
+    try:
+        out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "stat=", "-o", "command="],
+                             capture_output=True, text=True)
+    except OSError as e:
+        raise PsFailed(f"ps could not be run: {e}") from None
+    if out.returncode == 1 and not out.stdout.strip():   # no such process any more
         return None
+    if out.returncode:
+        raise PsFailed(f"ps failed (exit {out.returncode}): {out.stderr.strip()[:200]}")
     fields = out.stdout.strip().split(None, 2)
     ppid, state, command = (fields + ["", "", ""])[:3]
     if state.startswith("Z"):

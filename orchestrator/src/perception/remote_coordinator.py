@@ -233,8 +233,11 @@ def alive(run: str) -> bool:
         os.kill(pid, 0)
     except (OSError, ValueError):
         return False
-    from .backends.native import _shown
-    command = _shown(pid)
+    from .backends.native import PsFailed, _shown
+    try:
+        command = _shown(pid)
+    except PsFailed:   # nothing known: it is there (os.kill found it), so running, never taken as gone (review of #55)
+        return True
     return command is not None and (f"perception.remote_coordinator serve {run}" in command or command == "")
 
 

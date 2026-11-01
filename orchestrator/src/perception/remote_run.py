@@ -472,8 +472,9 @@ def start(remote: Remote, run: str, graph: Graph, doc: dict, secrets: dict[str, 
     del keys, spec
     remote.start_sent = True
     had = json.loads(record(run).read_text())
-    if not had.get("start_sent"):   # from here the run may be going there, answered or not (a pod's --run-id: review of #53)
-        record(run).write_text(json.dumps({**had, "start_sent": True}))
+    # from here the run may be going there, answered or not (a pod's --run-id: review of #53); not answered yet, as a
+    # resume's start may find the run gone from there and make it again (review of #55)
+    record(run).write_text(json.dumps({**{k: v for k, v in had.items() if k != "start_answered"}, "start_sent": True}))
     got = remote.call("start", data=data)
     had = json.loads(record(run).read_text())
     if not had.get("start_answered"):   # the run is there from now: one it then has no longer was lost (review of #55)
