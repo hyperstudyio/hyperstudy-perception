@@ -1,6 +1,6 @@
 # Run-anywhere 1b, B: the captions call names the things on screen too (one response, two parts), and writes the
-# vocabulary the objects' track step reads, instead of vision.objects-names (A). Measured against A on held-out clips
-# (RUN_ANYWHERE_PLAN.md 1b) before either is the graph's default. Its code is the captions' (nodes/vlm/shot-captions)
+# vocabulary the objects' track step reads, instead of vision.objects-names (A). The full graph's since 2026-11-01,
+# measured against A on held-out clips (RUN_ANYWHERE_PLAN.md 1b). Its code is the captions' (nodes/vlm/shot-captions)
 # and the objects' naming rules (nodes/vision/objects), which its runner shares.
 id: vlm.shot-captions-objects
 version: 1.0.0

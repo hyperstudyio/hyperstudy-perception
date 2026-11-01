@@ -158,7 +158,7 @@ def reply_json(response):
 
 def fan_out(fn, items, workers: int | None = None) -> list:
     """[fn(x) for x in items] on `workers` threads (WORKERS when not given), in order, raising the first failure:
-    prosody-captions' style_captions.fan_out (a node's code is its own folder's, so it is not imported from there). At
+    prosody-captions' style_captions.fan_out (a copy: that node's runner does not share this folder, Runner.shares). At
     most `workers` calls are submitted at a time, the next only once one has finished, so after a failure no call
     starts: those running finish (each billed call reports its spend itself) and the failure is raised. The results are
     in the items' order whatever order the calls finish in."""
