@@ -229,9 +229,9 @@ class Backend(ABC):
         (`ran_on`, which the coordinator records).
 
         The code is the files remote.code_files lists, hashed by path and content: the files git tracks in the node's
-        directory, a script it shares with another node, its uv project with its lock, and the node SDK (installed
-        editable, outside the lock). What another machine runs is exactly what is sent there, so its results and this
-        machine's agree when the code does. Here a node also runs the files beside it that git does not track yet (a
+        directory, a script it shares with another node, the folders its runner shares (Runner.shares), its uv project
+        with its lock, and the node SDK (installed editable, outside the lock). What another machine runs is exactly
+        what is sent there, so its results and this machine's agree when the code does. Here a node also runs the files beside it that git does not track yet (a
         module being written), so those the repository's .gitignore files do not ignore count too: a result made with them is never served to
         another machine, which runs without them. A node git cannot list (outside the repository, a checkout without
         git) is hashed from every file in its folders, and its results stay this machine's (no other machine is sent

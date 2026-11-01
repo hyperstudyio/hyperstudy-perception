@@ -1,0 +1,35 @@
+# Run-anywhere 1b, B: the captions call names the things on screen too (one response, two parts), and writes the
+# vocabulary the objects' track step reads, instead of vision.objects-names (A). The full graph's since 2026-11-01,
+# measured against A on held-out clips (RUN_ANYWHERE_PLAN.md 1b). Its code is the captions' (nodes/vlm/shot-captions)
+# and the objects' naming rules (nodes/vision/objects), which its runner shares.
+id: vlm.shot-captions-objects
+version: 1.0.0
+stage: extract+caption
+title: Shot captions
+service: Anthropic API
+description: Per-shot descriptions from keyframes (faces boxed and labelled), speech and the face roster, with the things on screen named in the same call for the object tracks (up to 8 a shot, in generic detector nouns); on-screen text
+inputs:
+  shots: bundle.shots@0.1
+  keyframes: assets.v1
+  transcript: bundle.transcript@0.1
+  faces: bundle.faces@0.1
+  media: media.v1
+outputs: {shots: bundle.shots@0.1, text: bundle.text@0.1, vocabulary: vocabulary.v1}
+config:
+  model: {enum: [claude-haiku-5-5, claude-opus-5-5], default: claude-haiku-5-5, description: "bake-off choice: Haiku 5.5 with the face roster"}
+  effort: {enum: [low, medium, high], default: medium}
+runners:
+  # envs/gaze, the objects steps': the naming rules need numpy (linking.py), and it has anthropic and pillow
+  - {kind: native, env: envs/gaze, entry: node.py, accelerator: cpu, shares: [nodes/vlm/shot-captions, nodes/vision/objects]}
+resources: {cpu_cores: 1, memory_gb: 1, gpu: none}
+# Sent to Anthropic: keyframes with face boxes and labels, and the transcript lines of each shot (the captions'); then
+# the clip's object names, as text, for their classes.
+privacy: {external_upload: [frames, faces, transcript]}
+secrets: [ANTHROPIC_API_KEY]
+# Upper estimate per shot, per model: the captions' (vlm.shot-captions), with room for the names in each reply and the
+# one call (Haiku) that classes them.
+cost: {usd: {claude-haiku-5-5: 0.004, claude-opus-5-5: 0.13}, by: model, per: shot, input: shots}
+models:
+  - {id: claude-haiku-5-5, licence: Anthropic API terms, licence_mode: api-terms}
+  - {id: claude-opus-5-5, licence: Anthropic API terms, licence_mode: api-terms}
+  - {id: PySceneDetect AdaptiveDetector, licence: BSD-3-Clause, licence_mode: commercial-ok}

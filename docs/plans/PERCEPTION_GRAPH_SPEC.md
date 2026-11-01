@@ -117,6 +117,8 @@ privacy: {external_upload: false}
 license: {review_required: true}
 ```
 
+A native runner whose code imports from another node's folder names it in `shares` (a folder relative to the repository root, such as `nodes/vlm/shot-captions`): it is sent with the node and is part of its code identity, as the node's own directory is.
+
 Container images are not assumed to work on macOS Metal or Windows natively. Model-specific native/ONNX/MPS variants need explicit validation. Detect Docker/WSL2 availability and GPU capabilities in preflight. Never silently download large model weights.
 
 ## Artifacts and caching

@@ -1916,3 +1916,21 @@ def test_a_gated_step_on_a_host_with_no_token_here_is_refused_once_and_nothing_i
     t = coord._tasks(run_id)["a"]
     assert t["error_code"] == "input" and "HF_TOKEN, which is not set here" in t["error"] and t["attempt"] == 1
     assert not (host / "home" / ".cache").exists()
+
+
+def test_a_folder_a_runner_shares_is_its_code_too(tmp_path):
+    """A runner that imports from another node's folder (the captions-and-names step: the captions code and the objects'
+    naming code) names it in `shares`: its files are sent with the node and are part of its identity."""
+    import perception.backends.remote as remote
+    from perception.manifests import Runner
+    m = Registry.load(NODES).get("test.work@1.0.0")
+    runner = m.runners[0].model_copy(update={"shares": ["orchestrator/tests/nodes/keyed"]})
+    files = remote.code_files(m, runner)
+    assert "orchestrator/tests/nodes/keyed/node.py" in files and "orchestrator/tests/nodes/work/node.py" in files
+    assert "orchestrator/tests/nodes/keyed/node.py" not in remote.code_files(m, m.runners[0])
+    for bad in ("../outside", "/etc", "nodes/../../x", "", "C:/data", "nodes/c:x"):   # a drive is absolute on Windows
+        with pytest.raises(ValueError):
+            Runner(kind="native", entry="node.py", env="envs/api", shares=[bad])
+    missing = m.runners[0].model_copy(update={"shares": ["nodes/no-such-folder"]})
+    with pytest.raises(RuntimeError, match="no-such-folder"):
+        remote.code_files(m, missing)

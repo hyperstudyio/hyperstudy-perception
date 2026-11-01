@@ -36,14 +36,22 @@ def sdk_hash() -> str:
 def unlisted_code_hash(manifest: Manifest, runner: Runner) -> str:
     """The code of a node git cannot list (outside the repository, or a checkout without git), for its identity
     (Backend.identity): every file in its directory and, as code_files takes, in the folder of a script it shares with
-    another node (what that script imports beside it), its uv project's lock and the node SDK's sources. Only this
-    machine runs such a node, so this never has to agree with what another machine is sent."""
+    another node (what that script imports beside it) and in the folders its runner shares (Runner.shares), its uv
+    project's lock and the node SDK's sources. Only this machine runs such a node, so this never has to agree with what
+    another machine is sent."""
     h = hashlib.sha256(manifest.code_hash().encode())
-    shared = (manifest.directory / runner.entry).resolve().parent if runner.entry else None
-    if shared and shared != manifest.directory.resolve() and shared.is_dir():
+    entry = (manifest.directory / runner.entry).resolve().parent if runner.entry else None
+    folders = [("", entry)] if entry and entry != manifest.directory.resolve() else []
+    for name, shared in [*folders, *((s + "/", REPO / s) for s in runner.shares)]:   # a shared folder by its name
+        if name and not shared.resolve().is_relative_to(REPO.resolve()):   # a link out of it, as code_files refuses
+            raise RuntimeError(f"{manifest.ref} shares {name[:-1]}, which is not a folder of the pipeline's repository")
+        if not shared.is_dir():
+            if name:   # as code_files refuses it: the node would fail importing from it
+                raise RuntimeError(f"{manifest.ref} shares {name[:-1]}, which is not a folder of the pipeline's repository")
+            continue
         for p in sorted(shared.rglob("*")):
             if p.is_file() and "__pycache__" not in p.parts:
-                h.update(str(p.relative_to(shared)).encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest())
+                h.update((name + str(p.relative_to(shared))).encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest())
     h.update(sdk_hash().encode())
     lock = REPO / runner.env / "uv.lock" if runner.env else None
     h.update(lock.read_bytes() if lock and lock.exists() else b"no lock")

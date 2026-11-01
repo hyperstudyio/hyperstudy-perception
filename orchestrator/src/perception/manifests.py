@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DATA_KINDS = ("video", "audio", "frames", "faces", "transcript", "embeddings")
 
@@ -30,6 +30,18 @@ class Runner(Strict):
     platforms: list[str] = Field(default_factory=lambda: ["darwin/arm64", "linux/amd64", "linux/arm64", "windows/amd64"])
     accelerator: Literal["cpu", "mps", "cuda"] = "cpu"
     minimum_vram_gb: float = 0
+    # folders of the repository its code imports from besides its own and its entry's (another node's code it shares),
+    # relative to the repository root: sent with it and part of its identity (remote.code_files)
+    shares: list[str] = Field(default_factory=list)
+
+    @field_validator("shares")
+    @classmethod
+    def _shares_inside(cls, shares: list[str]) -> list[str]:
+        for s in shares:
+            parts = s.split("/")
+            if not s or s.startswith("/") or "\\" in s or any(p in ("", ".", "..") or ":" in p for p in parts):
+                raise ValueError(f"shares: {s!r} is not a folder of the repository (relative, with no . or .., no drive)")
+        return shares
 
 
 class Resources(Strict):
