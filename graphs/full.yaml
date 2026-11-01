@@ -1,9 +1,9 @@
 # Everything the pipeline can do: the graph the annotator app runs. The app's feature list picks what runs (--only, with
 # what it needs), settings (--set) and places (--place). Nothing leaves the machine without --allow-uploads, and then
-# only the kinds allow_upload names: frames, faces and transcript for the captions API (frames and faces also for the
-# objects steps' naming and crop check), audio and transcript for the delivery captions (per-utterance snippets to
-# OpenAI), and video and audio for a step placed on another machine (a lab server, a cloud GPU), which receives its
-# inputs. Embeddings too: the faces layer holds ArcFace identity distances (person_pairs), and
+# only the kinds allow_upload names: frames, faces and transcript for the captions API (whose call also names the
+# objects; frames and faces also for the objects' crop check), audio and transcript for the delivery captions
+# (per-utterance snippets to OpenAI), and video and audio for a step placed on another machine (a lab server, a cloud
+# GPU), which receives its inputs. Embeddings too: the faces layer holds ArcFace identity distances (person_pairs), and
 # every step that reads it (bodies, gaze, hands...) receives it when placed elsewhere; the run's consent still names it
 # per step. max_cost_usd caps the spend.
 #   perception plan graphs/full.yaml --input video=PATH/TO/VIDEO.mp4
@@ -19,8 +19,9 @@ policy:
   placement: hybrid
   privacy: local-preferred
   allow_upload: [video, audio, frames, faces, transcript, embeddings]
-  # OOO clip 1's estimates: shot captions $0.13, objects $0.10 (the names $0.02, the crop check $0.08), delivery captions
-  # $0.69 (86 utterances; about $0.35 spent in the bake-off)
+  # Measured on held-out OOO clips 3 and 4 (28 and 39 shots; liquidswords2, 2026-10-30): the captions with the names
+  # $0.029 and $0.037 (about $0.001 a shot, the class call included; A's captions alone $0.023 and $0.033), the crop
+  # check $0.022 and $0.021, whole runs $0.32 and $0.37 (A's $0.31 and $0.38)
   max_cost_usd: 1.50
   retries: 1
 nodes:
@@ -59,18 +60,13 @@ nodes:
   - id: hands
     uses: vision.hands@1.1.0
     inputs: {video: $inputs.video, media: $nodes.decode.media, shots: $nodes.decode.shots, bodies: $nodes.bodies.bodies}
-  # objects in three steps: objects_names names them with Claude Haiku 5.5 from decode's keyframes (frames and faces go
-  # to the API: ANTHROPIC_API_KEY), as soon as decode is done; objects_track outlines and tracks them with SAM 3 and
-  # embeds them with DINOv3 (both gated: HF_TOKEN), on the GPU with no API; objects checks each track's crops with Haiku
-  # (frames and faces again), finds who wears what (faces, bodies) and links them across shots: the objects layer. The
-  # naming duplicates the captions' pass over the same keyframes; whether the captions call should name them instead
-  # is measured (RUN_ANYWHERE_PLAN.md 1b)
-  - id: objects_names
-    uses: vision.objects-names@1.0.0
-    inputs: {shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes, media: $nodes.decode.media}
+  # objects in two steps: objects_track outlines and tracks the things the captions call names (its vocabulary; how
+  # this was chosen over a names step of its own is in graphs/full-objects-names.yaml)
+  # with SAM 3 and embeds them with DINOv3 (both gated: HF_TOKEN), on the GPU with no API; objects checks each track's
+  # crops with Haiku (frames and faces), finds who wears what (faces, bodies) and links them across shots
   - id: objects_track
     uses: vision.objects-track@1.0.0
-    inputs: {vocabulary: $nodes.objects_names.vocabulary, video: $inputs.video, media: $nodes.decode.media,
+    inputs: {vocabulary: $nodes.captions.vocabulary, video: $inputs.video, media: $nodes.decode.media,
              shots: $nodes.decode.shots, faces: $nodes.faces.faces, bodies: $nodes.bodies.bodies}
   - id: objects
     uses: vision.objects@2.0.0
@@ -90,7 +86,7 @@ nodes:
     inputs: {video: $inputs.video, media: $nodes.decode.media, faces: $nodes.faces.faces, objects: $nodes.objects.objects}
   # the speech it reads is diarized, as the bake-off's captions read it: lines by voice (SPEAKER_00, ...), not one SPEAKER
   - id: captions
-    uses: vlm.shot-captions@1.0.0
+    uses: vlm.shot-captions-objects@1.0.0
     inputs: {shots: $nodes.decode.shots, keyframes: $nodes.decode.keyframes, transcript: $nodes.diarize.transcript,
              faces: $nodes.faces.faces, media: $nodes.decode.media}
   # how each utterance is said: Praat's measures against its speaker's pitch range (the speakers layer names the speaker)

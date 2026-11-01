@@ -55,7 +55,7 @@ def test_the_three_steps_declare_together_what_the_unsplit_node_did(registry):
 
 
 def test_the_graph_keeps_one_objects_step_that_brings_the_others(registry):
-    doc = yaml.safe_load((REPO / "graphs" / "full.yaml").read_text())
+    doc = yaml.safe_load((REPO / "graphs" / "full-objects-names.yaml").read_text())
     uses = {n["id"]: n["uses"] for n in doc["nodes"]}
     assert [uses[i] for i in ("objects_names", "objects_track", "objects")] == list(STEPS)
     # gaze and gestures read the objects layer from the step still called objects
@@ -67,17 +67,19 @@ def test_the_graph_keeps_one_objects_step_that_brings_the_others(registry):
     assert not {n["id"] for n in only(doc, ["gaze"], registry)["nodes"]} & {"objects", "objects_track", "objects_names"}
 
 
-def test_the_graph_with_names_from_the_captions_is_the_full_one_without_a_names_step(registry):
-    """graphs/full-captions-objects.yaml (run-anywhere 1b, B): full.yaml with the captions step that names the objects,
-    whose vocabulary the track step reads, and no names step; it compiles, and Objects alone brings the captions."""
+def test_the_full_graph_names_the_objects_in_the_captions_call(registry):
+    """graphs/full.yaml (run-anywhere 1b, B): the captions step names the objects, whose vocabulary the track step
+    reads, and there is no names step; full-objects-names.yaml (A) is the same graph with one. Both compile, and
+    Objects alone brings the captions."""
     from perception.ir import compile_graph
-    full, both = (yaml.safe_load((REPO / "graphs" / f).read_text()) for f in ("full.yaml", "full-captions-objects.yaml"))
-    nodes = {n["id"]: n for n in both["nodes"]}
-    compile_graph(both, registry)
-    assert set(nodes) == {n["id"] for n in full["nodes"]} - {"objects_names"}
+    full, names = (yaml.safe_load((REPO / "graphs" / f).read_text()) for f in ("full.yaml", "full-objects-names.yaml"))
+    nodes = {n["id"]: n for n in full["nodes"]}
+    compile_graph(full, registry)
+    compile_graph(names, registry)
+    assert set(nodes) == {n["id"] for n in names["nodes"]} - {"objects_names"}
     assert nodes["captions"]["uses"] == "vlm.shot-captions-objects@1.0.0"
     assert nodes["objects_track"]["inputs"]["vocabulary"] == "$nodes.captions.vocabulary"
-    chosen = {n["id"] for n in only(both, ["objects"], registry)["nodes"]}
+    chosen = {n["id"] for n in only(full, ["objects"], registry)["nodes"]}
     assert "captions" in chosen and "objects_names" not in chosen
 
 def test_the_names_and_track_steps_are_steps_of_objects(registry):
