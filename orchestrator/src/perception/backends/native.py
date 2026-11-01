@@ -44,6 +44,8 @@ def unlisted_code_hash(manifest: Manifest, runner: Runner) -> str:
     folders = [("", entry)] if entry and entry != manifest.directory.resolve() else []
     for name, shared in [*folders, *((s + "/", REPO / s) for s in runner.shares)]:   # a shared folder by its name
         if not shared.is_dir():
+            if name:   # as code_files refuses it: the node would fail importing from it
+                raise RuntimeError(f"{manifest.ref} shares {name[:-1]}, which is not a folder of the pipeline's repository")
             continue
         for p in sorted(shared.rglob("*")):
             if p.is_file() and "__pycache__" not in p.parts:

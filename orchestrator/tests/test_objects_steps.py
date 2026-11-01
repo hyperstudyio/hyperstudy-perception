@@ -82,6 +82,7 @@ def test_the_full_graph_names_the_objects_in_the_captions_call(registry):
     chosen = {n["id"] for n in only(full, ["objects"], registry)["nodes"]}
     assert "captions" in chosen and "objects_names" not in chosen
 
+
 def test_the_names_and_track_steps_are_steps_of_objects(registry):
     """What the app shows as one feature, Objects: the names and track steps say they are its (part_of), and objects is
     a feature of its own. The plan's part_of, in the graph's ids, is test_cli's."""

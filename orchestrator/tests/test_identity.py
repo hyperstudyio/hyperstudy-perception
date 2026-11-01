@@ -177,6 +177,18 @@ def test_a_folder_a_runner_shares_counts_where_git_cannot_list_it_too(repo):
     (repo / "nodes" / "lib" / "util.py").write_text("def f(): return 2\n")
     assert here().identity(m, r["cuda"]) != before
 
+
+def test_a_folder_a_runner_shares_that_is_missing_has_no_identity(repo):
+    """Without git as with it (code_files refuses it): a node whose shared folder is not there would fail importing
+    from it, so it gets no identity rather than one made without that code."""
+    import shutil
+    (repo / "nodes" / "x" / "manifest.yaml").write_text(MANIFEST.replace("env: envs/e,", "env: envs/e, shares: [nodes/lib],"))
+    shutil.rmtree(repo / ".git")
+    m, r = node(repo)
+    with pytest.raises(RuntimeError, match="nodes/lib"):
+        here().identity(m, r["cuda"])
+
+
 def test_no_identity_is_one_the_rule_before_gave(repo):
     """Those began with the backend's kind (native:, self:, ssh-NAME:, cloud:, runpod:); every one now begins with the
     platform, so no cache key made under the old rule is read as one made under this one."""

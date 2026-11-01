@@ -2,7 +2,7 @@
 as the vocabulary the objects' track step reads (run-anywhere 1b, B; A is vision.objects-names, a call of its own).
 
 Each shot's captions call (captioning.run) also returns `objects`: up to 8 names, under the names step's rules (haiku.py's
-VOCAB_INSTRUCTIONS, told the names used in earlier shots), cleaned and split as that step does (linking.clean_names,
+VOCAB_RULES, told the names used in earlier shots), cleaned and split as that step does (linking.clean_names,
 garments.session_names). The captions' keyframes have the faces boxed and labelled; the names are of the things in
 them, never the boxes. Then one call (Haiku 5.5, as the names step) classes the clip's names (haiku.name_classes), and
 the vocabulary is written as the names step writes it (vocabulary.document), with the captions' model as its namer.
@@ -18,11 +18,8 @@ from perception_node import Node, NodeError   # noqa: E402
 import captioning   # noqa: E402
 import vocabulary   # noqa: E402
 from garments import session_names   # noqa: E402
-from haiku import MAX_OBJECTS, MODEL as HAIKU, VOCAB_INSTRUCTIONS, Haiku, spent as haiku_spent   # noqa: E402
+from haiku import MAX_OBJECTS, MODEL as HAIKU, VOCAB_RULES as RULES, Haiku, spent as haiku_spent   # noqa: E402
 from linking import check_classes, clean_names   # noqa: E402
-
-# the names step's rules (haiku.VOCAB_INSTRUCTIONS' list), for the reply's objects part
-RULES = VOCAB_INSTRUCTIONS.split("Rules:\n", 1)[1]
 
 with Node() as node:
     prompts, body_named, earlier = {}, {}, set()

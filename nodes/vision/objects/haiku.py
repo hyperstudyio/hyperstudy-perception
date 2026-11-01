@@ -44,12 +44,7 @@ VOCAB_SCHEMA = {
     "additionalProperties": False,
 }
 
-VOCAB_INSTRUCTIONS = f"""These are three frames from one shot of a video. List up to {MAX_OBJECTS} concrete \
-physical objects that are clearly visible in the frames and could be outlined and tracked with a \
-segmentation mask.
-
-Rules:
-- Generic nouns a detector would understand: 1-2 words, singular, lower case, the plain name of \
+VOCAB_RULES = """- Generic nouns a detector would understand: 1-2 words, singular, lower case, the plain name of \
 the kind of thing (e.g. "bicycle", "ramp", "mug", "car", "helmet", "chair"), not a description of \
 this one ("helmet", not "full-face helmet"; "cup", not "white paper cup").
 - Never people, faces, hands or other body parts, and never hair, wigs or beards.
@@ -61,7 +56,14 @@ separately. Other things worn or held are objects (e.g. "helmet", "glove", "earr
 "watch", "bag", "microphone").
 - On-screen text and logos are not objects.
 - If an object of the same kind was named in an earlier shot, reuse exactly that phrase.
-- Most prominent first. Return an empty list if there is nothing that fits."""
+- Most prominent first. Return an empty list if there is nothing that fits."""   # also given to the captions call that names the objects (vlm.shot-captions-objects)
+
+VOCAB_INSTRUCTIONS = f"""These are three frames from one shot of a video. List up to {MAX_OBJECTS} concrete \
+physical objects that are clearly visible in the frames and could be outlined and tracked with a \
+segmentation mask.
+
+Rules:
+{VOCAB_RULES}"""
 
 NAMES_SCHEMA = {
     "type": "object",
