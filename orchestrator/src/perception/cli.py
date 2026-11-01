@@ -1220,8 +1220,8 @@ def _run_lost(e, run_id: str) -> bool:
 
 def _pod_gone(args, remote, run_id: str, error) -> int:
     """A pod's run that can never end there: its coordinator is gone (killed, the pod restarted), or the pod says it
-    has no such run (restarted with its store wiped: review of #55; whether RunPod keeps a container disk across a
-    restart is unverified, and one wiped with the pipeline's copy cannot answer at all, so it is left to its deadline).
+    has no such run (restarted with its store wiped: review of #55; one wiped with the pipeline's copy is sent this
+    machine's, Remote.use_copy_of, and answers too; whether RunPod keeps a container disk across a restart is unverified).
     Nothing sets the pod's linger window, so it is ended as `remote cancel runpod` ends it (canceled there and imported when it can be,
     the pod deleted), not resumed on that pod, whatever killed the coordinator would again (review of #53). Said once
     that is done, in one `error` with anything that went wrong: 1, as the run did not finish."""
