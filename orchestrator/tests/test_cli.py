@@ -107,7 +107,7 @@ def test_every_command_speaks_json(home, capsys):
     g = graph(home, [work("a", home)])
     assert cli("graph", "validate", str(g)) == 0
     [v] = lines(capsys)
-    assert v["type"] == "graph" and v["valid"] is True and v["nodes"] == ["a"]
+    assert v["type"] == "graph" and v["valid"] is True and v["nodes"] == ["a"] and v["uses"] == {"a": "test.work@1.0.0"}
     assert cli("models", "list") == 0
     [m] = lines(capsys)
     assert m["type"] == "models" and any(x["node"] == "test.work@1.0.0" for x in m["models"])
