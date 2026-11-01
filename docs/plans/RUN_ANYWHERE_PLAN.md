@@ -84,8 +84,12 @@ Ranked by measured effect on OOO (2-minute clip):
    (PR #51): people with upper/lower garments 15/13 and 12/9 either way, garments on bodies 229/232 and 250/251, splits
    17/17 and 16/15, no merges; B's named-object tracks 26 and 24 against A's 64 and 60, A's extras mostly stage lights,
    which the rules exclude; B named "photo" 14 times on clip 3, all rejected by the crop check. Whole runs $0.32/$0.37
-   (A $0.31/$0.38). The user read 111 shots' captions blind: mostly the same, the odd preference either way. Still to
-   do: clip 5_2. The cache cost above stands: a change to the captions reruns objects_track.
+   (A $0.31/$0.38). The user read 111 shots' captions blind: mostly the same, the odd preference either way. Clip 5_2
+   (121 s, 2026-11-01): people with upper/lower garments 13/12 (A) and 13/13 (B) of 14, 242 garments given a wearer
+   either way, splits 19 and no merges either way; named-object tracks 88 (10 names) and 23 (5), 59 of A's "light";
+   B missed A's earrings (4 tracks), a tripod, a backpack and a hair tie. Objects and captions $0.077 (A) and $0.064
+   (B); the track step starts at 255 s instead of 89 s (after the captions) but takes 302 s instead of 358 s, so it
+   ends about 2 minutes later. The cache cost above stands: a change to the captions reruns objects_track.
 2. **Run the crop check's calls in parallel** (prosody_captions already runs 8 workers). 97–253 s today, measured;
    gaze and gestures wait on it.
 3. **Drop prosody_captions' second call per utterance** (`tags_from_text`, gpt-5.4-mini): 10.5 s of its 28.6 s on
