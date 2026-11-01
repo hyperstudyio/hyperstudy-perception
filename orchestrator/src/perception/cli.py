@@ -961,10 +961,12 @@ def cmd_remote(args):
             if args.detach:
                 return 0
             return _remote_follow(args, remote, run_id, announce=False,
-                                  on_end=(lambda: _pod_fetch(args, remote, run_id, secrets)) if on_pod else None)
+                                  on_end=(lambda: _pod_fetch(args, remote, run_id, secrets)) if on_pod else None,
+                                  on_gone=(lambda: _pod_cancel(args, remote, run_id)) if on_pod else None)
         if action == "attach":
             return _remote_follow(args, remote, args.run_id, announce=True,
-                                  on_end=(lambda: _pod_fetch(args, remote, args.run_id, load_secrets())) if on_pod else None)
+                                  on_end=(lambda: _pod_fetch(args, remote, args.run_id, load_secrets())) if on_pod else None,
+                                  on_gone=(lambda: _pod_cancel(args, remote, args.run_id)) if on_pod else None)
         if action == "status":
             got = remote.call("status", *([args.run_id] if args.run_id else []))
             if args.json:
@@ -1214,10 +1216,11 @@ def shown(text) -> str:
     return "".join(c if c.isprintable() or c == " " else repr(c)[1:-1] for c in str(text))
 
 
-def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None) -> int:
+def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None, on_gone=None) -> int:
     """A run there, followed as `run` follows its own: run.created (when attaching), each event, then run.finished.
     `on_end`: called once the run has ended there, however it ended (a pod's fetch and deletion); its failure is the
-    command's, and otherwise the exit code says how the run ended."""
+    command's, and otherwise the exit code says how the run ended. `on_gone`: called instead, after the error is
+    said, when the run's coordinator there is gone (a pod's run canceled, imported and its pod deleted)."""
     from . import remote_run
     if announce:
         if args.json:
@@ -1233,10 +1236,15 @@ def _remote_follow(args, remote, run_id: str, announce: bool, on_end=None) -> in
     try:
         status = remote_run.follow(remote, run_id, show)
     except remote_run.RemoteError as e:
+        gone = on_gone and isinstance(e, remote_run.CoordinatorGone)
+        problems = [f"run {run_id}'s coordinator on its pod is gone (killed, or the pod restarted), so the run cannot end "
+                    "there: it is canceled, what it did is imported, and the pod deleted"] if gone else e.problems
         if args.json:
-            emit("error", problems=e.problems)
+            emit("error", problems=problems)
         else:
-            print(shown(f"perception remote: {e}"), file=sys.stderr)
+            print(shown(f"perception remote: {'; '.join(problems)}"), file=sys.stderr)
+        if gone:
+            on_gone()
         return 1
     if args.json:
         emit("run.finished", run=run_id, status=status, host=remote.host.name)

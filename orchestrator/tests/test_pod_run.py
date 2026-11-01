@@ -461,3 +461,22 @@ def test_a_fetch_keeps_the_pod_for_itself(tmp_path, runpod, capsys):
                            "--allow-uploads", "--max-cost-usd", "5", "--linger-min", "10")
     assert code == 0, out
     assert abs(int((tmp_path / "host" / "remove-at").read_text()) - (time.time() + 30 * 60)) < 120
+
+
+def test_a_pod_run_whose_coordinator_is_gone_is_canceled_imported_and_its_pod_deleted(tmp_path, runpod, capsys):
+    """Review of #53: the coordinator on the pod killed (out of memory, the container restarted), the run never ends
+    there, so following it ends it as `remote cancel runpod` does: canceled there, what it did imported, the pod
+    deleted and charged. Not left idle until its deadline, and not resumed on it: whatever killed it would again."""
+    import os
+    run = detached(tmp_path, capsys, sleep=60)
+    [pid] = (tmp_path / "host" / "home").rglob(f"remote/{run}/coordinator.pid")
+    assert wait_for(lambda: pid.exists() and pid.read_text().strip())
+    os.kill(int(pid.read_text()), 9)
+    time.sleep(0.5)
+    code, out = perception(capsys, "remote", "attach", "runpod", run)
+    assert code == 1
+    assert "is gone" in of(out, "error")[0]["problems"][0] and "--run-id" not in of(out, "error")[0]["problems"][0]
+    assert of(out, "canceled")[0]["canceled"] and of(out, "fetched")[0]["run"] == run
+    assert of(out, "pod_deleted")[0]["deleted"] and not runpod.pods and record_of(run)["pod"]["deleted"]
+    code, out = perception(capsys, "status", run)
+    assert of(out, "status")[0]["status"] == "canceled"

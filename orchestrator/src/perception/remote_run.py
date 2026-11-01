@@ -100,6 +100,10 @@ class RemoteError(RuntimeError):
         self.problems = list(problems)
 
 
+class CoordinatorGone(RemoteError):
+    """The run's coordinator there is gone with the run still running (follow): it never ends there by itself."""
+
+
 # --- the checks, before anything leaves -----------------------------------------------------------------------------
 
 def made_kinds(graph: Graph) -> dict[str, list[str]]:
@@ -499,7 +503,7 @@ def follow(remote: Remote, run: str, on_event, after: int = 0) -> str:
         if got["status"] != "running":
             return got["status"]
         if got["coordinator"] == "gone":
-            raise RemoteError(f"run {run}'s coordinator on {remote.host.name} is gone (the host restarted?): "
+            raise CoordinatorGone(f"run {run}'s coordinator on {remote.host.name} is gone (the host restarted?): "
                               f"`perception remote run {remote.host.name} GRAPH ... --run-id {run}` resumes it")
         time.sleep(POLL_S)
 
