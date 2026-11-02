@@ -309,7 +309,8 @@ def cmd_validate(args):
             print(f"  - {p}")
         return 1
     if args.json:
-        emit("graph", valid=True, nodes=list(graph.nodes), problems=[])
+        # `uses`: the step each node runs, by its ref, so a front end can say which of the registered steps a graph has
+        emit("graph", valid=True, nodes=list(graph.nodes), uses={i: n.manifest.ref for i, n in graph.nodes.items()}, problems=[])
         return 0
     print(f"{args.graph}: valid ({len(graph.nodes)} nodes: {' -> '.join(graph.nodes)})")
     return 0
