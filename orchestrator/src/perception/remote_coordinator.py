@@ -365,6 +365,11 @@ def _prune(store: Store, keep_s: float, min_free_gb: float | None, starting: str
             short = False
     if not gone:
         return []
+    # a run's own folders before its rows: a prune stopped between them leaves rows the next one finds and removes
+    # again, never folders no row names (and a run no longer listed has nothing left of it)
+    for run in gone:
+        _shutil.rmtree(store.root / "work" / run, ignore_errors=True)
+        _shutil.rmtree(home() / "remote" / run, ignore_errors=True)   # its holds on its inputs go with it
     with store.tx() as db:
         for run in gone:
             for table, col in (("events", "run_id"), ("tasks", "run_id"), ("runs", "id")):
@@ -387,9 +392,6 @@ def _prune(store: Store, keep_s: float, min_free_gb: float | None, starting: str
                     with contextlib.suppress(OSError):
                         p.chmod(0o700 if p.is_dir() else 0o600)
                 _shutil.rmtree(folder, ignore_errors=True)
-    for run in gone:
-        _shutil.rmtree(store.root / "work" / run, ignore_errors=True)
-        _shutil.rmtree(home() / "remote" / run, ignore_errors=True)   # its holds on its inputs go with it
     return gone
 
 
