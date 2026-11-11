@@ -1,9 +1,10 @@
-"""What this machine has: platform, cores, memory, accelerators (each NVIDIA card), tools. Used by `perception doctor`
-and placement."""
+"""What this machine has: platform (and macOS version), cores, memory, accelerators (each NVIDIA card), tools. Used by
+`perception doctor` and placement."""
 
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -71,4 +72,5 @@ def probe() -> Capabilities:
         vram = vram or memory   # unified memory
     return Capabilities(platform=plat, cpu_cores=os.cpu_count() or 1, memory_gb=round(memory, 1), accelerators=accelerators,
                         vram_gb=round(vram, 1), tools={"uv": shutil.which("uv"), "ffmpeg": shutil.which("ffmpeg"),
-                                                       "ffprobe": shutil.which("ffprobe")}, gpus=gpus)
+                                                       "ffprobe": shutil.which("ffprobe")}, gpus=gpus,
+                        macos=platform.mac_ver()[0] if sys.platform == "darwin" else "")

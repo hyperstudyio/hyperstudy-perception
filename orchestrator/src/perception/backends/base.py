@@ -51,6 +51,9 @@ class Capabilities:
     vram_gb: float = 0                 # CUDA: the largest card's; Apple GPU: unified memory (memory_gb)
     tools: dict[str, str | None] = field(default_factory=dict)   # uv, ffmpeg, ffprobe -> path or None
     gpus: list[Gpu] = field(default_factory=list)   # every NVIDIA card; empty on a Mac, and for a host probed before
+    # the macOS version (sw_vers' 15.1, 14.6.1) on a Mac, for a runner's minimum_macos; "" elsewhere, and for a host
+    # probed before it was recorded (no runner is refused for it then: `hosts check` probes it again)
+    macos: str = ""
 
     def devices(self) -> list[Gpu]:
         """What GPU nodes are placed on, one at a time for an exclusive node (scheduler.card_for): each card when the
@@ -64,7 +67,10 @@ class Capabilities:
         return cls(**{**d, "accelerators": set(d["accelerators"]), "gpus": [Gpu(**g) for g in d.get("gpus", [])]})
 
     def to_json(self) -> dict:
-        return {**asdict(self), "accelerators": sorted(self.accelerators)}
+        """Without `macos` off a Mac: a reader from before it was recorded (the app's own copy of the CLI) passes this
+        whole to the class and would refuse a key it does not know."""
+        d = {**asdict(self), "accelerators": sorted(self.accelerators)}
+        return d if self.macos else {k: v for k, v in d.items() if k != "macos"}
 
 
 # A card is leased on its machine for as long as a node runs on it, through a lock file every coordinator there honours
@@ -156,6 +162,18 @@ def this_platform() -> str:
     return f"{system}/{arch}"
 
 
+def macos_version(text: str) -> tuple[int, ...]:
+    """sw_vers' version as numbers to compare: 15.1 -> (15, 1), 14.6.1 -> (14, 6, 1)."""
+    return tuple(int(x) for x in text.split("."))
+
+
+def older_macos(caps: Capabilities, minimum: str | None) -> bool:
+    """Whether a Mac's macOS is older than a runner's minimum_macos. Only a Mac whose version is known is refused: off
+    a Mac the minimum does not apply, and a host probed before the version was recorded keeps its runners."""
+    return bool(minimum and caps.platform.startswith("darwin/") and caps.macos
+                and macos_version(caps.macos) < macos_version(minimum))
+
+
 class Backend(ABC):
     kind: str            # names the backend in a place (`kind:accelerator`): unique among a coordinator's backends
     runner_kind: str = ""   # the manifest runners it runs (default: its kind); a remote machine runs `native` ones
@@ -207,6 +225,8 @@ class Backend(ABC):
                 reasons.append(f"{r.accelerator} runner needs {r.accelerator}, not available here")
             elif r.minimum_vram_gb > caps.vram_gb:
                 reasons.append(f"{r.accelerator} runner needs {r.minimum_vram_gb} GB VRAM, {caps.vram_gb:.0f} here")
+            elif older_macos(caps, r.minimum_macos):
+                reasons.append(f"{r.accelerator} runner needs macOS {r.minimum_macos} or later, {caps.macos} here")
             else:
                 missing = self.missing_tools(r)
                 if missing:

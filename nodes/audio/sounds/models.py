@@ -10,7 +10,8 @@ The PANNs and EfficientAT weights are fetched once into the shared weights cache
 revision the bake-off used.
 
 Where they run (the request's accelerator): mps, cuda or cpu, all three models. A device PyTorch cannot use here is an
-error, not a quiet fall back to the CPU.
+error, not a quiet fall back to the CPU. The Apple GPU needs macOS 15.1 (MPS_MINIMUM_MACOS): the manifest's mps runner
+says so, and the coordinator offers an older Mac the CPU runner; this refuses a request that reaches the node anyway.
 
 torch is imported inside the functions: the orchestrator's tests read WEIGHTS from this file without it.
 """
@@ -45,10 +46,25 @@ def peaframe_files() -> str:
     return snapshot_download(PEAFRAME["repo"], revision=PEAFRAME["revision"])
 
 
+# Before macOS 15.1, torch 2.8's MPS convolution refuses an output dimension over 65,536 (manifest.yaml, the mps
+# runner's minimum_macos): mn40's and PE-A-Frame's are, on any soundtrack
+MPS_MINIMUM_MACOS = (15, 1)
+
+
+def older_macos(version: str) -> bool:
+    """Whether a macOS version (platform.mac_ver's 14.6.1) is older than MPS_MINIMUM_MACOS; "" (unknown) is not."""
+    return bool(version) and tuple(int(x) for x in version.split(".")) < MPS_MINIMUM_MACOS
+
+
 def device(accelerator: str):
+    import platform
     import torch
     if accelerator == "mps" and not torch.backends.mps.is_available():
         raise NodeError("resources", "PyTorch cannot use the Apple GPU (MPS) here: run Sound events on another device")
+    if accelerator == "mps" and older_macos(macos := platform.mac_ver()[0]):
+        need = ".".join(map(str, MPS_MINIMUM_MACOS))
+        raise NodeError("resources", f"Sound events need macOS {need} or later on the Apple GPU, and this Mac has {macos}: "
+                                     f"update macOS, or run Sound events on the CPU")
     if accelerator == "cuda" and not torch.cuda.is_available():
         raise NodeError("resources", "PyTorch cannot use CUDA here (no NVIDIA GPU, or a driver older than CUDA 12.8 "
                                      "needs, >= 570): run Sound events on another device")

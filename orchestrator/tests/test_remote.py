@@ -1934,3 +1934,40 @@ def test_a_folder_a_runner_shares_is_its_code_too(tmp_path):
     missing = m.runners[0].model_copy(update={"shares": ["nodes/no-such-folder"]})
     with pytest.raises(RuntimeError, match="no-such-folder"):
         remote.code_files(m, missing)
+
+
+def test_a_hosts_macos_is_kept_beside_its_caps_and_a_host_saved_before_it_was_recorded_has_none(tmp_path):
+    """Beside `caps`, as the cards are: the app's own copy of the CLI, from before the version was recorded, reads the
+    same hosts.json and refuses a key in `caps` it does not know. Off a Mac, Capabilities.to_json leaves it out too."""
+    hosts = Hosts(tmp_path)
+    mac = lab(tmp_path, platform="darwin/arm64", accelerators={"cpu", "mps"}, macos="14.6.1")
+    saved = mac.to_json()
+    assert "macos" not in saved["caps"] and saved["macos"] == "14.6.1"
+    hosts.path.write_text(json.dumps({"lab": saved}))
+    assert hosts.load()["lab"].caps.macos == "14.6.1"
+    saved.pop("macos")                                       # saved before
+    hosts.path.write_text(json.dumps({"lab": saved}))
+    assert hosts.load()["lab"].caps.macos == ""
+    assert "macos" not in lab(tmp_path, platform="linux/amd64").caps.to_json()
+    assert mac.caps.to_json()["macos"] == "14.6.1"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the fake host runs the probe on this machine: sw_vers is a Mac's")
+def test_a_mac_host_is_probed_for_its_macos(tmp_path, host):
+    import platform
+    added = Hosts(tmp_path / "home").add("lab", "lab")
+    assert added.caps.macos == platform.mac_ver()[0] != ""
+
+
+def test_the_probe_of_a_host_that_is_not_a_mac_succeeds_and_says_no_macos(tmp_path):
+    """Its last line asks for the macOS version only on a Mac: a Linux host's probe still exits 0 (the script's status
+    is its last command's)."""
+    from perception.hosts import PROBE
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "uname").write_text('#!/bin/sh\n[ "$1" = -s ] && echo Linux || echo x86_64\n')
+    (shim / "uname").chmod(0o755)
+    out = subprocess.run(["sh", "-s"], input=PROBE, capture_output=True, text=True,
+                         env={**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "HOME": str(tmp_path)})
+    assert out.returncode == 0, out.stderr
+    assert "system=Linux" in out.stdout and "macos=" not in out.stdout

@@ -44,7 +44,7 @@ from .backends.native import NativeBackend, SelfBackend
 from .backends.probe import probe
 from .backends.cloud import Cloud, CloudBackend, RunPodBackend
 from .backends.remote import SshBackend
-from .hosts import KEEP_DAYS, MIN_FREE_GB, HostError, Hosts, probe_dest
+from .hosts import BESIDE_CAPS, KEEP_DAYS, MIN_FREE_GB, HostError, Hosts, probe_dest
 from .keys import load_secrets
 from .ir import GraphError, compile_graph
 from .manifests import Registry
@@ -233,7 +233,7 @@ def cmd_doctor(args):
                           "where": f"{placement.backend.kind} ({placement.runner.accelerator})" if placement else None,
                           "why_not": "" if placement else why})
         emit("doctor", platform=caps.platform, cpu_cores=caps.cpu_cores, memory_gb=caps.memory_gb,
-             accelerators=sorted(caps.accelerators), vram_gb=caps.vram_gb, gpus=caps.to_json()["gpus"], tools=caps.tools,
+             accelerators=sorted(caps.accelerators), vram_gb=caps.vram_gb, gpus=caps.to_json()["gpus"], macos=caps.macos, tools=caps.tools,
              store=str(home()), nodes=nodes,
              pipeline=pipeline_version())
         return 0
@@ -520,7 +520,8 @@ def cmd_hosts(args):
                 raise HostError("hosts probe USER@HOST")
             caps, root = probe_dest(dest, args.root, args.user, args.port, args.identity)
             c = caps.to_json()
-            found = {"dest": dest, "root": root, "caps": {k: v for k, v in c.items() if k != "gpus"}, "gpus": c["gpus"]}   # as `hosts` lists them
+            found = {"dest": dest, "root": root, "caps": {k: v for k, v in c.items() if k not in BESIDE_CAPS},   # as `hosts` lists them
+                     "gpus": c["gpus"], "macos": caps.macos}
             if args.json:
                 emit("host_probe", **found)
             else:

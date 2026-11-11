@@ -109,11 +109,19 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 [ -n "${CUDA_VISIBLE_DEVICES+set}" ] && echo "cuda_visible=$CUDA_VISIBLE_DEVICES"
 echo "cuda_order=${CUDA_DEVICE_ORDER-}"
+# an if, not `&&`: the script's last command is its exit status, and a Linux host is not a failed probe
+if [ "$(uname -s)" = Darwin ]; then echo "macos=$(sw_vers -productVersion 2>/dev/null)"; fi
 """ % GPU_QUERY
 
 
 class HostError(RuntimeError):
     pass
+
+
+MACOS = re.compile(r"\d+(\.\d+){0,2}")   # sw_vers -productVersion: 15.1, 14.6.1; anything else is not known
+
+# what Host.to_json keeps beside a host's caps rather than in them (an older reader refuses keys it does not know there)
+BESIDE_CAPS = ("gpus", "macos")
 
 
 @dataclass
@@ -140,16 +148,18 @@ class Host:
         return (KEEP_DAYS if self.keep_days is None else self.keep_days) * 86400
 
     def to_json(self) -> dict:
-        """As hosts.json holds it. The cards beside `caps`, not in it: a reader from before cards were recorded (the
-        app's own copy of the CLI, reading the same store) passes `caps` whole to Capabilities and would refuse a key it
-        does not know, while it ignores one beside it."""
+        """As hosts.json holds it. The cards and the macOS version beside `caps`, not in it: a reader from before they
+        were recorded (the app's own copy of the CLI, reading the same store) passes `caps` whole to Capabilities and
+        would refuse a key it does not know, while it ignores one beside it."""
         caps = self.caps.to_json()
-        return {**asdict(self), "caps": {k: v for k, v in caps.items() if k != "gpus"}, "gpus": caps["gpus"]}
+        return {**asdict(self), "caps": {k: v for k, v in caps.items() if k not in BESIDE_CAPS},
+                "gpus": caps["gpus"], "macos": self.caps.macos}
 
     @classmethod
     def from_json(cls, d: dict) -> "Host":
-        # a host saved before its cards were recorded has none: counted as one GPU
-        caps = Capabilities.from_json({**d["caps"], "gpus": d.get("gpus", d["caps"].get("gpus", []))})
+        # a host saved before its cards were recorded has none: counted as one GPU; before its macOS was, ""
+        caps = Capabilities.from_json({**d["caps"], "gpus": d.get("gpus", d["caps"].get("gpus", [])),
+                                       "macos": d.get("macos", d["caps"].get("macos", ""))})
         return cls(d["name"], d["dest"], d["root"], caps, d["probed_at"], d.get("user"), d.get("port"), d.get("identity"),
                    d.get("keep_days"), d.get("min_free_gb"), d.get("keys") is True)
 
@@ -287,7 +297,7 @@ def probe(dest: str, root: str = DEFAULT_ROOT, ssh: list[str] | None = None, mak
         vram = vram or memory   # unified memory
     caps = Capabilities(platform=f"{system}/{arch}", cpu_cores=cores, memory_gb=round(memory, 1), accelerators=accelerators,
                         vram_gb=round(vram, 1), tools={t: facts.get(f"tool_{t}") or None for t in ("uv", "ffmpeg", "ffprobe")},
-                        gpus=gpus)
+                        gpus=gpus, macos=macos if system == "darwin" and MACOS.fullmatch(macos := facts.get("macos", "")) else "")
     home = facts["home"]
     absolute = (root if root.startswith("/") else f"{home}/{root.removeprefix('~/')}").rstrip("/")
     # plain characters in the whole path, the host's home too: rsync passes remote paths through the host's shell
