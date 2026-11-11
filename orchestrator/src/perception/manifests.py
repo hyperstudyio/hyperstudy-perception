@@ -30,9 +30,18 @@ class Runner(Strict):
     platforms: list[str] = Field(default_factory=lambda: ["darwin/arm64", "linux/amd64", "linux/arm64", "windows/amd64"])
     accelerator: Literal["cpu", "mps", "cuda"] = "cpu"
     minimum_vram_gb: float = 0
+    # on a Mac, the oldest macOS it runs on ("15.1"): an older one is offered the node's other runners instead
+    minimum_macos: str | None = None
     # folders of the repository its code imports from besides its own and its entry's (another node's code it shares),
     # relative to the repository root: sent with it and part of its identity (remote.code_files)
     shares: list[str] = Field(default_factory=list)
+
+    @field_validator("minimum_macos")
+    @classmethod
+    def _macos_version(cls, v: str | None) -> str | None:
+        if v is not None and not re.fullmatch(r"\d+(\.\d+){0,2}", v):
+            raise ValueError(f"minimum_macos: {v!r} is not a macOS version (15.1)")
+        return v
 
     @field_validator("shares")
     @classmethod

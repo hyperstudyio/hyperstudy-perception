@@ -14,7 +14,11 @@ config:
   # was the same at 16, 32 and 64 windows, and all at once, on the bake-off's clips). PE-A-Frame, not this, sets the peak.
   batch_size: {type: integer, minimum: 1, default: 64, description: "EfficientAT windows per batch"}
 runners:
-  - {kind: native, env: envs/audio-events, entry: node.py, accelerator: mps, platforms: [darwin/arm64]}
+  # macOS 15.1 at least: before it, torch 2.8's Apple GPU convolution refuses any output dimension over 65,536 ("Output
+  # channels > 65536 not supported at the MPS device"), and mn40's pre-emphasis (159,999 samples a 5 s window) and
+  # PE-A-Frame's codec (48,000 a second) are longer on every soundtrack. An older Mac runs the node on the CPU. From 15.1
+  # torch skips that check, and the same convolutions agree with the CPU's to 1.4e-5 (macOS 27, 2026-11-10)
+  - {kind: native, env: envs/audio-events, entry: node.py, accelerator: mps, platforms: [darwin/arm64], minimum_macos: "15.1"}
   # PyPI's torch 2.8 wheels for Linux carry CUDA 12.8 (envs/audio-events); the machine needs an NVIDIA driver >= 570.
   # PE-A-Frame large is 5.8 GB of float32 weights, run on up to 140 s of audio at once: 17 GB allocated on the Apple GPU.
   # On CUDA (an RTX 3090, 2026-10-31), with expandable segments (node.py), the whole step peaks at 17.1 GB for a 92 s

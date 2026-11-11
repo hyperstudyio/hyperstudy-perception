@@ -2007,3 +2007,38 @@ def test_a_gpu_nodes_lease_is_taken_after_its_prepare_not_while_its_weights_down
     [command] = started
     assert command[1:3] == ["-I", native_launcher()]   # the launcher first: the lease is in the node's command
     assert str(tmp_path / "leases") in command[command.index("--"):]
+
+
+def test_a_runner_with_a_minimum_macos_is_offered_only_from_that_macos_on(tmp_path):
+    """The sounds step's Apple GPU runner needs macOS 15.1 (before it torch 2.8's MPS convolution refuses mn40's and
+    PE-A-Frame's long outputs): an older Mac is offered its CPU runner, and says why not the GPU. A Mac whose version is
+    not known (a host probed before it was recorded), a newer one and a Linux machine keep the runners they had."""
+    from perception.backends.base import Capabilities
+    from perception.backends.native import NativeBackend
+    sounds = next(m for m in Registry.load(Path(__file__).resolve().parents[2] / "nodes") if m.id == "audio.sounds")
+
+    def backend(platform, accelerators, macos):
+        b = NativeBackend()
+        b._caps = Capabilities(platform=platform, cpu_cores=8, memory_gb=64, accelerators=accelerators, vram_gb=64,
+                               tools={"uv": "/bin/uv"}, macos=macos)
+        return b
+
+    def offered(*caps):
+        places, _ = Coordinator(Store(tmp_path / "store"), Registry.load(NODES), [backend(*caps)]).placements(sounds)
+        return [p.runner.accelerator for p in places]
+
+    assert offered("darwin/arm64", {"cpu", "mps"}, "14.6.1") == ["cpu"]
+    runners, _ = backend("darwin/arm64", {"mps"}, "15.0").runners_for(sounds)   # no CPU: why the GPU runner is not used
+    assert runners == []
+    assert "mps runner needs macOS 15.1 or later, 15.0 here" in backend("darwin/arm64", {"mps"}, "15.0").runners_for(sounds)[1]
+    for macos in ("15.1", "26.1", ""):
+        assert offered("darwin/arm64", {"cpu", "mps"}, macos) == ["mps"]   # an Apple GPU there: not the CPU too
+    assert offered("linux/amd64", {"cpu"}, "") == ["cpu"]
+
+def test_a_runners_minimum_macos_is_a_version():
+    from pydantic import ValidationError
+    from perception.manifests import Runner
+    assert Runner(kind="native", accelerator="mps", minimum_macos="15.1").minimum_macos == "15.1"
+    for bad in ("15.x", "fifteen", "15.1.2.3", ""):
+        with pytest.raises(ValidationError, match="not a macOS version"):
+            Runner(kind="native", accelerator="mps", minimum_macos=bad)
